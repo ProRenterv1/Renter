@@ -1,0 +1,17 @@
+## Summary
+<!-- What & why -->
+
+## Changes
+- [ ] API changes documented
+- [ ] Migrations included (if any)
+- [ ] Tests added/updated (unit/integration/e2e)
+- [ ] Screenshots for UI (if applicable)
+
+## How to test
+1. ...
+2. ...
+
+## Checklist
+- [ ] CI green (`backend-tests`, `frontend-build`, `docker-build`)
+- [ ] No secrets in diff
+- [ ] Linked issue: Fixes #

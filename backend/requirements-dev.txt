@@ -1,0 +1,6 @@
+black>=24.8
+isort>=5.13
+flake8>=7.0
+flake8-bugbear>=24.1
+flake8-comprehensions>=3.14
+pre-commit>=3.8

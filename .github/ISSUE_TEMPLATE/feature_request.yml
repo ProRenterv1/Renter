@@ -1,0 +1,12 @@
+name: "Feature request"
+description: "Propose an enhancement"
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes: { label: Problem, placeholder: What user problem are we solving? }
+    validations: { required: true }
+  - type: textarea
+    id: acceptance
+    attributes: { label: Acceptance criteria, placeholder: Bullet list of DoD }

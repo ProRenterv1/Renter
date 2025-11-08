@@ -1,0 +1,8 @@
+{
+  "name": "renter-web",
+  "private": true,
+  "version": "0.0.1",
+  "scripts": {
+    "build": "mkdir -p build && echo \"<!doctype html><html><head><meta charset='utf-8'><title>Renter</title></head><body><h1>Renter MVP</h1><p>It works.</p></body></html>\" > build/index.html"
+  }
+}
