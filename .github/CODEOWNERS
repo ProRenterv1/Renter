@@ -1,0 +1,18 @@
+# default
+*                                     @ProRenterv1/ops
+
+# backend ownership (Dev A primary, Dev B secondary)
+backend/                               @ProRenterv1/backend @ProRenterv1/frontend
+backend/renter/**                      @ProRenterv1/backend
+backend/payments/**                    @ProRenterv1/backend
+backend/identity/**                    @ProRenterv1/backend
+backend/ops/**                         @ProRenterv1/backend
+
+# frontend ownership (Dev B primary, Dev A secondary)
+frontend/**                            @ProRenterv1/frontend @ProRenterv1/backend
+
+# infra (ops + backend)
+infra/**                               @ProRenterv1/ops @ProRenterv1/backend
+
+# security workflows
+.github/**                              @ProRenterv1/ops

@@ -1,0 +1,19 @@
+name: "Bug report"
+description: "Create a bug report"
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes: { label: What happened?, placeholder: Clear description }
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes: { label: Steps to reproduce, placeholder: 1) ..., 2) ... }
+    validations: { required: true }
+  - type: input
+    id: env
+    attributes: { label: Environment, placeholder: prod/staging/local }
+  - type: textarea
+    id: logs
+    attributes: { label: Logs/Screenshots }
