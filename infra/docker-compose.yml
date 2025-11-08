@@ -1,0 +1,54 @@
+version: "3.9"
+
+x-env: &default-env
+  env_file:
+    - ../backend/.env
+
+services:
+  api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    <<: *default-env
+    command: >
+      gunicorn renter.wsgi:application
+      -b 0.0.0.0:8000 -w 2 --threads 2 --timeout 60
+    expose: ["8000"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/healthz"]
+      interval: 20s
+      timeout: 3s
+      retries: 5
+
+  worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    <<: *default-env
+    command: >
+      celery -A renter worker -l info
+      --queues=critical,emails,sms,default
+      --concurrency=2 --max-tasks-per-child=200
+    depends_on: [api]
+    restart: unless-stopped
+
+  web_build:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    command: ["sh","-c","rm -rf /dist/* && cp -r /app/build/* /dist/ || true"]
+    volumes:
+      - web_dist:/dist
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on: [api, web_build]
+    ports: ["8080:80"]
+    volumes:
+      - ./nginx/app.conf:/etc/nginx/conf.d/default.conf:ro
+      - web_dist:/usr/share/nginx/html:ro
+    restart: unless-stopped
+
+volumes:
+  web_dist:
