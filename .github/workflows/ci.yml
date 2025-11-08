@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   backend-tests:
+    name: Backend-tests
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -50,6 +51,7 @@ jobs:
         run: flake8 .
 
   frontend-build:
+    name: Frontend-build
     runs-on: ubuntu-latest
     defaults:
       run:
