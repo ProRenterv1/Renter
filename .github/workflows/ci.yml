@@ -38,6 +38,10 @@ jobs:
           pip install -r requirements.txt
           # 👇 install test tools if not in requirements.txt
           pip install pytest flake8
+      - name: Pre-commit (Black/isort/Flake8)
+        uses: pre-commit/action@v3.0.1
+        with:
+          extra_args: --all-files
       - name: Django checks
         run: python manage.py check --deploy --fail-level WARNING || true
       - name: Run tests
@@ -67,17 +71,30 @@ jobs:
     needs: [backend-tests, frontend-build]
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}   # uses the token with packages:write
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 👉 compute a lowercase image repo (owner/repo -> owner/renter-api)
+      - name: Compute image name (lowercase)
+        id: img
+        run: |
+          OWNER_LOWER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_REPO="ghcr.io/${OWNER_LOWER}/renter-api"
+          echo "repo=${IMAGE_REPO}" >> "$GITHUB_OUTPUT"
+          echo "sha=${GITHUB_SHA}"   >> "$GITHUB_OUTPUT"
+
       - name: Build & push API image
         uses: docker/build-push-action@v6
         with:
           context: ./backend
           push: true
-          tags: ghcr.io/${{ github.repository }}/api:${{ github.sha }}
+          tags: ${{ steps.img.outputs.repo }}:${{ steps.img.outputs.sha }}
+
