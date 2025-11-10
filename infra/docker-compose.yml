@@ -20,6 +20,14 @@ services:
       interval: 20s
       timeout: 3s
       retries: 5
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: renters
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
 
   worker:
     build:
@@ -50,5 +58,4 @@ services:
       - web_dist:/usr/share/nginx/html:ro
     restart: unless-stopped
 
-volumes:
-  web_dist:
+volumes: { pgdata: {} }

@@ -8,6 +8,8 @@ exclude = '''
 | \.mypy_cache
 | \.pytest_cache
 | migrations
+| renter/settings
+| backend[/\\]renter[/\\]settings
 | build
 | dist
 )/
@@ -17,3 +19,7 @@ exclude = '''
 profile = "black"
 line_length = 100
 skip = ["migrations", ".venv", ".git", "build", "dist"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "renter.settings.dev"
+python_files = ["tests.py", "test_*.py", "*_tests.py"]
