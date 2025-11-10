@@ -58,4 +58,6 @@ services:
       - web_dist:/usr/share/nginx/html:ro
     restart: unless-stopped
 
-volumes: { pgdata: {} }
+volumes:  
+  pgdata: {}  
+  web_dist: {} 
