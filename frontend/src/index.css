@@ -1,0 +1,185 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-heading: "Manrope", "Inter", system-ui, sans-serif;
+
+  --background: #f2efee;
+  --foreground: #21262c;
+  --muted: #f7f5f4;
+  --muted-foreground: #5a646e;
+  --card: #ffffff;
+  --card-foreground: #21262c;
+  --border: #cccccc;
+  --input: #cccccc;
+  --ring: #5b8ca6;
+  --primary: #5b8ca6;
+  --primary-foreground: #f4f9fc;
+  --primary-hover: #51829c;
+  --primary-pressed: #476f87;
+  --secondary: #e9f3fa;
+  --secondary-foreground: #2e6481;
+  --accent: #f7f5f4;
+  --accent-foreground: #21262c;
+  --destructive: #e66a6a;
+  --destructive-foreground: #ffffff;
+  --subtle: #f7f5f4;
+  --link: #60b1e0;
+  --link-hover: #4fa5da;
+
+  --info-text: #2e6481;
+  --info-bg: #e9f3fa;
+  --info-border: #c9e1ef;
+
+  --warning-text: #7f5a23;
+  --warning-bg: #fff3e3;
+  --warning-border: #f3d2a8;
+  --warning-strong: #edbb78;
+
+  --success-text: #256c46;
+  --success-bg: #eaf7f1;
+  --success-border: #b9e7d1;
+  --success-solid: #6bbf8e;
+
+  --error-text: #8c2a2f;
+  --error-bg: #fdeeef;
+  --error-border: #f1c2c6;
+  --error-solid: #e66a6a;
+
+  --promoted: #f3c98b;
+  --elevated: #ffffff;
+  --skeleton-from: #f7f5f4;
+  --skeleton-to: #edeae8;
+
+  color-scheme: light;
+}
+
+.dark {
+  --background: #0f1418;
+  --foreground: #e7eaed;
+  --muted: #151a1e;
+  --muted-foreground: #aab4be;
+  --card: #151a1e;
+  --card-foreground: #e7eaed;
+  --border: #25303a;
+  --input: #25303a;
+  --ring: #7fb1c5;
+  --primary: #7fb1c5;
+  --primary-foreground: #0c1115;
+  --primary-hover: #93bed0;
+  --primary-pressed: #6fa3b8;
+  --secondary: #1b222b;
+  --secondary-foreground: #e7eaed;
+  --accent: #1b222b;
+  --accent-foreground: #e7eaed;
+  --destructive: #f2b4b9;
+  --destructive-foreground: #1a0b0d;
+  --subtle: #1b222b;
+  --link: #8bc9ee;
+  --link-hover: #9dd6f7;
+
+  --info-text: #9ad9ff;
+  --info-bg: #0c2330;
+  --info-border: #1b3a4b;
+
+  --warning-text: #f2d2a6;
+  --warning-bg: #1f1a13;
+  --warning-border: #3e3426;
+  --warning-strong: #ddb577;
+
+  --success-text: #aee8cf;
+  --success-bg: #0f231b;
+  --success-border: #1e3b2e;
+  --success-solid: #4f9a75;
+
+  --error-text: #f2b4b9;
+  --error-bg: #241517;
+  --error-border: #4a252a;
+  --error-solid: #c95858;
+
+  --promoted: #ddb577;
+  --elevated: #1b222b;
+  --skeleton-from: #1a222b;
+  --skeleton-to: #141a20;
+
+  color-scheme: dark;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+a {
+  color: var(--link);
+}
+
+a:hover {
+  color: var(--link-hover);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-heading);
+  }
+
+  ::selection {
+    background-color: var(--primary);
+    color: var(--primary-foreground);
+  }
+}
+
+@layer components {
+  .chip {
+    @apply inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-sm transition-colors;
+  }
+
+  .chip-promoted {
+    background: var(--promoted);
+    color: #7a4b1c;
+  }
+}
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--skeleton-from);
+}
+
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, var(--skeleton-to), transparent);
+  animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}

@@ -1,6 +1,11 @@
+from django.conf import settings
+from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status, viewsets
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
+
+from storage.s3 import guess_content_type, object_key, presign_put
+from storage.tasks import scan_and_finalize_photo
 
 from .models import Listing
 from .serializers import ListingPhotoSerializer, ListingSerializer
@@ -64,3 +69,60 @@ class ListingViewSet(viewsets.ModelViewSet):
             return Response(status=status.HTTP_403_FORBIDDEN)
         photo.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def photos_presign(request, listing_id: int):
+    listing = get_object_or_404(Listing, id=listing_id, owner_id=request.user.id)
+    filename = request.data.get("filename") or "upload"
+    content_type = request.data.get("content_type") or guess_content_type(filename)
+    content_md5 = request.data.get("content_md5")
+    size = request.data.get("size")
+    try:
+        size_hint = int(size) if size not in (None, "") else None
+    except (TypeError, ValueError):
+        return Response({"detail": "size must be an integer"}, status=status.HTTP_400_BAD_REQUEST)
+
+    key = object_key(listing_id=listing.id, owner_id=request.user.id, filename=filename)
+    try:
+        presigned = presign_put(
+            key,
+            content_type=content_type,
+            content_md5=content_md5,
+            size_hint=size_hint,
+        )
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(
+        {
+            "key": key,
+            "upload_url": presigned["upload_url"],
+            "headers": presigned["headers"],
+            "max_bytes": settings.S3_MAX_UPLOAD_BYTES,
+            "tagging": "av-status=pending",
+        }
+    )
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def photos_complete(request, listing_id: int):
+    get_object_or_404(Listing, id=listing_id, owner_id=request.user.id)
+    key = request.data.get("key")
+    etag = request.data.get("etag")
+    if not key or not etag:
+        return Response({"detail": "key and etag required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    scan_and_finalize_photo.delay(
+        key=key,
+        listing_id=listing_id,
+        owner_id=request.user.id,
+        meta={
+            "etag": etag,
+            "filename": request.data.get("filename") or "upload",
+            "content_type": request.data.get("content_type"),
+            "size": request.data.get("size"),
+        },
+    )
+    return Response({"status": "queued", "key": key})

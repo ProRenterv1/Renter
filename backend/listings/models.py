@@ -17,6 +17,7 @@ class Listing(models.Model):
         max_digits=8,
         decimal_places=2,
         validators=[MinValueValidator(0)],
+        default=0,
     )
     city = models.CharField(max_length=60, default="Edmonton")
     is_active = models.BooleanField(default=True)
@@ -42,17 +43,37 @@ class Listing(models.Model):
 
 class ListingPhoto(models.Model):
     class Status(models.TextChoices):
-        PENDING = "PENDING", "Pending"
-        CLEAN = "CLEAN", "Clean"
-        BLOCKED = "BLOCKED", "Blocked"
+        PENDING = "pending", "Pending"
+        ACTIVE = "active", "Active"
+        BLOCKED = "blocked", "Blocked"
+
+    class AVStatus(models.TextChoices):
+        PENDING = "pending", "Pending"
+        CLEAN = "clean", "Clean"
+        INFECTED = "infected", "Infected"
+        ERROR = "error", "Error"
 
     listing = models.ForeignKey(
         Listing,
         on_delete=models.CASCADE,
         related_name="photos",
     )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="listing_photos",
+    )
     key = models.CharField(max_length=512)
     url = models.URLField(max_length=1024)
+    filename = models.CharField(max_length=255, blank=True)
+    content_type = models.CharField(max_length=120, blank=True)
+    size = models.BigIntegerField(null=True, blank=True)
+    etag = models.CharField(max_length=64, blank=True)
+    av_status = models.CharField(
+        max_length=12,
+        choices=AVStatus.choices,
+        default=AVStatus.PENDING,
+    )
     status = models.CharField(
         max_length=12,
         choices=Status.choices,
@@ -61,6 +82,7 @@ class ListingPhoto(models.Model):
     width = models.IntegerField(null=True, blank=True)
     height = models.IntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self) -> str:
-        return f"Photo {self.id} for {self.listing_id}"
+        return f"Photo {self.id} for listing {self.listing_id}"
