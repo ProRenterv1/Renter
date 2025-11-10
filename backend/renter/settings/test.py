@@ -1,5 +1,6 @@
 import os
 
+os.environ.setdefault("USE_S3", "false") 
 from .base import *
 
 DEBUG = True
