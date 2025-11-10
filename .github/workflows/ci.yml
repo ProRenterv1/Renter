@@ -50,7 +50,7 @@ jobs:
       - name: Django checks
         run: python manage.py check --deploy --fail-level WARNING || true
       - name: Run tests
-        run: pytest -q
+        run: pytest -vv --ds renter.settings.test
       - name: Lint (optional)
         run: flake8 .
 
