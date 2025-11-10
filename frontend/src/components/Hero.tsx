@@ -21,14 +21,14 @@ type HeroFormValues = z.infer<typeof heroSchema>;
 const quickChips = ["Drills", "Pressure Washers", "Ladders", "Cement Mixers", "Generators"];
 
 export function Hero() {
-  const defaultDate = useMemo(() => new Date().toISOString().split("T")[0], []);
+
 
   const form = useForm<HeroFormValues>({
     resolver: zodResolver(heroSchema),
     defaultValues: {
       tool: "",
       location: "Edmonton, AB",
-      date: defaultDate,
+
     },
   });
 
@@ -38,9 +38,7 @@ export function Hero() {
 
   const onSubmit = (values: HeroFormValues) => {
     toast.success("Search ready!", {
-      description: `Finding ${values.tool} near ${values.location} for ${new Date(
-        values.date
-      ).toLocaleDateString()}.`,
+      description: `Finding ${values.tool} near ${values.location}.`,
     });
   };
 
@@ -52,9 +50,6 @@ export function Hero() {
       <div className="absolute inset-x-0 top-10 -z-10 h-96 bg-gradient-to-b from-[#deebf5]/60 via-transparent to-transparent blur-2xl dark:from-[#112431]" />
       <div className="mx-auto flex max-w-5xl flex-col gap-12 px-4 text-center sm:px-6 lg:px-8">
         <FadeIn className="space-y-6">
-          <p className="text-sm font-semibold uppercase tracking-[0.28em] text-muted-foreground">
-            Edmonton · Local & insured
-          </p>
           <h1
             id="hero-heading"
             className="text-4xl font-heading font-semibold leading-tight sm:text-5xl lg:text-[64px]"
@@ -63,23 +58,23 @@ export function Hero() {
             <span className="inline-block text-primary">insured &amp; verified</span>
           </h1>
           <p className="text-xl text-muted-foreground sm:text-2xl">
-            Same-day pickups, backed by Renter Protect coverage.
+           Pick up today in Edmonton.
           </p>
         </FadeIn>
 
         <form
           onSubmit={form.handleSubmit(onSubmit)}
-          className="space-y-4 rounded-3xl border border-border/70 bg-card/90 p-4 shadow-xl shadow-slate-900/5 sm:p-6"
+          className="space-y-4 rounded-3xl bg-card/90 p-4 s sm:p-6"
           aria-label="Search for tools"
         >
           <div className="flex flex-col gap-3 sm:flex-row">
             <label className="relative flex-1">
               <span className="sr-only">Search tools</span>
-              <Search className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Search className="pointer-events-none absolute left-4 top-1/2 hadow-xl shadow-slate-900/5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 {...form.register("tool")}
                 placeholder="Search for drills, saws, lawn care..."
-                className="h-14 rounded-2xl pl-12 text-base sm:text-lg"
+                className="h-14 rounded-2xl pl-12 text-base shadow-xl shadow-slate-900/5 sm:text-lg"
                 aria-invalid={Boolean(errors.tool)}
               />
               {errors.tool && (
@@ -91,7 +86,7 @@ export function Hero() {
               <MapPin className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <Input
                 {...form.register("location")}
-                className="h-14 rounded-2xl pl-12 text-base sm:text-lg"
+                className="h-14 rounded-2xl pl-12 text-base shadow-xl shadow-slate-900/5 sm:text-lg"
                 aria-invalid={Boolean(errors.location)}
               />
               {errors.location && (
@@ -99,22 +94,7 @@ export function Hero() {
               )}
             </label>
           </div>
-          <div className="flex flex-col items-stretch gap-3 sm:flex-row">
-            <label className="relative flex-1 sm:max-w-[220px]">
-              <span className="sr-only">Pickup date</span>
-              <CalendarDays className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                {...form.register("date")}
-                type="date"
-                className="h-14 rounded-2xl pl-12 text-base"
-                aria-invalid={Boolean(errors.date)}
-              />
-              {errors.date && (
-                <p className="mt-2 text-left text-sm text-destructive">{errors.date.message}</p>
-              )}
-            </label>
-            <Button className="h-14 rounded-2xl text-base font-semibold">Search tools</Button>
-          </div>
+
           <div className="flex flex-wrap items-center justify-center gap-3">
             {quickChips.map((chip) => (
               <motion.button
@@ -130,7 +110,7 @@ export function Hero() {
           </div>
         </form>
 
-        <div className="grid gap-4 sm:grid-cols-3" role="list" aria-label="Community stats">
+        {/* <div className="grid gap-4 sm:grid-cols-3" role="list" aria-label="Community stats">
           {[
             { value: "1,200+", label: "Active items in Edmonton" },
             { value: "4.9/5", label: "Average owner rating" },
@@ -145,7 +125,7 @@ export function Hero() {
               <p className="text-sm text-muted-foreground">{stat.label}</p>
             </FadeIn>
           ))}
-        </div>
+        </div> */}
       </div>
     </section>
   );

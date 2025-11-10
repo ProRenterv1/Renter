@@ -14,7 +14,7 @@ export default function App() {
       <Header />
       <main>
         <Hero />
-        <FeaturedListings />
+        {/* <FeaturedListings /> */}
         <Categories />
         <Features />
         <HowItWorks />

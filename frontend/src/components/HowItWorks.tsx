@@ -1,59 +1,81 @@
-import { ArrowRight, ClipboardCheck, Boxes, Handshake } from "lucide-react";
-
-import { Card } from "@/components/ui/card";
-import { FadeIn } from "@/components/FadeIn";
-import { SectionHeading } from "@/components/SectionHeading";
+import { Search, Calendar, Key, RotateCcw } from "lucide-react";
 
 const steps = [
   {
-    title: "1. Browse verified tools",
-    description: "Filter by neighborhood, availability, or tool type. Every item is vetted.",
-    icon: Boxes,
+    icon: Search,
+    step: "1",
+    title: "Search & Browse",
+    description: "Find the perfect tool from hundreds of verified listings in Edmonton.",
   },
   {
-    title: "2. Reserve & verify",
-    description: "Secure your dates, add optional delivery, and verify identity in a minute.",
-    icon: ClipboardCheck,
+    icon: Calendar,
+    step: "2",
+    title: "Book Instantly",
+    description: "Choose your dates, review pricing, and confirm your rental in seconds.",
   },
   {
-    title: "3. Pick up confidently",
-    description: "Coordinate safe pickup with in-app messaging and coverage that follows you.",
-    icon: Handshake,
+    icon: Key,
+    step: "3",
+    title: "Pick Up & Use",
+    description: "Meet your neighbour, grab your tool, and get to work on your project.",
+  },
+  {
+    icon: RotateCcw,
+    step: "4",
+    title: "Return & Review",
+    description: "Drop off the tool and leave a review to help the community grow.",
   },
 ];
 
 export function HowItWorks() {
   return (
-    <section className="py-20" id="how-it-works" aria-labelledby="how-heading">
-      <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
-        <div className="flex flex-col items-start gap-6 md:flex-row md:items-end md:justify-between">
-          <SectionHeading
-            title="How Renter works"
-            description="From browse to pickup, everything is built to be intuitive on mobile and desktop."
-          />
-          <a
-            href="#"
-            className="inline-flex items-center gap-2 text-sm font-semibold text-link hover:text-link-hover"
-          >
-            Explore the guide <ArrowRight className="h-4 w-4" aria-hidden />
-          </a>
+    <section id="how-it-works" className="py-5 px-4 sm:px-6 lg:px-8 bg-card">
+      <div className="mx-auto max-w-7xl">
+        <div className="text-center space-y-4 mb-16">
+          <h2 className="text-3xl sm:text-4xl lg:text-5xl">
+            How it works
+          </h2>
+          <p className="text-lg sm:text-xl max-w-2xl mx-auto" style={{ color: 'var(--text-muted)' }}>
+            Get the tools you need in four simple steps.
+          </p>
         </div>
-        <div className="mt-10 grid grid-cols-1 gap-6 md:grid-cols-3">
-          {steps.map((step, index) => {
-            const Icon = step.icon;
+        
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-8">
+          {steps.map((item, index) => {
+            const Icon = item.icon;
             return (
-              <FadeIn key={step.title} delay={0.1 * index}>
-                <Card className="h-full rounded-3xl border border-border/70 p-6">
-                  <div className="flex items-center gap-4">
-                    <span className="rounded-2xl bg-muted px-4 py-2 text-sm font-semibold text-muted-foreground">
-                      Step {index + 1}
-                    </span>
-                    <Icon className="h-5 w-5 text-primary" aria-hidden />
+              <div key={index} className="relative">
+                {index < steps.length - 1 && (
+                  <div className="hidden lg:block absolute top-16 left-[60%] w-full h-0.5 bg-border -z-10" />
+                )}
+                
+                <div className="flex flex-col items-center text-center space-y-4">
+                  <div className="relative">
+                    <div 
+                      className="w-24 h-24 rounded-2xl flex items-center justify-center"
+                      style={{ backgroundColor: 'var(--info-bg)' }}
+                    >
+                      <Icon className="w-10 h-10" style={{ color: 'var(--primary)' }} />
+                    </div>
+                    <div 
+                      className="absolute -top-2 -right-2 w-8 h-8 rounded-full flex items-center justify-center text-sm"
+                      style={{ 
+                        backgroundColor: 'var(--primary)',
+                        color: 'var(--primary-foreground)'
+                      }}
+                    >
+                      {item.step}
+                    </div>
                   </div>
-                  <h3 className="mt-4 text-xl font-semibold">{step.title}</h3>
-                  <p className="mt-3 text-base text-muted-foreground">{step.description}</p>
-                </Card>
-              </FadeIn>
+                  
+                  <div className="space-y-2">
+                    <h3>{item.title}</h3>
+                    <p style={{ color: 'var(--text-muted)' }}>
+                      {item.description}
+                    </p>
+                  </div>
+                </div>
+              </div>
             );
           })}
         </div>
