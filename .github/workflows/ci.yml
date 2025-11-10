@@ -21,6 +21,10 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    env:
+      DJANGO_SETTINGS_MODULE: renter.settings.test
+      USE_S3: "false"
+      DATABASE_URL: sqlite:///./test.db
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -46,7 +50,7 @@ jobs:
       - name: Django checks
         run: python manage.py check --deploy --fail-level WARNING || true
       - name: Run tests
-        run: python manage.py test -v 2
+        run: pytest -q
       - name: Lint (optional)
         run: flake8 .
 
