@@ -53,8 +53,8 @@ const categories = [
 
 export function Categories() {
   return (
-    <section className="py-16" id="categories" aria-labelledby="categories-heading">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+    <section className="py-5" id="categories" aria-labelledby="categories-heading">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-0">
         <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
           <SectionHeading
             title="Browse by category"
@@ -72,7 +72,16 @@ export function Categories() {
             const Icon = category.icon;
             return (
               <FadeIn key={category.name} delay={0.05 * index}>
-                <Card className="flex items-center gap-4 rounded-3xl border border-border/70 p-5 transition hover:-translate-y-1 hover:shadow-lg">
+                <Card className="relative flex items-center gap-4 rounded-3xl border border-border/70 p-5 transition hover:-translate-y-1 hover:shadow-lg">
+                  {category.popular && (
+                    <Badge
+                      className="text-[11px]"
+                      variant="outline"
+                      position="top-right"
+                    >
+                      Popular
+                    </Badge>
+                  )}
                   <div
                     className="rounded-2xl p-3"
                     style={{ background: category.accent }}
@@ -84,11 +93,7 @@ export function Categories() {
                     <p className="text-lg font-semibold">{category.name}</p>
                     <p className="text-sm text-muted-foreground">{category.count}</p>
                   </div>
-                  {category.popular && (
-                    <Badge className="ml-auto text-[11px]" variant="outline">
-                      Popular
-                    </Badge>
-                  )}
+         
                 </Card>
               </FadeIn>
             );

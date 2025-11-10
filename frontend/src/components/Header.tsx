@@ -6,48 +6,67 @@ import logo from "@/assets/logo.png";
 const links = [
   { label: "Browse Tools", href: "#categories" },
   { label: "How It Works", href: "#how-it-works" },
-  { label: "Trust & Safety", href: "#features" },
-  { label: "Renter Protect", href: "#cta" },
+  { label: "List Your Tools", href: "#call-to-action" },
+  { label: "About Us", href: "#about" },
 ];
 
 export function Header() {
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-border/60 bg-card/90 backdrop-blur supports-[backdrop-filter]:bg-card/70">
-      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center gap-8">
-          <a href="/" className="flex items-center gap-2" aria-label="Go to Renter home">
-            <img
+    <header className="sticky top-0 z-50 w-full border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="flex h-16 items-center justify-between">
+          <div className="flex items-center gap-8">
+            <a href="/" className="flex items-center">
+              <img
               src={logo}
               alt="Renter"
               className="h-9 w-auto dark:brightness-110 dark:invert"
               loading="lazy"
             />
-          </a>
-          <nav className="hidden items-center gap-6 text-sm font-medium text-muted-foreground md:flex">
-            {links.map((link) => (
+            </a>
+            
+            <nav className="hidden md:flex items-center gap-6">
+              {links.map((link) => (
               <a
                 key={link.href}
                 href={link.href}
-                className="transition-colors hover:text-foreground"
+                className="text-sm hover:opacity-70 transition-opacity"
+                style={{ color: 'var(--text-heading)' }}
               >
                 {link.label}
               </a>
             ))}
-          </nav>
-        </div>
-        <div className="flex items-center gap-2">
-          <ThemeToggle />
-          <Button variant="outline" className="hidden md:inline-flex" aria-label="Sign in">
-            <User className="h-4 w-4" aria-hidden />
-            Sign in
-          </Button>
-          <Button className="hidden sm:inline-flex">List an item</Button>
-          <Button variant="ghost" size="icon" className="sm:hidden">
-            <Menu className="h-5 w-5" aria-hidden />
-            <span className="sr-only">Open navigation</span>
-          </Button>
+            </nav>
+          </div>
+          
+          <div className="flex items-center gap-4">
+            <ThemeToggle />
+            <Button 
+              variant="ghost" 
+              size="sm"
+              className="hidden sm:flex"
+            >
+              Log In
+            </Button>
+            <Button 
+              size="sm"
+              className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
+              style={{ color: 'var(--primary-foreground)' }}
+            >
+              <User className="w-4 h-4 mr-2" />
+              Sign Up
+            </Button>
+            <Button 
+              variant="ghost" 
+              size="icon"
+              className="md:hidden"
+            >
+              <Menu className="w-5 h-5" />
+            </Button>
+          </div>
         </div>
       </div>
     </header>
   );
 }
+

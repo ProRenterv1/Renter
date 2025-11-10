@@ -64,17 +64,17 @@ export function Hero() {
 
         <form
           onSubmit={form.handleSubmit(onSubmit)}
-          className="space-y-4 rounded-3xl border border-border/70 bg-card/90 p-4 shadow-xl shadow-slate-900/5 sm:p-6"
+          className="space-y-4 rounded-3xl bg-card/90 p-4 s sm:p-6"
           aria-label="Search for tools"
         >
           <div className="flex flex-col gap-3 sm:flex-row">
             <label className="relative flex-1">
               <span className="sr-only">Search tools</span>
-              <Search className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Search className="pointer-events-none absolute left-4 top-1/2 hadow-xl shadow-slate-900/5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 {...form.register("tool")}
                 placeholder="Search for drills, saws, lawn care..."
-                className="h-14 rounded-2xl pl-12 text-base sm:text-lg"
+                className="h-14 rounded-2xl pl-12 text-base shadow-xl shadow-slate-900/5 sm:text-lg"
                 aria-invalid={Boolean(errors.tool)}
               />
               {errors.tool && (
@@ -86,7 +86,7 @@ export function Hero() {
               <MapPin className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <Input
                 {...form.register("location")}
-                className="h-14 rounded-2xl pl-12 text-base sm:text-lg"
+                className="h-14 rounded-2xl pl-12 text-base shadow-xl shadow-slate-900/5 sm:text-lg"
                 aria-invalid={Boolean(errors.location)}
               />
               {errors.location && (
@@ -110,7 +110,7 @@ export function Hero() {
           </div>
         </form>
 
-        <div className="grid gap-4 sm:grid-cols-3" role="list" aria-label="Community stats">
+        {/* <div className="grid gap-4 sm:grid-cols-3" role="list" aria-label="Community stats">
           {[
             { value: "1,200+", label: "Active items in Edmonton" },
             { value: "4.9/5", label: "Average owner rating" },
@@ -125,7 +125,7 @@ export function Hero() {
               <p className="text-sm text-muted-foreground">{stat.label}</p>
             </FadeIn>
           ))}
-        </div>
+        </div> */}
       </div>
     </section>
   );
