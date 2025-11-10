@@ -5,6 +5,9 @@ from .base import *
 
 DEBUG = True
 USE_S3 = False  # ensure local storage in tests
+AWS_STORAGE_BUCKET_NAME = "test-bucket"
+AWS_ACCESS_KEY_ID = "fake-access"
+AWS_SECRET_ACCESS_KEY = "fake-secret"
 CELERY_TASK_ALWAYS_EAGER=True 
 CELERY_TASK_EAGER_PROPAGATES=True
 STORAGE_SKIP_TASK_EXECUTION=True
