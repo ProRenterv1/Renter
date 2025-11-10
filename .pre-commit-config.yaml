@@ -4,6 +4,11 @@ repos:
     hooks:
       - id: black
         args: [--config=backend/pyproject.toml]
+        exclude: |
+          (?x)(
+            ^backend/renter/settings/
+          | /migrations/
+          )
         additional_dependencies: []
 
   - repo: https://github.com/pycqa/isort
@@ -20,3 +25,8 @@ repos:
           - flake8-bugbear==24.1.17
           - flake8-comprehensions==3.14.0
         args: [--config, backend/.flake8]
+        exclude: |
+          (?x)(
+            ^backend/renter/settings/
+          | /migrations/
+          )
