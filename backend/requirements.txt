@@ -22,7 +22,7 @@ psycopg==3.2.12
 psycopg-binary==3.2.12
 PyJWT==2.10.1
 pytokens==0.3.0
-pytz==2024.2
+pytz==2025.2
 PyYAML==6.0.3
 rapidfuzz==3.9.0
 redis==7.0.1
