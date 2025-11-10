@@ -27,7 +27,7 @@ PyYAML==6.0.3
 rapidfuzz==3.9.0
 redis==7.0.1
 requests==2.31.0
-trio==0.25.0
+trio==0.32.0
 trio-websocket==0.11.1
 tzdata==2025.2
 urllib3==2.2.1
