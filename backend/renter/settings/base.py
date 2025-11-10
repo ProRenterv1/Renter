@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 from pathlib import Path
 
 import environ
@@ -8,24 +7,22 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 env = environ.Env(
     DEBUG=(bool, False),
 )
-for p in (BASE_DIR, BASE_DIR.parent):
-    f = p / ".env"
-    if f.exists():
-        environ.Env.read_env(f)
+for possible_base in (BASE_DIR, BASE_DIR.parent):
+    env_file = possible_base / ".env"
+    if env_file.exists():
+        environ.Env.read_env(env_file)
         break
 
 SECRET_KEY = env("DJANGO_SECRET_KEY", default="dev-secret")
 DEBUG = env.bool("DJANGO_DEBUG", default=True)
-ALLOWED_HOSTS = env.list(
-    "ALLOWED_HOSTS",
-    default=["localhost", "127.0.0.1"],
-)
+ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
 
 INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "django_filters",
     "users",
     "listings",
+    "storage",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -49,10 +46,13 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
+ROOT_URLCONF = "renter.urls"
+WSGI_APPLICATION = "renter.wsgi.application"
+
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],  # you can add BASE_DIR / "templates" later if you create one
+        "DIRS": [],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -63,39 +63,8 @@ TEMPLATES = [
             ],
         },
     },
-=======
-import os
-from pathlib import Path
-import dj_database_url
-
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY","dev-secret")
-DEBUG = os.getenv("DJANGO_DEBUG","True")=="True"
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS","localhost,127.0.0.1").split(",")
-
-INSTALLED_APPS = [
- "django.contrib.admin","django.contrib.auth","django.contrib.contenttypes",
- "django.contrib.sessions","django.contrib.messages","django.contrib.staticfiles",
- "rest_framework","corsheaders","storages",
- "core",
 ]
 
-MIDDLEWARE = [
- "corsheaders.middleware.CorsMiddleware",
- "django.middleware.security.SecurityMiddleware",
- "django.contrib.sessions.middleware.SessionMiddleware",
- "django.middleware.common.CommonMiddleware",
- "django.middleware.csrf.CsrfViewMiddleware",
- "django.contrib.auth.middleware.AuthenticationMiddleware",
- "django.contrib.messages.middleware.MessageMiddleware",
- "django.middleware.clickjacking.XFrameOptionsMiddleware",
->>>>>>> acb803e (feat: initial scaffold (docker + nginx + django + worker + web stub))
-]
-
-ROOT_URLCONF = "renter.urls"
-WSGI_APPLICATION = "renter.wsgi.application"
-
-<<<<<<< HEAD
 DATABASES = {
     "default": env.db(
         "DATABASE_URL",
@@ -117,23 +86,10 @@ REST_FRAMEWORK = {
         "rest_framework.filters.SearchFilter",
         "rest_framework.filters.OrderingFilter",
     ],
-=======
-DATABASES = { "default": dj_database_url.parse(os.getenv("DATABASE_URL","sqlite:///db.sqlite3"), conn_max_age=600) }
-
-STATIC_URL = "/dj-static/"
-STATIC_ROOT = BASE_DIR / "static"
-MEDIA_URL  = "/dj-media/"
-MEDIA_ROOT = BASE_DIR / "media"
-
-REST_FRAMEWORK = {
- "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
- "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticatedOrReadOnly"],
->>>>>>> acb803e (feat: initial scaffold (docker + nginx + django + worker + web stub))
 }
 
 CORS_ALLOW_ALL_ORIGINS = True
 
-<<<<<<< HEAD
 AUTH_USER_MODEL = "users.User"
 SIMPLE_JWT = {
     "AUTH_COOKIE": "access",
@@ -142,16 +98,24 @@ SIMPLE_JWT = {
     "AUTH_COOKIE_SAMESITE": "Lax",
 }
 
-AWS_S3_REGION = env("AWS_S3_REGION", default=None)
-AWS_S3_BUCKET = env("AWS_S3_BUCKET", default=None)
+# --- S3 ---
 AWS_ACCESS_KEY_ID = env("AWS_ACCESS_KEY_ID", default=None)
 AWS_SECRET_ACCESS_KEY = env("AWS_SECRET_ACCESS_KEY", default=None)
+AWS_S3_REGION_NAME = env("AWS_S3_REGION_NAME", default="us-east-1")
+AWS_STORAGE_BUCKET_NAME = env("AWS_STORAGE_BUCKET_NAME")
+AWS_S3_ENDPOINT_URL = env("AWS_S3_ENDPOINT_URL", default=None)
+AWS_S3_FORCE_PATH_STYLE = env.bool("AWS_S3_FORCE_PATH_STYLE", default=False)
+
+S3_UPLOADS_PREFIX = env("S3_UPLOADS_PREFIX", default="uploads/listings")
+S3_MAX_UPLOAD_BYTES = env.int("S3_MAX_UPLOAD_BYTES", default=15 * 1024 * 1024)
+
 MEDIA_BASE_URL = env("MEDIA_BASE_URL", default="")
+
+# --- AV ---
+AV_ENABLED = env.bool("AV_ENABLED", default=True)
+AV_ENGINE = env("AV_ENGINE", default="clamd")
+AV_DUMMY_INFECT_MARKER = env("AV_DUMMY_INFECT_MARKER", default="EICAR")
+
 REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
-=======
-REDIS_URL = os.getenv("REDIS_URL","redis://localhost:6379/0")
-CELERY_BROKER_URL = REDIS_URL
-CELERY_RESULT_BACKEND = REDIS_URL
->>>>>>> acb803e (feat: initial scaffold (docker + nginx + django + worker + web stub))

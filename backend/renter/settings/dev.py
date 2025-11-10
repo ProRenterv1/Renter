@@ -1,7 +1,6 @@
 from .base import *
-<<<<<<< HEAD
 
 DEBUG = True
-=======
-DEBUG = True
->>>>>>> acb803e (feat: initial scaffold (docker + nginx + django + worker + web stub))
+CELERY_TASK_ALWAYS_EAGER=True 
+CELERY_TASK_EAGER_PROPAGATES=True
+STORAGE_SKIP_TASK_EXECUTION=True

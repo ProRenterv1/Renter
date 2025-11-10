@@ -8,12 +8,36 @@ class ListingPhotoSerializer(serializers.ModelSerializer):
         model = ListingPhoto
         fields = [
             "id",
+            "listing",
+            "owner",
             "key",
             "url",
+            "filename",
+            "content_type",
+            "size",
+            "etag",
             "status",
+            "av_status",
             "width",
             "height",
             "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "listing",
+            "owner",
+            "key",
+            "url",
+            "filename",
+            "content_type",
+            "size",
+            "etag",
+            "status",
+            "av_status",
+            "width",
+            "height",
+            "created_at",
+            "updated_at",
         ]
 
 
