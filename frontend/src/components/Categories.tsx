@@ -67,33 +67,30 @@ export function Categories() {
             View all categories →
           </a>
         </div>
-        <div className="mt-10 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-10 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {categories.map((category, index) => {
             const Icon = category.icon;
             return (
               <FadeIn key={category.name} delay={0.05 * index}>
-                <Card className="relative flex items-center gap-4 rounded-3xl border border-border/70 p-5 transition hover:-translate-y-1 hover:shadow-lg">
-                  {category.popular && (
-                    <Badge
-                      className="text-[11px]"
-                      variant="outline"
-                      position="top-right"
-                    >
-                      Popular
-                    </Badge>
-                  )}
+                <Card className="flex h-full flex-col gap-0 overflow-hidden rounded-3xl border border-border/60 bg-card p-0 text-left shadow-sm transition hover:-translate-y-1 hover:shadow-lg">
                   <div
-                    className="rounded-2xl p-3"
+                    className="flex flex-1 items-center justify-center border-b border-border/50 px-6 py-14"
                     style={{ background: category.accent }}
                     aria-hidden
                   >
-                    <Icon className="h-6 w-6" style={{ color: category.iconColor }} />
+                    <Icon className="h-14 w-14" style={{ color: category.iconColor }} />
                   </div>
-                  <div>
-                    <p className="text-lg font-semibold">{category.name}</p>
-                    <p className="text-sm text-muted-foreground">{category.count}</p>
+                  <div className="flex items-start justify-between gap-4 bg-card px-6 py-5">
+                    <div>
+                      <p className="text-lg font-semibold">{category.name}</p>
+                      <p className="text-sm text-muted-foreground">{category.count}</p>
+                    </div>
+                    {category.popular && (
+                      <Badge className="rounded-full border-none bg-[#E8C27A] px-3 py-1 text-xs font-semibold text-[#6E4A0C] shadow-sm">
+                        Popular
+                      </Badge>
+                    )}
                   </div>
-         
                 </Card>
               </FadeIn>
             );

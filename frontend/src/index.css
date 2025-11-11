@@ -1,12 +1,12 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..700&family=Manrope:wght@500..700&display=swap");
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-heading: "Manrope", "Inter", system-ui, sans-serif;
+  --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-heading: "Manrope Variable", "Manrope", "Inter", system-ui, sans-serif;
 
   --background: #f2efee;
   --foreground: #21262c;
@@ -135,6 +135,8 @@ a:hover {
 
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+    font-weight: 400;
   }
 
   h1,
@@ -144,6 +146,36 @@ a:hover {
   h5,
   h6 {
     font-family: var(--font-heading);
+  }
+
+  h1 {
+    font-weight: 700;
+  }
+
+  h2,
+  h3 {
+    font-weight: 600;
+  }
+
+  h4,
+  h5 {
+    font-weight: 500;
+  }
+
+  label {
+    font-family: var(--font-sans);
+    font-weight: 500;
+  }
+
+  button,
+  [role="button"] {
+    font-family: var(--font-sans);
+    font-weight: 600;
+  }
+
+  [data-slot="badge"] {
+    font-family: var(--font-heading);
+    font-weight: 500;
   }
 
   ::selection {
