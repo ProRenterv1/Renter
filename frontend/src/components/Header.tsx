@@ -2,6 +2,8 @@ import { Menu, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import logo from "@/assets/logo.png";
+import { LoginModal } from "./LoginModal";
+import { useState } from "react";
 
 const links = [
   { label: "Browse Tools", href: "#categories" },
@@ -11,6 +13,13 @@ const links = [
 ];
 
 export function Header() {
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [modalMode, setModalMode] = useState<"login" | "signup">("login");
+
+  const openModal = (mode: "login" | "signup") => {
+    setModalMode(mode);
+    setLoginOpen(true);
+  };
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -45,6 +54,7 @@ export function Header() {
               variant="ghost" 
               size="sm"
               className="hidden sm:flex"
+              onClick={() => openModal("login")}
             >
               Log In
             </Button>
@@ -52,6 +62,7 @@ export function Header() {
               size="sm"
               className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
               style={{ color: 'var(--primary-foreground)' }}
+              onClick={() => openModal("signup")}
             >
               <User className="w-4 h-4 mr-2" />
               Sign Up
@@ -66,6 +77,7 @@ export function Header() {
           </div>
         </div>
       </div>
+      <LoginModal open={loginOpen} onOpenChange={setLoginOpen} defaultMode={modalMode} />
     </header>
   );
 }

@@ -14,6 +14,8 @@
   --muted-foreground: #5a646e;
   --card: #ffffff;
   --card-foreground: #21262c;
+  --popover: #ffffff;
+  --popover-foreground: #21262c;
   --border: #cccccc;
   --input: #cccccc;
   --ring: #5b8ca6;
@@ -65,6 +67,8 @@
   --muted-foreground: #aab4be;
   --card: #151a1e;
   --card-foreground: #e7eaed;
+  --popover: #1b222b;
+  --popover-foreground: #e7eaed;
   --border: #25303a;
   --input: #25303a;
   --ring: #7fb1c5;
