@@ -13,6 +13,12 @@ module.exports = {
       },
     },
     extend: {
+      maxWidth: {
+        "7xl": "72rem", // 10% less than default 80rem
+        "6xl": "64.8rem", // 10% less than default 72rem
+        "5xl": "57.6rem", // 10% less than default 64rem
+        "4xl": "50.4rem", // 10% less than default 56rem
+      },
       fontFamily: {
         sans: ["var(--font-sans)", ...fontFamily.sans],
         heading: ["var(--font-heading)", ...fontFamily.sans],
