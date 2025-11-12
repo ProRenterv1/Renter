@@ -1,0 +1,1 @@
+Renter alert: new login from {{ ip }} ({{ ua|default:"unknown device" }}). Not you? Reset password.

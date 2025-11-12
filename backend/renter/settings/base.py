@@ -15,14 +15,16 @@ for possible_base in (BASE_DIR, BASE_DIR.parent):
 
 SECRET_KEY = env("DJANGO_SECRET_KEY", default="dev-secret")
 DEBUG = env.bool("DJANGO_DEBUG", default=True)
-ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
+ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1", "http://localhost:8000"])
 
 INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "django_filters",
+    "anymail",
     "users",
     "listings",
     "storage",
+    "notifications",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -99,6 +101,21 @@ SIMPLE_JWT = {
     "AUTH_COOKIE_SAMESITE": "Lax",
 }
 
+# --- Email / SMS ---
+EMAIL_BACKEND = env(
+    "EMAIL_BACKEND",
+    default="anymail.backends.sendgrid.EmailBackend",
+)
+
+ANYMAIL = {
+    "SENDGRID_API_KEY": env("ANYMAIL_SENDGRID_API_KEY", default=None),
+}
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="noreply@example.com")
+
+TWILIO_ACCOUNT_SID = env("TWILIO_ACCOUNT_SID", default=None)
+TWILIO_AUTH_TOKEN = env("TWILIO_AUTH_TOKEN", default=None)
+TWILIO_FROM_NUMBER = env("TWILIO_FROM_NUMBER", default=None)
+
 # --- S3 ---
 USE_S3 = env.bool("USE_S3", default=False)
 
@@ -146,6 +163,8 @@ AV_ENGINE               = env("AV_ENGINE", default="clamd")
 AV_DUMMY_INFECT_MARKER  = env("AV_DUMMY_INFECT_MARKER", default="EICAR")
 
 # --- Celery / Broker (overridable in tests)
-REDIS_URL               = env("REDIS_URL", default="redis://localhost:6379/0")
+REDIS_URL               = env("REDIS_URL", default="redis://redis:6379/0")
 CELERY_BROKER_URL       = env("CELERY_BROKER_URL", default=REDIS_URL)
 CELERY_RESULT_BACKEND   = env("CELERY_RESULT_BACKEND", default=REDIS_URL)
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+FRONTEND_ORIGIN = env("FRONTEND_ORIGIN", default="http://localhost:5173")

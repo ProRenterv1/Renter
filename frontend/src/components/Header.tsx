@@ -3,7 +3,8 @@ import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import logo from "@/assets/logo.png";
 import { LoginModal } from "./LoginModal";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { AuthStore } from "@/lib/auth";
 
 const links = [
   { label: "Browse Tools", href: "#categories" },
@@ -15,11 +16,23 @@ const links = [
 export function Header() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [modalMode, setModalMode] = useState<"login" | "signup">("login");
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  useEffect(() => {
+    setIsAuthenticated(Boolean(AuthStore.getTokens()));
+  }, []);
 
   const openModal = (mode: "login" | "signup") => {
     setModalMode(mode);
     setLoginOpen(true);
   };
+
+  const handleLogout = () => {
+    AuthStore.clearTokens();
+    setIsAuthenticated(false);
+    setModalMode("login");
+  };
+
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -50,23 +63,31 @@ export function Header() {
           
           <div className="flex items-center gap-4">
             <ThemeToggle />
-            <Button 
-              variant="ghost" 
-              size="sm"
-              className="hidden sm:flex"
-              onClick={() => openModal("login")}
-            >
-              Log In
-            </Button>
-            <Button 
-              size="sm"
-              className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
-              style={{ color: 'var(--primary-foreground)' }}
-              onClick={() => openModal("signup")}
-            >
-              <User className="w-4 h-4 mr-2" />
-              Sign Up
-            </Button>
+            {isAuthenticated ? (
+              <Button variant="ghost" size="sm" onClick={handleLogout}>
+                Log Out
+              </Button>
+            ) : (
+              <>
+                <Button 
+                  variant="ghost" 
+                  size="sm"
+                  className="hidden sm:flex"
+                  onClick={() => openModal("login")}
+                >
+                  Log In
+                </Button>
+                <Button 
+                  size="sm"
+                  className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
+                  style={{ color: 'var(--primary-foreground)' }}
+                  onClick={() => openModal("signup")}
+                >
+                  <User className="w-4 h-4 mr-2" />
+                  Sign Up
+                </Button>
+              </>
+            )}
             <Button 
               variant="ghost" 
               size="icon"
@@ -77,7 +98,12 @@ export function Header() {
           </div>
         </div>
       </div>
-      <LoginModal open={loginOpen} onOpenChange={setLoginOpen} defaultMode={modalMode} />
+      <LoginModal
+        open={loginOpen}
+        onOpenChange={setLoginOpen}
+        defaultMode={modalMode}
+        onAuthSuccess={() => setIsAuthenticated(true)}
+      />
     </header>
   );
 }
