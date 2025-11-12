@@ -4,5 +4,6 @@ Set-Location $PSScriptRoot\..\infra
 docker compose build --no-cache web_build api worker
 
 # Force recreation so every run gets brand-new containers and regenerated files
+docker compose up --force-recreate -d db redis
 docker compose up --force-recreate -d web_build
 docker compose up --force-recreate -d api worker nginx
