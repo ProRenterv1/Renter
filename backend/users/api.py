@@ -6,15 +6,18 @@ from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.utils import timezone
-from rest_framework import generics, permissions, status
+from rest_framework import generics, permissions, serializers, status
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from notifications import tasks as notification_tasks
 
-from .models import LoginEvent, PasswordResetChallenge
+from .models import ContactVerificationChallenge, LoginEvent, PasswordResetChallenge
 from .serializers import (
+    ContactVerificationRequestSerializer,
+    ContactVerificationVerifySerializer,
     FlexibleTokenObtainPairSerializer,
+    PasswordChangeSerializer,
     PasswordResetCompleteSerializer,
     PasswordResetRequestSerializer,
     PasswordResetVerifySerializer,
@@ -228,6 +231,137 @@ class PasswordResetCompleteView(generics.GenericAPIView):
         challenge.save(update_fields=["attempts", "consumed"])
 
         return Response({"ok": True}, status=status.HTTP_200_OK)
+
+
+class PasswordChangeView(generics.GenericAPIView):
+    """Authenticated password change endpoint for users who know their current password."""
+
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = PasswordChangeSerializer
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = serializer.save()
+        if user.email:
+            _safe_notify(notification_tasks.send_password_changed_email, user.id)
+        if getattr(user, "phone", None):
+            _safe_notify(notification_tasks.send_password_changed_sms, user.id)
+
+        return Response({"ok": True}, status=status.HTTP_200_OK)
+
+
+class ContactVerificationRequestView(generics.GenericAPIView):
+    """Authenticated endpoint for requesting email or phone verification codes."""
+
+    serializer_class = ContactVerificationRequestSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    resend_cooldown = timedelta(minutes=1)
+    expiry_duration = timedelta(minutes=15)
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        channel = serializer.validated_data["channel"]
+        contact = serializer.validated_data["contact"]
+
+        challenge = self._issue_challenge(user, channel, contact)
+        resend_available_at = challenge.last_sent_at + self.resend_cooldown
+        return Response(
+            {
+                "challenge_id": challenge.id,
+                "channel": channel,
+                "expires_at": challenge.expires_at,
+                "resend_available_at": resend_available_at,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def _issue_challenge(self, user, channel: str, contact: str) -> ContactVerificationChallenge:
+        challenge = (
+            ContactVerificationChallenge.objects.filter(
+                user=user,
+                channel=channel,
+                contact=contact,
+                consumed=False,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        now = timezone.now()
+        if challenge and challenge.last_sent_at:
+            elapsed = now - challenge.last_sent_at
+            if elapsed < self.resend_cooldown:
+                remaining = int((self.resend_cooldown - elapsed).total_seconds())
+                raise serializers.ValidationError(
+                    {"non_field_errors": [f"Please wait {remaining}s before resending."]}
+                )
+
+        if not challenge or challenge.is_expired():
+            challenge = ContactVerificationChallenge(
+                user=user,
+                channel=channel,
+                contact=contact,
+            )
+
+        raw_code = ContactVerificationChallenge.generate_code()
+        challenge.expires_at = now + self.expiry_duration
+        challenge.max_attempts = challenge.max_attempts or 5
+        challenge.set_code(raw_code)
+        challenge.save()
+
+        if channel == ContactVerificationChallenge.Channel.EMAIL:
+            _safe_notify(
+                notification_tasks.send_contact_verification_email,
+                user.id,
+                contact,
+                raw_code,
+            )
+        else:
+            _safe_notify(
+                notification_tasks.send_contact_verification_sms,
+                user.id,
+                contact,
+                raw_code,
+            )
+
+        return challenge
+
+
+class ContactVerificationVerifyView(generics.GenericAPIView):
+    """Verify a code and update the corresponding user flag."""
+
+    serializer_class = ContactVerificationVerifySerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        channel = serializer.validated_data["channel"]
+
+        if channel == ContactVerificationChallenge.Channel.EMAIL:
+            if not user.email_verified:
+                user.email_verified = True
+                user.save(update_fields=["email_verified"])
+        else:
+            if not user.phone_verified:
+                user.phone_verified = True
+                user.save(update_fields=["phone_verified"])
+
+        profile = ProfileSerializer(user, context={"request": request}).data
+        return Response(
+            {
+                "verified": True,
+                "channel": channel,
+                "profile": profile,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 def _safe_notify(task, *args):

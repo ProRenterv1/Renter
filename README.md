@@ -92,3 +92,12 @@ docker compose exec api python manage.py migrate
 Run a single test
 
 docker compose exec api pytest backend/tests/test_healthz.py::test_healthz -q
+
+# always start work like this:
+git checkout main
+git fetch origin
+git pull --ff-only
+git checkout -b feat/<topic>
+# ...work, commit, push, open PR...
+# after merge:
+git checkout main && git pull --ff-only && git branch -d feat/<topic> && git push origin --delete feat/<topic>

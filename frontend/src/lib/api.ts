@@ -53,6 +53,54 @@ export interface PasswordResetCompleteResponse {
   ok: boolean;
 }
 
+export interface ChangePasswordPayload {
+  current_password: string;
+  new_password: string;
+}
+
+export interface ChangePasswordResponse {
+  ok: boolean;
+}
+
+export type ContactVerificationChannel = "email" | "phone";
+
+export interface ContactVerificationRequestPayload {
+  channel: ContactVerificationChannel;
+}
+
+export interface ContactVerificationRequestResponse {
+  challenge_id: number;
+  channel: ContactVerificationChannel;
+  expires_at: string;
+  resend_available_at: string;
+}
+
+export interface ContactVerificationVerifyPayload {
+  channel: ContactVerificationChannel;
+  code: string;
+  challenge_id?: number;
+}
+
+export interface ContactVerificationVerifyResponse {
+  verified: boolean;
+  channel: ContactVerificationChannel;
+  profile: Profile;
+}
+
+export type UpdateProfilePayload = Partial<
+  Pick<
+    Profile,
+    | "first_name"
+    | "last_name"
+    | "street_address"
+    | "city"
+    | "province"
+    | "postal_code"
+    | "can_rent"
+    | "can_list"
+  >
+> & { phone?: string | null };
+
 /**
  * Wrapper around fetch that automatically attaches JSON headers + auth token.
  * Throws a structured error containing HTTP status and parsed body.
@@ -108,6 +156,15 @@ export const authAPI = {
   me() {
     return jsonFetch<Profile>("/users/me/", { method: "GET" });
   },
+  updateProfile(payload: UpdateProfilePayload) {
+    return jsonFetch<Profile>("/users/me/", { method: "PATCH", body: payload });
+  },
+  changePassword(payload: ChangePasswordPayload) {
+    return jsonFetch<ChangePasswordResponse>("/users/change-password/", {
+      method: "POST",
+      body: payload,
+    });
+  },
   passwordReset: {
     request(payload: PasswordResetRequestPayload) {
       return jsonFetch<PasswordResetRequestResponse>(
@@ -124,6 +181,20 @@ export const authAPI = {
     complete(payload: PasswordResetCompletePayload) {
       return jsonFetch<PasswordResetCompleteResponse>(
         "/users/password-reset/complete/",
+        { method: "POST", body: payload },
+      );
+    },
+  },
+  contactVerification: {
+    request(payload: ContactVerificationRequestPayload) {
+      return jsonFetch<ContactVerificationRequestResponse>(
+        "/users/contact-verification/request/",
+        { method: "POST", body: payload },
+      );
+    },
+    verify(payload: ContactVerificationVerifyPayload) {
+      return jsonFetch<ContactVerificationVerifyResponse>(
+        "/users/contact-verification/verify/",
         { method: "POST", body: payload },
       );
     },

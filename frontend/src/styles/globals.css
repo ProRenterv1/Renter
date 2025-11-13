@@ -1,0 +1,280 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700&display=swap');
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --font-size: 16px;
+  
+  /* Custom color scheme */
+  --background: #F2EFEE;
+  --foreground: #21262C;
+  --card: #FFFFFF;
+  --card-foreground: #21262C;
+  --subtle-surface: #F7F5F4;
+  --popover: #FFFFFF;
+  --popover-foreground: #21262C;
+  
+  /* Brand colors */
+  --primary: #5B8CA6;
+  --primary-hover: #51829C;
+  --primary-pressed: #476F87;
+  --primary-foreground: #FFFFFF;
+  
+  --alt-action: #60B1E0;
+  --alt-hover: #4FA5DA;
+  
+  /* Text */
+  --text-heading: #21262C;
+  --text-muted: #5A646E;
+  
+  /* Borders */
+  --border: #CCCCCC;
+  --input: #CCCCCC;
+  
+  /* States - Info */
+  --info-text: #2E6481;
+  --info-bg: #E9F3FA;
+  --info-border: #C9E1EF;
+  
+  /* States - Warning */
+  --warning-text: #7F5A23;
+  --warning-bg: #FFF3E3;
+  --warning-border: #F3D2A8;
+  --warning-badge: #EDBB78;
+  
+  /* States - Success */
+  --success-text: #256C46;
+  --success-bg: #EAF7F1;
+  --success-border: #B9E7D1;
+  --success-solid: #6BBF8E;
+  
+  /* States - Error */
+  --destructive: #E66A6A;
+  --destructive-text: #8C2A2F;
+  --destructive-bg: #FDEEEF;
+  --destructive-border: #F1C2C6;
+  --destructive-foreground: #FFFFFF;
+  
+  /* Special */
+  --promoted-badge: #F3C98B;
+  
+  --secondary: #F7F5F4;
+  --secondary-foreground: #21262C;
+  --muted: #F7F5F4;
+  --muted-foreground: #5A646E;
+  --accent: #E9F3FA;
+  --accent-foreground: #2E6481;
+  
+  --input-background: #FFFFFF;
+  --switch-background: #CCCCCC;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --ring: #5B8CA6;
+  
+  --chart-1: #60B1E0;
+  --chart-2: #5B8CA6;
+  --chart-3: #6BBF8E;
+  --chart-4: #F3C98B;
+  --chart-5: #E66A6A;
+  
+  --radius: 0.5rem;
+  
+  --sidebar: #FFFFFF;
+  --sidebar-foreground: #21262C;
+  --sidebar-primary: #5B8CA6;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #F7F5F4;
+  --sidebar-accent-foreground: #21262C;
+  --sidebar-border: #CCCCCC;
+  --sidebar-ring: #5B8CA6;
+}
+
+.dark {
+  --background: #0F1418;
+  --foreground: #E7EAED;
+  --card: #151A1E;
+  --card-foreground: #E7EAED;
+  --subtle-surface: #1B222B;
+  --popover: #151A1E;
+  --popover-foreground: #E7EAED;
+  
+  /* Brand colors (lightened for dark mode) */
+  --primary: #7FB1C5;
+  --primary-hover: #93BED0;
+  --primary-pressed: #6FA3B8;
+  --primary-foreground: #0F1418;
+  
+  --alt-action: #8BC9EE;
+  --alt-hover: #A3D4F2;
+  
+  /* Text */
+  --text-heading: #E7EAED;
+  --text-muted: #AAB4BE;
+  
+  /* Borders */
+  --border: #25303A;
+  --input: #25303A;
+  
+  /* States - Info */
+  --info-text: #9AD9FF;
+  --info-bg: #0C2330;
+  --info-border: #1B3A4B;
+  
+  /* States - Warning */
+  --warning-text: #F2D2A6;
+  --warning-bg: #1F1A13;
+  --warning-border: #3E3426;
+  --warning-badge: #DDB577;
+  
+  /* States - Success */
+  --success-text: #AEE8CF;
+  --success-bg: #0F231B;
+  --success-border: #1E3B2E;
+  --success-solid: #6BBF8E;
+  
+  /* States - Error */
+  --destructive: #E66A6A;
+  --destructive-text: #F2B4B9;
+  --destructive-bg: #241517;
+  --destructive-border: #4A252A;
+  --destructive-foreground: #0F1418;
+  
+  /* Special */
+  --promoted-badge: #DDB577;
+  
+  --secondary: #1B222B;
+  --secondary-foreground: #E7EAED;
+  --muted: #1B222B;
+  --muted-foreground: #AAB4BE;
+  --accent: #0C2330;
+  --accent-foreground: #9AD9FF;
+  
+  --input-background: #151A1E;
+  --switch-background: #25303A;
+  --ring: #7FB1C5;
+  
+  --sidebar: #151A1E;
+  --sidebar-foreground: #E7EAED;
+  --sidebar-primary: #7FB1C5;
+  --sidebar-primary-foreground: #0F1418;
+  --sidebar-accent: #1B222B;
+  --sidebar-accent-foreground: #E7EAED;
+  --sidebar-border: #25303A;
+  --sidebar-ring: #7FB1C5;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-switch-background: var(--switch-background);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: var(--text-heading);
+  }
+}
+
+/**
+ * Base typography. This is not applied to elements which have an ancestor with a Tailwind text class.
+ */
+@layer base {
+  :where(:not(:has([class*=' text-']), :not(:has([class^='text-'])))) {
+    h1 {
+      font-size: var(--text-2xl);
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    h2 {
+      font-size: var(--text-xl);
+      font-weight: 600;
+      line-height: 1.3;
+    }
+
+    h3 {
+      font-size: var(--text-lg);
+      font-weight: 600;
+      line-height: 1.4;
+    }
+
+    h4 {
+      font-size: var(--text-base);
+      font-weight: 500;
+      line-height: 1.5;
+    }
+
+    p {
+      font-size: var(--text-base);
+      font-weight: 400;
+      line-height: 1.6;
+    }
+
+    label {
+      font-size: var(--text-base);
+      font-weight: 500;
+      line-height: 1.5;
+    }
+
+    button {
+      font-size: var(--text-base);
+      font-weight: 600;
+      line-height: 1.5;
+    }
+
+    input {
+      font-size: var(--text-base);
+      font-weight: 400;
+      line-height: 1.5;
+    }
+  }
+}
+
+html {
+  font-size: var(--font-size);
+}

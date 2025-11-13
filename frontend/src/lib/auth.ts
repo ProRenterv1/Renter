@@ -15,6 +15,10 @@ export type UserProfile = {
   phone: string | null;
   first_name: string;
   last_name: string;
+  street_address: string;
+  city: string;
+  province: string;
+  postal_code: string;
   can_rent: boolean;
   can_list: boolean;
   email_verified: boolean;

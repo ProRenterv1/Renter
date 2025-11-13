@@ -1,0 +1,1 @@
+Renter code: {{ code }}. Enter this to verify your contact info. Ignore if you didn't request it.
