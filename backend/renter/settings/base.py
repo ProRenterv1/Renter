@@ -157,6 +157,15 @@ else:
     AWS_ACCESS_KEY_ID = AWS_SECRET_ACCESS_KEY = AWS_STORAGE_BUCKET_NAME = None
     AWS_S3_ENDPOINT_URL = None
 
+# --- IP geolocation ---
+IP_GEO_LOOKUP_ENABLED = env.bool("IP_GEO_LOOKUP_ENABLED", default=False)
+IP_GEO_LOOKUP_URL = env("IP_GEO_LOOKUP_URL", default="https://ipapi.co/{ip}/json/")
+IP_GEO_LOOKUP_TOKEN = env("IP_GEO_LOOKUP_TOKEN", default=None)
+IP_GEO_LOOKUP_TOKEN_PARAM = env("IP_GEO_LOOKUP_TOKEN_PARAM", default="key")
+IP_GEO_LOOKUP_TIMEOUT = env.float("IP_GEO_LOOKUP_TIMEOUT", default=1.5)
+IP_GEO_CACHE_TTL = env.int("IP_GEO_CACHE_TTL", default=6 * 60 * 60)
+IP_GEO_PRIVATE_LABEL = env("IP_GEO_PRIVATE_LABEL", default="Local network")
+
 # --- AV ---
 AV_ENABLED              = env.bool("AV_ENABLED", default=True)
 AV_ENGINE               = env("AV_ENGINE", default="clamd")

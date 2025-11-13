@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 from typing import Optional, Tuple
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import ContactVerificationChallenge, PasswordResetChallenge, TwoFactorChallenge
+from .geo import get_location_for_ip
+from .models import (
+    ContactVerificationChallenge,
+    LoginEvent,
+    PasswordResetChallenge,
+    TwoFactorChallenge,
+)
 
 User = get_user_model()
 PHONE_CLEAN_RE = re.compile(r"\D+")
@@ -142,6 +150,57 @@ class ProfileSerializer(serializers.ModelSerializer):
             if new_phone != instance.phone:
                 instance.phone_verified = False
         return super().update(instance, validated_data)
+
+
+class LoginEventSerializer(serializers.ModelSerializer):
+    """Expose login events with UX-friendly fields."""
+
+    device = serializers.SerializerMethodField()
+    location = serializers.SerializerMethodField()
+    date = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LoginEvent
+        fields = ("id", "device", "ip", "location", "date", "is_new_device")
+
+    def get_device(self, obj: LoginEvent) -> str:
+        ua = (obj.user_agent or "").lower()
+        if "chrome" in ua and "windows" in ua:
+            return "Chrome on Windows"
+        if "chrome" in ua and "mac" in ua:
+            return "Chrome on Mac"
+        if "chrome" in ua and "android" in ua:
+            return "Chrome on Android"
+        if "safari" in ua and "iphone" in ua:
+            return "Safari on iPhone"
+        if "safari" in ua and "mac" in ua:
+            return "Safari on Mac"
+        if "firefox" in ua and "mac" in ua:
+            return "Firefox on Mac"
+        if "firefox" in ua and "windows" in ua:
+            return "Firefox on Windows"
+        if "edge" in ua and "windows" in ua:
+            return "Edge on Windows"
+        return "Unknown device"
+
+    def get_location(self, obj: LoginEvent) -> Optional[str]:
+        return get_location_for_ip(obj.ip)
+
+    def get_date(self, obj: LoginEvent) -> str:
+        dt = timezone.localtime(obj.created_at)
+        event_date = dt.date()
+        today = timezone.localdate()
+        yesterday = today - timedelta(days=1)
+
+        time_str = dt.strftime("%I:%M %p").lstrip("0")
+        if event_date == today:
+            return f"Today at {time_str}"
+        if event_date == yesterday:
+            return f"Yesterday at {time_str}"
+
+        month = dt.strftime("%b")
+        date_str = f"{month} {event_date.day}, {event_date.year}"
+        return f"{date_str} at {time_str}"
 
 
 class SignupSerializer(serializers.ModelSerializer):

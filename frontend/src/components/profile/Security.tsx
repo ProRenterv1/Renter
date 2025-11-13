@@ -33,6 +33,15 @@ type ChangePasswordForm = {
 
 type AlertState = { type: "success" | "error"; detail?: string } | null;
 
+type LoginHistoryEntry = {
+  id: number;
+  device: string;
+  ip: string;
+  location: string | null;
+  date: string;
+  is_new_device: boolean;
+};
+
 const fallbackErrorMessage = "Error occurred while updating.";
 
 const initialForm: ChangePasswordForm = {
@@ -157,6 +166,9 @@ export function Security() {
   const [pendingChannel, setPendingChannel] = useState<TwoFactorChannel | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
+  const [loginHistory, setLoginHistory] = useState<LoginHistoryEntry[]>([]);
+  const [loginHistoryLoading, setLoginHistoryLoading] = useState(true);
+  const [loginHistoryError, setLoginHistoryError] = useState<string | null>(null);
   const phoneVerified = profile?.phone_verified ?? false;
   const emailVerified = profile?.email_verified ?? false;
   const switchesDisabled = twoFactorLoading || twoFactorSaving;
@@ -220,6 +232,36 @@ export function Security() {
       cancelled = true;
     };
   }, [applySettings]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadLoginHistory() {
+      setLoginHistoryLoading(true);
+      setLoginHistoryError(null);
+      try {
+        const items = await authAPI.loginHistory(5);
+        if (cancelled) {
+          return;
+        }
+        setLoginHistory(items);
+      } catch (error) {
+        if (!cancelled) {
+          setLoginHistoryError("Unable to load recent login history.");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoginHistoryLoading(false);
+        }
+      }
+    }
+
+    void loadLoginHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const persistTwoFactorSetting = async (
     channel: TwoFactorChannel,
@@ -311,27 +353,6 @@ export function Security() {
   const togglePasswordVisibility = (field: keyof ChangePasswordForm) => {
     setPasswordVisibility((prev) => ({ ...prev, [field]: !prev[field] }));
   };
-
-  const loginHistory = [
-    {
-      device: "Chrome on Windows",
-      ip: "192.168.1.1",
-      location: "Edmonton, AB",
-      date: "Today at 2:30 PM",
-    },
-    {
-      device: "Safari on iPhone",
-      ip: "192.168.1.25",
-      location: "Edmonton, AB",
-      date: "Yesterday at 9:15 AM",
-    },
-    {
-      device: "Firefox on Mac",
-      ip: "10.0.0.5",
-      location: "Calgary, AB",
-      date: "Jan 10, 2025 at 4:22 PM",
-    },
-  ];
 
   const requirementStates = passwordRequirements.map((requirement) => ({
     ...requirement,
@@ -645,14 +666,29 @@ export function Security() {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
+            {loginHistoryLoading && (
+              <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+                Loading recent logins...
+              </p>
+            )}
+            {loginHistoryError && (
+              <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+                {loginHistoryError}
+              </p>
+            )}
+            {!loginHistoryLoading && !loginHistoryError && loginHistory.length === 0 && (
+              <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+                No recent logins yet.
+              </p>
+            )}
             {loginHistory.map((login, index) => (
-              <div key={`${login.device}-${login.date}`}>
+              <div key={login.id}>
                 {index > 0 && <Separator className="my-4" />}
                 <div className="flex justify-between items-start">
                   <div>
                     <p>{login.device}</p>
                     <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>
-                      {login.ip} - {login.location}
+                      {login.location ? `${login.ip} - ${login.location}` : login.ip}
                     </p>
                   </div>
                   <p className="text-sm" style={{ color: "var(--text-muted)" }}>

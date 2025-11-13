@@ -29,6 +29,15 @@ export interface TwoFactorSettings {
   phone_verified: boolean;
 }
 
+export interface LoginHistoryEntry {
+  id: number;
+  device: string;
+  ip: string;
+  location: string | null;
+  date: string;
+  is_new_device: boolean;
+}
+
 export interface TwoFactorVerifyLoginPayload {
   challenge_id: number;
   code: string;
@@ -258,5 +267,12 @@ export const authAPI = {
         body: payload,
       });
     },
+  },
+  loginHistory(limit: number = 5) {
+    const params = new URLSearchParams({ limit: String(limit) }).toString();
+    const query = params ? `?${params}` : "";
+    return jsonFetch<LoginHistoryEntry[]>(`/users/login-events/${query}`, {
+      method: "GET",
+    });
   },
 };

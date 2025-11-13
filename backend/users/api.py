@@ -23,6 +23,7 @@ from .serializers import (
     ContactVerificationRequestSerializer,
     ContactVerificationVerifySerializer,
     FlexibleTokenObtainPairSerializer,
+    LoginEventSerializer,
     PasswordChangeSerializer,
     PasswordResetCompleteSerializer,
     PasswordResetRequestSerializer,
@@ -165,6 +166,25 @@ class MeView(generics.RetrieveUpdateAPIView):
         user = self.request.user
         self.check_object_permissions(self.request, user)
         return user
+
+
+class LoginEventListView(generics.ListAPIView):
+    """Return recent login events for the authenticated user."""
+
+    serializer_class = LoginEventSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        qs = LoginEvent.objects.filter(user=self.request.user).order_by("-created_at")
+        limit = self._get_limit()
+        return qs[:limit]
+
+    def _get_limit(self) -> int:
+        try:
+            limit = int(self.request.query_params.get("limit", 5))
+        except (TypeError, ValueError):
+            limit = 5
+        return max(1, min(limit, 50))
 
 
 class TwoFactorSettingsView(generics.RetrieveUpdateAPIView):

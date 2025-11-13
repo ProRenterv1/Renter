@@ -5,6 +5,7 @@ from .api import (
     ContactVerificationRequestView,
     ContactVerificationVerifyView,
     FlexibleTokenObtainPairView,
+    LoginEventListView,
     MeView,
     PasswordChangeView,
     PasswordResetCompleteView,
@@ -57,5 +58,10 @@ urlpatterns = [
         "contact-verification/verify/",
         ContactVerificationVerifyView.as_view(),
         name="contact_verification_verify",
+    ),
+    path(
+        "login-events/",
+        LoginEventListView.as_view(),
+        name="login_events",
     ),
 ]
