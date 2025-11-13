@@ -49,7 +49,7 @@ class ListingPhotoSerializer(serializers.ModelSerializer):
 
 
 class ListingSerializer(serializers.ModelSerializer):
-    photos = ListingPhotoSerializer(many=True, read_only=True)
+    photos = serializers.SerializerMethodField()
     owner_username = serializers.ReadOnlyField(source="owner.username")
     category = serializers.SlugRelatedField(
         slug_field="slug",
@@ -80,6 +80,14 @@ class ListingSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["owner", "slug", "created_at"]
+
+    def get_photos(self, obj):
+        qs = obj.photos.filter(
+            status=ListingPhoto.Status.ACTIVE,
+            av_status=ListingPhoto.AVStatus.CLEAN,
+        )
+        serializer = ListingPhotoSerializer(qs, many=True, context=self.context)
+        return serializer.data
 
     def create(self, validated_data):
         request = self.context.get("request")

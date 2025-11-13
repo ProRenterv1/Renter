@@ -101,7 +101,7 @@ def test_complete_clean_creates_photo(api_client, owner, listing, s3_bucket):
         },
         format="json",
     )
-    assert r.status_code == 200
+    assert r.status_code == 202
     res = scan_and_finalize_photo(
         key=key,
         listing_id=listing.id,
@@ -132,10 +132,16 @@ def test_complete_infected_blocks(api_client, owner, listing, s3_bucket):
     _put_object_direct(s3_bucket, key, b"xxx EICAR xxx", "image/jpeg")
     r = client.post(
         f"/api/listings/{listing.id}/photos/complete",
-        {"key": key, "etag": "etag"},
+        {
+            "key": key,
+            "etag": "etag",
+            "filename": "bad.jpg",
+            "content_type": "image/jpeg",
+            "size": 5000,
+        },
         format="json",
     )
-    assert r.status_code == 200
+    assert r.status_code == 202
     res = scan_and_finalize_photo(
         key=key,
         listing_id=listing.id,
@@ -143,4 +149,6 @@ def test_complete_infected_blocks(api_client, owner, listing, s3_bucket):
         meta={"etag": "etag"},
     )
     assert res["status"] == "infected"
-    assert ListingPhoto.objects.filter(key=key).count() == 0
+    photo = ListingPhoto.objects.get(listing=listing, key=key)
+    assert photo.status == ListingPhoto.Status.BLOCKED
+    assert photo.av_status == ListingPhoto.AVStatus.INFECTED
