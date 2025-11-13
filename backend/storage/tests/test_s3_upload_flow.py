@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import boto3
 import pytest
 from django.conf import settings
@@ -36,7 +38,15 @@ def owner(django_user_model):
 
 @pytest.fixture
 def listing(owner, db):
-    return Listing.objects.create(owner=owner)
+    return Listing.objects.create(
+        owner=owner,
+        title="Photo Ready Listing",
+        description="Listing for upload tests",
+        daily_price_cad=Decimal("15.00"),
+        replacement_value_cad=Decimal("100.00"),
+        damage_deposit_cad=Decimal("25.00"),
+        city="Edmonton",
+    )
 
 
 def auth_client(api_client, owner):

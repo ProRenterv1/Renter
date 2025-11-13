@@ -28,7 +28,7 @@ class CanListItems(permissions.BasePermission):
 
 
 class ListingViewSet(viewsets.ModelViewSet):
-    queryset = Listing.objects.all().select_related("owner").prefetch_related("photos")
+    queryset = Listing.objects.all().select_related("owner", "category").prefetch_related("photos")
     serializer_class = ListingSerializer
     permission_classes = [
         permissions.IsAuthenticatedOrReadOnly,
@@ -39,12 +39,21 @@ class ListingViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        q = self.request.query_params.get("q")
-        pmin = self.request.query_params.get("price_min")
-        pmax = self.request.query_params.get("price_max")
-        pmin = float(pmin) if pmin not in (None, "") else None
-        pmax = float(pmax) if pmax not in (None, "") else None
-        return search_listings(qs, q, pmin, pmax)
+        params = self.request.query_params
+        q = params.get("q")
+        category = params.get("category")
+        city = params.get("city")
+        pmin_raw = params.get("price_min")
+        pmax_raw = params.get("price_max")
+        try:
+            pmin = float(pmin_raw) if pmin_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            pmin = None
+        try:
+            pmax = float(pmax_raw) if pmax_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            pmax = None
+        return search_listings(qs, q, pmin, pmax, category=category, city=city)
 
     def perform_create(self, serializer):
         serializer.save()

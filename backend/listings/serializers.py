@@ -1,6 +1,13 @@
 from rest_framework import serializers
 
-from .models import Listing, ListingPhoto
+from .models import Category, Listing, ListingPhoto
+
+
+class CategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Category
+        fields = ["id", "name", "slug"]
+        read_only_fields = ["id", "slug"]
 
 
 class ListingPhotoSerializer(serializers.ModelSerializer):
@@ -44,6 +51,13 @@ class ListingPhotoSerializer(serializers.ModelSerializer):
 class ListingSerializer(serializers.ModelSerializer):
     photos = ListingPhotoSerializer(many=True, read_only=True)
     owner_username = serializers.ReadOnlyField(source="owner.username")
+    category = serializers.SlugRelatedField(
+        slug_field="slug",
+        queryset=Category.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+    category_name = serializers.ReadOnlyField(source="category.name")
 
     class Meta:
         model = Listing
@@ -55,13 +69,49 @@ class ListingSerializer(serializers.ModelSerializer):
             "title",
             "description",
             "daily_price_cad",
+            "replacement_value_cad",
+            "damage_deposit_cad",
             "city",
+            "category",
+            "category_name",
             "is_active",
+            "is_available",
             "photos",
             "created_at",
         ]
         read_only_fields = ["owner", "slug", "created_at"]
 
     def create(self, validated_data):
-        validated_data["owner"] = self.context["request"].user
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            raise serializers.ValidationError({"detail": "Authentication required."})
+        if not getattr(user, "can_list", False):
+            raise serializers.ValidationError({"detail": "You are not allowed to create listings."})
+        validated_data["owner"] = user
         return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or instance.owner_id != getattr(user, "id", None):
+            raise serializers.ValidationError(
+                {"detail": "You do not have permission to modify this listing."}
+            )
+        validated_data.pop("owner", None)
+        return super().update(instance, validated_data)
+
+    def validate_daily_price_cad(self, value):
+        if value is None or value <= 0:
+            raise serializers.ValidationError("Price per day must be greater than 0.")
+        return value
+
+    def validate_replacement_value_cad(self, value):
+        if value is not None and value < 0:
+            raise serializers.ValidationError("Replacement value cannot be negative.")
+        return value
+
+    def validate_damage_deposit_cad(self, value):
+        if value is not None and value < 0:
+            raise serializers.ValidationError("Damage deposit cannot be negative.")
+        return value

@@ -1,8 +1,37 @@
+from decimal import Decimal
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils.text import slugify
+
+
+class Category(models.Model):
+    name = models.CharField(max_length=80, unique=True)
+    slug = models.SlugField(max_length=120, unique=True, blank=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Listing category"
+        verbose_name_plural = "Listing categories"
+
+    def __str__(self) -> str:
+        return self.name
+
+    def save(self, *args, **kwargs):
+        if not self.slug and self.name:
+            max_length = self._meta.get_field("slug").max_length
+            base_slug = slugify(self.name)[:max_length] or "category"
+            slug_candidate = base_slug
+            counter = 1
+            while type(self).objects.filter(slug=slug_candidate).exclude(pk=self.pk).exists():
+                suffix = f"-{counter}"
+                trimmed = base_slug[: max_length - len(suffix)] or "category"
+                slug_candidate = f"{trimmed}{suffix}"
+                counter += 1
+            self.slug = slug_candidate
+        super().save(*args, **kwargs)
 
 
 class Listing(models.Model):
@@ -13,11 +42,37 @@ class Listing(models.Model):
     )
     title = models.CharField(max_length=140)
     description = models.TextField(blank=True)
+    category = models.ForeignKey(
+        Category,
+        on_delete=models.SET_NULL,
+        related_name="listings",
+        null=True,
+        blank=True,
+        help_text="Optional category for this listing.",
+    )
     daily_price_cad = models.DecimalField(
         max_digits=8,
         decimal_places=2,
-        validators=[MinValueValidator(0)],
-        default=0,
+        validators=[MinValueValidator(Decimal("0.01"))],
+        default=Decimal("1.00"),
+    )
+    replacement_value_cad = models.DecimalField(
+        "Replacement value (CAD)",
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0"))],
+        default=Decimal("0"),
+    )
+    damage_deposit_cad = models.DecimalField(
+        "Damage deposit (CAD)",
+        max_digits=9,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0"))],
+        default=Decimal("0"),
+    )
+    is_available = models.BooleanField(
+        default=True,
+        help_text="Owner-controlled availability flag for rentals.",
     )
     city = models.CharField(max_length=60, default="Edmonton")
     is_active = models.BooleanField(default=True)
@@ -25,12 +80,30 @@ class Listing(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def clean(self):
+        errors = {}
+
         if not self.title or len(self.title.strip()) < 3:
-            raise ValidationError("Title too short")
-        if self.daily_price_cad and self.daily_price_cad > 10000:
-            raise ValidationError("Unreasonable price")
+            errors.setdefault("title", []).append("Title too short")
+
+        price = self.daily_price_cad
+        if price is None or price <= 0:
+            errors.setdefault("daily_price_cad", []).append("Price per day must be greater than 0.")
+        elif price > Decimal("10000"):
+            errors.setdefault("daily_price_cad", []).append("Unreasonable price")
+
+        if self.replacement_value_cad is not None and self.replacement_value_cad < 0:
+            errors.setdefault("replacement_value_cad", []).append(
+                "Replacement value cannot be negative."
+            )
+
+        if self.damage_deposit_cad is not None and self.damage_deposit_cad < 0:
+            errors.setdefault("damage_deposit_cad", []).append("Damage deposit cannot be negative.")
+
+        if errors:
+            raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
+        self.full_clean()
         if not self.slug:
             base = slugify(self.title)[:120] or "listing"
             count = type(self).objects.count() + 1
