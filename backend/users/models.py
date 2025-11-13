@@ -19,6 +19,30 @@ class User(AbstractUser):
         blank=True,
         help_text="Optional E.164 formatted phone number.",
     )
+    street_address = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Optional street address for rentals.",
+    )
+    city = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="City for the primary address.",
+    )
+    province = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Province or state for the primary address.",
+    )
+    postal_code = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        help_text="Postal or ZIP code for the primary address.",
+    )
     email_verified = models.BooleanField(default=False)
     phone_verified = models.BooleanField(default=False)
     last_login_ip = models.GenericIPAddressField(null=True, blank=True)
@@ -137,6 +161,81 @@ class PasswordResetChallenge(models.Model):
         if not self.can_attempt():
             return False
 
+        matches = secrets.compare_digest(self._hash_code(raw_code), self.code_hash)
+        self.attempts += 1
+        if matches:
+            self.consumed = True
+        return matches
+
+
+class ContactVerificationChallenge(models.Model):
+    """Stores verification codes for confirming user email or phone access."""
+
+    class Channel(models.TextChoices):
+        EMAIL = "email", "Email"
+        PHONE = "phone", "Phone"
+
+    CODE_DIGITS = 6
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="contact_verification_challenges",
+        on_delete=models.CASCADE,
+    )
+    channel = models.CharField(max_length=8, choices=Channel.choices)
+    contact = models.CharField(max_length=255, help_text="Destination email or E.164 number.")
+    code_hash = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveIntegerField(default=0)
+    max_attempts = models.PositiveIntegerField(default=5)
+    consumed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(
+                fields=("user", "channel"),
+                name="cvc_user_channel_idx",
+            ),
+            models.Index(
+                fields=("channel", "contact"),
+                name="cvc_channel_contact_idx",
+            ),
+            models.Index(fields=("expires_at",), name="cvc_expires_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.get_channel_display()} verification for {self.user}"
+
+    @classmethod
+    def generate_code(cls) -> str:
+        return f"{secrets.randbelow(10**cls.CODE_DIGITS):0{cls.CODE_DIGITS}d}"
+
+    @staticmethod
+    def _hash_code(raw_code: str) -> str:
+        return hashlib.sha512(raw_code.encode("utf-8")).hexdigest()
+
+    def set_code(self, raw_code: str) -> None:
+        self.code_hash = self._hash_code(raw_code)
+        self.attempts = 0
+        self.consumed = False
+        self.last_sent_at = timezone.now()
+
+    def is_expired(self) -> bool:
+        return timezone.now() >= self.expires_at
+
+    def can_attempt(self) -> bool:
+        if self.consumed:
+            return False
+        if self.attempts >= self.max_attempts:
+            return False
+        return not self.is_expired()
+
+    def check_code(self, raw_code: str) -> bool:
+        if not self.can_attempt():
+            return False
         matches = secrets.compare_digest(self._hash_code(raw_code), self.code_hash)
         self.attempts += 1
         if matches:

@@ -236,3 +236,43 @@ def test_password_reset_sms_flow_happy_path(api_client, user, monkeypatch):
         format="json",
     )
     assert login_resp.status_code == 200
+
+
+def test_change_password_success(api_client, user, monkeypatch):
+    email_calls = spy_task(monkeypatch, notification_tasks.send_password_changed_email)
+    sms_calls = spy_task(monkeypatch, notification_tasks.send_password_changed_sms)
+
+    token = _obtain_token(api_client, user.email, "Secret123!")
+    api_client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    resp = api_client.post(
+        "/api/users/change-password/",
+        {"current_password": "Secret123!", "new_password": "NewSecret456!"},
+        format="json",
+    )
+    assert resp.status_code == 200
+    assert resp.data["ok"] is True
+    user.refresh_from_db()
+    assert user.check_password("NewSecret456!")
+    assert email_calls
+    assert sms_calls
+
+    login_resp = api_client.post(
+        "/api/users/token/",
+        {"identifier": user.email, "password": "NewSecret456!"},
+        format="json",
+    )
+    assert login_resp.status_code == 200
+
+
+def test_change_password_rejects_incorrect_current(api_client, user):
+    token = _obtain_token(api_client, user.email, "Secret123!")
+    api_client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    resp = api_client.post(
+        "/api/users/change-password/",
+        {"current_password": "WrongPass1!", "new_password": "AnotherPass789!"},
+        format="json",
+    )
+    assert resp.status_code == 400
+    assert "current_password" in resp.data

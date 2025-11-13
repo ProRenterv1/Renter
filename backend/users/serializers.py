@@ -9,10 +9,13 @@ from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import PasswordResetChallenge
+from .models import ContactVerificationChallenge, PasswordResetChallenge
 
 User = get_user_model()
 PHONE_CLEAN_RE = re.compile(r"\D+")
+GENERIC_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\s\.'-]{0,63}$")
+PROVINCE_RE = re.compile(r"^[A-Za-z][A-Za-z\s\.'-]{0,63}$")
+POSTAL_CODE_RE = re.compile(r"^[A-Z0-9][A-Z0-9\s-]{2,15}$")
 
 
 def normalize_phone(raw_phone: Optional[str]) -> Optional[str]:
@@ -72,12 +75,65 @@ class ProfileSerializer(serializers.ModelSerializer):
             "phone",
             "first_name",
             "last_name",
+            "street_address",
+            "city",
+            "province",
+            "postal_code",
             "can_rent",
             "can_list",
             "email_verified",
             "phone_verified",
         ]
         read_only_fields = ("id", "email_verified", "phone_verified")
+
+    @staticmethod
+    def _clean_optional_text(value: Optional[str]) -> str:
+        return (value or "").strip()
+
+    def validate_phone(self, value: Optional[str]) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        try:
+            normalized = normalize_phone(value)
+        except serializers.ValidationError as exc:
+            raise serializers.ValidationError(exc.detail) from exc
+
+        qs = User.objects.all()
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if normalized and qs.filter(phone=normalized).exists():
+            raise serializers.ValidationError("A user with this phone already exists.")
+        return normalized
+
+    def validate_street_address(self, value: Optional[str]) -> str:
+        return self._clean_optional_text(value)
+
+    def validate_city(self, value: Optional[str]) -> str:
+        cleaned = self._clean_optional_text(value)
+        if cleaned and not GENERIC_NAME_RE.match(cleaned):
+            raise serializers.ValidationError("Enter a valid city name.")
+        return cleaned
+
+    def validate_province(self, value: Optional[str]) -> str:
+        cleaned = self._clean_optional_text(value).upper()
+        if cleaned and not PROVINCE_RE.match(cleaned):
+            raise serializers.ValidationError("Enter a valid province or state.")
+        return cleaned
+
+    def validate_postal_code(self, value: Optional[str]) -> str:
+        cleaned = self._clean_optional_text(value).upper()
+        cleaned = cleaned.replace("-", " ")
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if cleaned and not POSTAL_CODE_RE.match(cleaned):
+            raise serializers.ValidationError("Enter a valid postal or ZIP code.")
+        return cleaned
+
+    def update(self, instance, validated_data):
+        if "phone" in validated_data:
+            new_phone = validated_data.get("phone")
+            if new_phone != instance.phone:
+                instance.phone_verified = False
+        return super().update(instance, validated_data)
 
 
 class SignupSerializer(serializers.ModelSerializer):
@@ -309,3 +365,128 @@ class PasswordResetCompleteSerializer(_PasswordResetBaseSerializer):
     def validate(self, attrs: dict) -> dict:
         attrs = super().validate(attrs)
         return attrs
+
+
+class PasswordChangeSerializer(serializers.Serializer):
+    """Allow authenticated users to update their password."""
+
+    current_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True)
+
+    default_error_messages = {
+        "incorrect_current": "Current password is incorrect.",
+        "password_unmodified": "New password must be different from the current password.",
+    }
+
+    def validate_current_password(self, value: str) -> str:
+        user = self.context["request"].user
+        if not user.check_password(value):
+            raise serializers.ValidationError(self.error_messages["incorrect_current"])
+        return value
+
+    def validate_new_password(self, value: str) -> str:
+        user = self.context["request"].user
+        validate_password(value, user)
+        return value
+
+    def validate(self, attrs: dict) -> dict:
+        if attrs["current_password"] == attrs["new_password"]:
+            raise serializers.ValidationError(
+                {"new_password": self.error_messages["password_unmodified"]}
+            )
+        return attrs
+
+    def save(self, **kwargs):
+        user = self.context["request"].user
+        new_password = self.validated_data["new_password"]
+        user.set_password(new_password)
+        user.save(update_fields=["password"])
+        return user
+
+
+class ContactVerificationRequestSerializer(serializers.Serializer):
+    """Request a verification code for the user's email or phone."""
+
+    channel = serializers.ChoiceField(choices=ContactVerificationChallenge.Channel.choices)
+
+    default_error_messages = {
+        "missing_email": "Add an email address before requesting verification.",
+        "missing_phone": "Add a phone number before requesting verification.",
+    }
+
+    def validate(self, attrs: dict) -> dict:
+        user = self.context["request"].user
+        channel = attrs["channel"]
+        if channel == ContactVerificationChallenge.Channel.EMAIL:
+            contact = (user.email or "").strip().lower()
+            if not contact:
+                raise serializers.ValidationError(
+                    {"channel": [self.error_messages["missing_email"]]}
+                )
+        else:
+            contact = user.phone
+            if not contact:
+                raise serializers.ValidationError(
+                    {"channel": [self.error_messages["missing_phone"]]}
+                )
+        attrs["contact"] = contact
+        attrs["user"] = user
+        return attrs
+
+
+class ContactVerificationVerifySerializer(serializers.Serializer):
+    """Verify a previously delivered contact verification code."""
+
+    channel = serializers.ChoiceField(choices=ContactVerificationChallenge.Channel.choices)
+    code = serializers.CharField()
+    challenge_id = serializers.IntegerField(required=False)
+
+    default_error_messages = {
+        "invalid_code": "Invalid or expired verification code.",
+        "missing_contact": "Add contact information before verifying.",
+        "contact_mismatch": "Your contact information changed. Request a new code.",
+    }
+
+    def validate(self, attrs: dict) -> dict:
+        user = self.context["request"].user
+        channel = attrs["channel"]
+        challenge = self._resolve_challenge(user, channel, attrs.get("challenge_id"))
+        if not challenge or not challenge.can_attempt():
+            raise serializers.ValidationError({"code": self.error_messages["invalid_code"]})
+
+        code = attrs["code"]
+        match = challenge.check_code(code)
+        challenge.save(update_fields=["attempts", "consumed"])
+        if not match:
+            raise serializers.ValidationError({"code": self.error_messages["invalid_code"]})
+
+        current_contact = self._current_contact(user, channel)
+        if not current_contact:
+            raise serializers.ValidationError({"channel": [self.error_messages["missing_contact"]]})
+        if challenge.contact != current_contact:
+            raise serializers.ValidationError(
+                {"non_field_errors": [self.error_messages["contact_mismatch"]]}
+            )
+
+        attrs["challenge"] = challenge
+        attrs["user"] = user
+        return attrs
+
+    @staticmethod
+    def _current_contact(user, channel: str) -> Optional[str]:
+        if channel == ContactVerificationChallenge.Channel.EMAIL:
+            return (user.email or "").strip().lower()
+        return user.phone
+
+    @staticmethod
+    def _resolve_challenge(
+        user, channel: str, challenge_id: Optional[int]
+    ) -> Optional[ContactVerificationChallenge]:
+        qs = ContactVerificationChallenge.objects.filter(
+            user=user,
+            channel=channel,
+            consumed=False,
+        )
+        if challenge_id:
+            return qs.filter(id=challenge_id).first()
+        return qs.order_by("-created_at").first()

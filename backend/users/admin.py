@@ -10,6 +10,17 @@ class UserAdmin(BaseUserAdmin):
     fieldsets = BaseUserAdmin.fieldsets + (
         ("Capabilities", {"fields": ("can_rent", "can_list")}),
         (
+            "Address",
+            {
+                "fields": (
+                    "street_address",
+                    "city",
+                    "province",
+                    "postal_code",
+                )
+            },
+        ),
+        (
             "Security",
             {
                 "fields": (
@@ -25,6 +36,17 @@ class UserAdmin(BaseUserAdmin):
     )
     add_fieldsets = BaseUserAdmin.add_fieldsets + (
         ("Capabilities", {"fields": ("can_rent", "can_list")}),
+        (
+            "Address",
+            {
+                "fields": (
+                    "street_address",
+                    "city",
+                    "province",
+                    "postal_code",
+                )
+            },
+        ),
         (
             "Security",
             {

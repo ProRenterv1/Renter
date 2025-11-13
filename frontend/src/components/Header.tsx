@@ -1,10 +1,17 @@
-import { Menu, User } from "lucide-react";
+import { Menu, User, MessageSquare, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import logo from "@/assets/logo.png";
 import { LoginModal } from "./LoginModal";
 import { useEffect, useState } from "react";
 import { AuthStore } from "@/lib/auth";
+
+interface HeaderProps {
+  isProfilePage?: boolean;
+  onNavigateToMessages?: () => void;
+  onNavigateToProfile?: () => void;
+  onLogout?: () => void;
+}
 
 const links = [
   { label: "Browse Tools", href: "#categories" },
@@ -13,7 +20,7 @@ const links = [
   { label: "About Us", href: "#about" },
 ];
 
-export function Header() {
+export function Header({ onNavigateToMessages, onNavigateToProfile, onLogout }: HeaderProps) {
   const [loginOpen, setLoginOpen] = useState(false);
   const [modalMode, setModalMode] = useState<"login" | "signup">("login");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -27,10 +34,19 @@ export function Header() {
     setLoginOpen(true);
   };
 
-  const handleLogout = () => {
+  const handleMessagesClick = () => {
+    onNavigateToMessages?.();
+  };
+
+  const handleProfileClick = () => {
+    onNavigateToProfile?.();
+  };
+
+  const handleLogoutClick = () => {
     AuthStore.clearTokens();
     setIsAuthenticated(false);
     setModalMode("login");
+    onLogout?.();
   };
 
   return (
@@ -64,9 +80,33 @@ export function Header() {
           <div className="flex items-center gap-4">
             <ThemeToggle />
             {isAuthenticated ? (
-              <Button variant="ghost" size="sm" onClick={handleLogout}>
-                Log Out
-              </Button>
+              <>
+                <Button 
+                  variant="ghost" 
+                  size="sm"
+                  className="hidden sm:flex"
+                  onClick={handleMessagesClick}
+                >
+                  <MessageSquare className="w-4 h-4 mr-2" />
+                </Button>
+                <Button 
+                  variant="ghost" 
+                  size="sm"
+                  className="hidden sm:flex"
+                  onClick={handleProfileClick}
+                >
+                  <User className="w-4 h-4 mr-2" />
+                  Profile
+                </Button>
+                <Button 
+                  size="sm"
+                  variant="outline"
+                  onClick={handleLogoutClick}
+                >
+                  <LogOut className="w-4 h-4 mr-2" />
+                  Log Out
+                </Button>
+              </>
             ) : (
               <>
                 <Button 
