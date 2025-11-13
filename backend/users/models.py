@@ -48,6 +48,8 @@ class User(AbstractUser):
     last_login_ip = models.GenericIPAddressField(null=True, blank=True)
     last_login_ua = models.TextField(null=True, blank=True)
     login_alerts_enabled = models.BooleanField(default=True)
+    two_factor_email_enabled = models.BooleanField(default=False)
+    two_factor_sms_enabled = models.BooleanField(default=False)
 
     can_rent = models.BooleanField(default=True)
     can_list = models.BooleanField(default=True)
@@ -155,6 +157,86 @@ class PasswordResetChallenge(models.Model):
     def check_code(self, raw_code: str) -> bool:
         """
         Constant-time verification of a submitted code.
+
+        Callers are responsible for saving the instance after invoking this method.
+        """
+        if not self.can_attempt():
+            return False
+
+        matches = secrets.compare_digest(self._hash_code(raw_code), self.code_hash)
+        self.attempts += 1
+        if matches:
+            self.consumed = True
+        return matches
+
+
+class TwoFactorChallenge(models.Model):
+    """Stores hashed 2FA login codes per user/channel/contact."""
+
+    class Channel(models.TextChoices):
+        EMAIL = "email", "Email"
+        SMS = "sms", "SMS"
+
+    CODE_DIGITS = 6
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="two_factor_challenges",
+        on_delete=models.CASCADE,
+    )
+    channel = models.CharField(max_length=8, choices=Channel.choices)
+    contact = models.CharField(max_length=255, help_text="Destination email or E.164 number.")
+    code_hash = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveIntegerField(default=0)
+    max_attempts = models.PositiveIntegerField(default=5)
+    consumed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=("user", "channel"), name="tfc_user_channel_idx"),
+            models.Index(fields=("channel", "contact"), name="tfc_channel_contact_idx"),
+            models.Index(fields=("expires_at",), name="tfc_expires_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.get_channel_display()} 2FA for {self.user}"
+
+    @classmethod
+    def generate_code(cls) -> str:
+        """Return a zero-padded numeric two-factor code."""
+        return f"{secrets.randbelow(10**cls.CODE_DIGITS):0{cls.CODE_DIGITS}d}"
+
+    @staticmethod
+    def _hash_code(raw_code: str) -> str:
+        """Hash two-factor codes using SHA512 to avoid storing plaintext."""
+        return hashlib.sha512(raw_code.encode("utf-8")).hexdigest()
+
+    def set_code(self, raw_code: str) -> None:
+        """Persist a new code hash and reset throttling metadata."""
+        self.code_hash = self._hash_code(raw_code)
+        self.attempts = 0
+        self.consumed = False
+        self.last_sent_at = timezone.now()
+
+    def is_expired(self) -> bool:
+        """Return True when the code is no longer valid."""
+        return timezone.now() >= self.expires_at
+
+    def can_attempt(self) -> bool:
+        """Check whether another verification attempt can be made."""
+        if self.consumed:
+            return False
+        if self.attempts >= self.max_attempts:
+            return False
+        return not self.is_expired()
+
+    def check_code(self, raw_code: str) -> bool:
+        """
+        Constant-time verification of a submitted two-factor code.
 
         Callers are responsible for saving the instance after invoking this method.
         """

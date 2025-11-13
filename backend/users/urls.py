@@ -11,6 +11,9 @@ from .api import (
     PasswordResetRequestView,
     PasswordResetVerifyView,
     SignupView,
+    TwoFactorLoginResendView,
+    TwoFactorLoginVerifyView,
+    TwoFactorSettingsView,
 )
 
 app_name = "users"
@@ -20,6 +23,21 @@ urlpatterns = [
     path("token/", FlexibleTokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("me/", MeView.as_view(), name="me"),
+    path(
+        "two-factor/settings/",
+        TwoFactorSettingsView.as_view(),
+        name="two_factor_settings",
+    ),
+    path(
+        "two-factor/verify-login/",
+        TwoFactorLoginVerifyView.as_view(),
+        name="two_factor_verify_login",
+    ),
+    path(
+        "two-factor/resend-login/",
+        TwoFactorLoginResendView.as_view(),
+        name="two_factor_resend_login",
+    ),
     path("change-password/", PasswordChangeView.as_view(), name="change_password"),
     path(
         "password-reset/request/", PasswordResetRequestView.as_view(), name="password_reset_request"
