@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 from typing import Optional, Tuple
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import ContactVerificationChallenge, PasswordResetChallenge
+from .geo import get_location_for_ip
+from .models import (
+    ContactVerificationChallenge,
+    LoginEvent,
+    PasswordResetChallenge,
+    TwoFactorChallenge,
+)
 
 User = get_user_model()
 PHONE_CLEAN_RE = re.compile(r"\D+")
@@ -83,8 +91,16 @@ class ProfileSerializer(serializers.ModelSerializer):
             "can_list",
             "email_verified",
             "phone_verified",
+            "two_factor_email_enabled",
+            "two_factor_sms_enabled",
         ]
-        read_only_fields = ("id", "email_verified", "phone_verified")
+        read_only_fields = (
+            "id",
+            "email_verified",
+            "phone_verified",
+            "two_factor_email_enabled",
+            "two_factor_sms_enabled",
+        )
 
     @staticmethod
     def _clean_optional_text(value: Optional[str]) -> str:
@@ -134,6 +150,57 @@ class ProfileSerializer(serializers.ModelSerializer):
             if new_phone != instance.phone:
                 instance.phone_verified = False
         return super().update(instance, validated_data)
+
+
+class LoginEventSerializer(serializers.ModelSerializer):
+    """Expose login events with UX-friendly fields."""
+
+    device = serializers.SerializerMethodField()
+    location = serializers.SerializerMethodField()
+    date = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LoginEvent
+        fields = ("id", "device", "ip", "location", "date", "is_new_device")
+
+    def get_device(self, obj: LoginEvent) -> str:
+        ua = (obj.user_agent or "").lower()
+        if "chrome" in ua and "windows" in ua:
+            return "Chrome on Windows"
+        if "chrome" in ua and "mac" in ua:
+            return "Chrome on Mac"
+        if "chrome" in ua and "android" in ua:
+            return "Chrome on Android"
+        if "safari" in ua and "iphone" in ua:
+            return "Safari on iPhone"
+        if "safari" in ua and "mac" in ua:
+            return "Safari on Mac"
+        if "firefox" in ua and "mac" in ua:
+            return "Firefox on Mac"
+        if "firefox" in ua and "windows" in ua:
+            return "Firefox on Windows"
+        if "edge" in ua and "windows" in ua:
+            return "Edge on Windows"
+        return "Unknown device"
+
+    def get_location(self, obj: LoginEvent) -> Optional[str]:
+        return get_location_for_ip(obj.ip)
+
+    def get_date(self, obj: LoginEvent) -> str:
+        dt = timezone.localtime(obj.created_at)
+        event_date = dt.date()
+        today = timezone.localdate()
+        yesterday = today - timedelta(days=1)
+
+        time_str = dt.strftime("%I:%M %p").lstrip("0")
+        if event_date == today:
+            return f"Today at {time_str}"
+        if event_date == yesterday:
+            return f"Yesterday at {time_str}"
+
+        month = dt.strftime("%b")
+        date_str = f"{month} {event_date.day}, {event_date.year}"
+        return f"{date_str} at {time_str}"
 
 
 class SignupSerializer(serializers.ModelSerializer):
@@ -490,3 +557,102 @@ class ContactVerificationVerifySerializer(serializers.Serializer):
         if challenge_id:
             return qs.filter(id=challenge_id).first()
         return qs.order_by("-created_at").first()
+
+
+class TwoFactorSettingsSerializer(serializers.ModelSerializer):
+    """Enable/disable 2FA channels with verification guards."""
+
+    class Meta:
+        model = User
+        fields = [
+            "two_factor_email_enabled",
+            "two_factor_sms_enabled",
+            "email_verified",
+            "phone_verified",
+        ]
+        read_only_fields = ("email_verified", "phone_verified")
+
+    def validate(self, attrs: dict) -> dict:
+        request = self.context.get("request")
+        user = self.instance or getattr(request, "user", None)
+        if not user:
+            return attrs
+
+        def final_value(field: str) -> bool:
+            if field in attrs:
+                return attrs[field]
+            return getattr(user, field)
+
+        if final_value("two_factor_email_enabled") and not user.email_verified:
+            raise serializers.ValidationError(
+                {"two_factor_email_enabled": "Verify your email before enabling email 2FA."}
+            )
+
+        if final_value("two_factor_sms_enabled") and not user.phone_verified:
+            raise serializers.ValidationError(
+                {"two_factor_sms_enabled": "Verify your phone before enabling SMS 2FA."}
+            )
+        return attrs
+
+
+class TwoFactorLoginVerifySerializer(serializers.Serializer):
+    """Verify a submitted login 2FA code."""
+
+    challenge_id = serializers.IntegerField()
+    code = serializers.CharField()
+
+    default_error_messages = {
+        "invalid_code": "Invalid or expired verification code.",
+    }
+
+    def validate(self, attrs: dict) -> dict:
+        challenge = self._get_challenge(attrs["challenge_id"])
+        if (
+            not challenge
+            or challenge.is_expired()
+            or challenge.consumed
+            or not challenge.can_attempt()
+        ):
+            raise serializers.ValidationError({"code": self.error_messages["invalid_code"]})
+
+        if not challenge.check_code(attrs["code"]):
+            challenge.save(update_fields=["attempts", "consumed"])
+            raise serializers.ValidationError({"code": self.error_messages["invalid_code"]})
+
+        challenge.save(update_fields=["attempts", "consumed"])
+        attrs["challenge"] = challenge
+        attrs["user"] = challenge.user
+        return attrs
+
+    @staticmethod
+    def _get_challenge(challenge_id: int) -> Optional[TwoFactorChallenge]:
+        try:
+            return TwoFactorChallenge.objects.select_related("user").get(pk=challenge_id)
+        except TwoFactorChallenge.DoesNotExist:
+            return None
+
+
+class TwoFactorLoginResendSerializer(serializers.Serializer):
+    """Validate a resend request before the view re-delivers the code."""
+
+    challenge_id = serializers.IntegerField()
+
+    default_error_messages = {
+        "invalid_challenge": "Invalid or expired verification code.",
+    }
+
+    def validate(self, attrs: dict) -> dict:
+        challenge = self._get_challenge(attrs["challenge_id"])
+        if not challenge or challenge.is_expired() or challenge.consumed:
+            raise serializers.ValidationError(
+                {"challenge_id": self.error_messages["invalid_challenge"]}
+            )
+        attrs["challenge"] = challenge
+        return attrs
+
+    @staticmethod
+    def _get_challenge(challenge_id: int) -> Optional[TwoFactorChallenge]:
+        try:
+            return TwoFactorChallenge.objects.select_related("user").get(pk=challenge_id)
+        except TwoFactorChallenge.DoesNotExist:
+            return None

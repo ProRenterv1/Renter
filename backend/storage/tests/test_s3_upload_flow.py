@@ -21,7 +21,11 @@ def s3_bucket(settings):
             region_name=settings.AWS_S3_REGION_NAME,
             endpoint_url=settings.AWS_S3_ENDPOINT_URL,
         )
-        s3.create_bucket(Bucket=settings.AWS_STORAGE_BUCKET_NAME)
+        create_kwargs = {"Bucket": settings.AWS_STORAGE_BUCKET_NAME}
+        region = settings.AWS_S3_REGION_NAME
+        if region and region != "us-east-1":
+            create_kwargs["CreateBucketConfiguration"] = {"LocationConstraint": region}
+        s3.create_bucket(**create_kwargs)
         yield s3
 
 

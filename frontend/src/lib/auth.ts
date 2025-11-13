@@ -23,6 +23,8 @@ export type UserProfile = {
   can_list: boolean;
   email_verified: boolean;
   phone_verified: boolean;
+  two_factor_email_enabled: boolean;
+  two_factor_sms_enabled: boolean;
 };
 
 const TOKENS_KEY = "renter.auth.tokens";

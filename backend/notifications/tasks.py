@@ -79,6 +79,22 @@ def send_password_reset_code_sms(user_id: int, to_number: str, code: str):
 
 
 @shared_task(queue="emails")
+def send_two_factor_code_email(user_id: int, to_email: str, code: str):
+    """Deliver the login two-factor code via email."""
+    user = _get_user(user_id)
+    context = {"user": user, "code": code}
+    _send_email("Your login verification code", "two_factor_code.txt", context, to_email)
+
+
+@shared_task(queue="sms")
+def send_two_factor_code_sms(user_id: int, to_number: str, code: str):
+    """Deliver the login two-factor code via SMS."""
+    user = _get_user(user_id)
+    context = {"user": user, "code": code}
+    _send_sms("two_factor_code.txt", context, to_number)
+
+
+@shared_task(queue="emails")
 def send_contact_verification_email(user_id: int, to_email: str, code: str):
     """Deliver a verification code for confirming the user's email."""
     user = _get_user(user_id)

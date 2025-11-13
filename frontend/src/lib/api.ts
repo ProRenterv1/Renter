@@ -12,7 +12,47 @@ export interface LoginRequest {
   password: string;
 }
 
-export type TokenResponse = AuthTokens;
+export type TwoFactorChannel = "email" | "sms";
+
+export interface TwoFactorLoginStartResponse {
+  requires_2fa: true;
+  challenge_id: number;
+  channel: TwoFactorChannel;
+  contact_hint: string;
+  resend_available_at: string;
+}
+
+export interface TwoFactorSettings {
+  two_factor_email_enabled: boolean;
+  two_factor_sms_enabled: boolean;
+  email_verified: boolean;
+  phone_verified: boolean;
+}
+
+export interface LoginHistoryEntry {
+  id: number;
+  device: string;
+  ip: string;
+  location: string | null;
+  date: string;
+  is_new_device: boolean;
+}
+
+export interface TwoFactorVerifyLoginPayload {
+  challenge_id: number;
+  code: string;
+}
+
+export interface TwoFactorResendPayload {
+  challenge_id: number;
+}
+
+export interface TwoFactorResendResponse {
+  ok: boolean;
+  resend_available_at: string;
+}
+
+export type TokenResponse = AuthTokens | TwoFactorLoginStartResponse;
 
 export interface SignupPayload {
   username?: string;
@@ -198,5 +238,41 @@ export const authAPI = {
         { method: "POST", body: payload },
       );
     },
+  },
+  twoFactor: {
+    getSettings() {
+      return jsonFetch<TwoFactorSettings>("/users/two-factor/settings/", {
+        method: "GET",
+      });
+    },
+    updateSettings(
+      payload: Partial<
+        Pick<TwoFactorSettings, "two_factor_email_enabled" | "two_factor_sms_enabled">
+      >,
+    ) {
+      return jsonFetch<TwoFactorSettings>("/users/two-factor/settings/", {
+        method: "PATCH",
+        body: payload,
+      });
+    },
+    verifyLogin(payload: TwoFactorVerifyLoginPayload) {
+      return jsonFetch<AuthTokens>("/users/two-factor/verify-login/", {
+        method: "POST",
+        body: payload,
+      });
+    },
+    resendLogin(payload: TwoFactorResendPayload) {
+      return jsonFetch<TwoFactorResendResponse>("/users/two-factor/resend-login/", {
+        method: "POST",
+        body: payload,
+      });
+    },
+  },
+  loginHistory(limit: number = 5) {
+    const params = new URLSearchParams({ limit: String(limit) }).toString();
+    const query = params ? `?${params}` : "";
+    return jsonFetch<LoginHistoryEntry[]>(`/users/login-events/${query}`, {
+      method: "GET",
+    });
   },
 };

@@ -8,25 +8,90 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from rest_framework import generics, permissions, serializers, status
 from rest_framework.response import Response
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from notifications import tasks as notification_tasks
 
-from .models import ContactVerificationChallenge, LoginEvent, PasswordResetChallenge
+from .models import (
+    ContactVerificationChallenge,
+    LoginEvent,
+    PasswordResetChallenge,
+    TwoFactorChallenge,
+)
 from .serializers import (
     ContactVerificationRequestSerializer,
     ContactVerificationVerifySerializer,
     FlexibleTokenObtainPairSerializer,
+    LoginEventSerializer,
     PasswordChangeSerializer,
     PasswordResetCompleteSerializer,
     PasswordResetRequestSerializer,
     PasswordResetVerifySerializer,
     ProfileSerializer,
     SignupSerializer,
+    TwoFactorLoginResendSerializer,
+    TwoFactorLoginVerifySerializer,
+    TwoFactorSettingsSerializer,
 )
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
+TWO_FACTOR_EXPIRY_MINUTES = 10
+TWO_FACTOR_RESEND_COOLDOWN = timedelta(seconds=60)
+
+
+def _mask_contact(contact: str, channel: str) -> str:
+    """Return an obfuscated representation of the contact value for UX hints."""
+    if channel == TwoFactorChallenge.Channel.EMAIL:
+        local, _, domain = contact.partition("@")
+        if not local:
+            return f"***@{domain}" if domain else "***"
+        if len(local) == 1:
+            start = local
+            end = ""
+        else:
+            start = local[0]
+            end = local[-1]
+        masked_local = f"{start}***{end}"
+        if domain:
+            return f"{masked_local}@{domain}"
+        return masked_local
+
+    digits = "".join(ch for ch in contact if ch.isdigit())
+    suffix_source = digits or contact
+    suffix = suffix_source[-4:] if suffix_source else ""
+    return f"****{suffix}"
+
+
+def _issue_two_factor_challenge(user: User, channel: str, contact: str) -> TwoFactorChallenge:
+    """Create a fresh login challenge and dispatch the corresponding notification."""
+    now = timezone.now()
+    challenge = TwoFactorChallenge(
+        user=user,
+        channel=channel,
+        contact=contact,
+        expires_at=now + timedelta(minutes=TWO_FACTOR_EXPIRY_MINUTES),
+    )
+    raw_code = TwoFactorChallenge.generate_code()
+    challenge.set_code(raw_code)
+    challenge.save()
+
+    if channel == TwoFactorChallenge.Channel.EMAIL:
+        _safe_notify(
+            notification_tasks.send_two_factor_code_email,
+            user.id,
+            contact,
+            raw_code,
+        )
+    else:
+        _safe_notify(
+            notification_tasks.send_two_factor_code_sms,
+            user.id,
+            contact,
+            raw_code,
+        )
+    return challenge
 
 
 def client_ip(request) -> str:
@@ -103,6 +168,35 @@ class MeView(generics.RetrieveUpdateAPIView):
         return user
 
 
+class LoginEventListView(generics.ListAPIView):
+    """Return recent login events for the authenticated user."""
+
+    serializer_class = LoginEventSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        qs = LoginEvent.objects.filter(user=self.request.user).order_by("-created_at")
+        limit = self._get_limit()
+        return qs[:limit]
+
+    def _get_limit(self) -> int:
+        try:
+            limit = int(self.request.query_params.get("limit", 5))
+        except (TypeError, ValueError):
+            limit = 5
+        return max(1, min(limit, 50))
+
+
+class TwoFactorSettingsView(generics.RetrieveUpdateAPIView):
+    """Allow authenticated users to manage their 2FA preferences."""
+
+    serializer_class = TwoFactorSettingsSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        return self.request.user
+
+
 class FlexibleTokenObtainPairView(TokenObtainPairView):
     """Login endpoint that accepts email, phone, or username as the identifier."""
 
@@ -113,13 +207,118 @@ class FlexibleTokenObtainPairView(TokenObtainPairView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        user = getattr(serializer, "user", None)
+        if user:
+            channel, contact = self._select_two_factor_channel(user)
+            if channel and contact:
+                challenge = _issue_two_factor_challenge(user, channel, contact)
+                resend_available_at = challenge.last_sent_at + TWO_FACTOR_RESEND_COOLDOWN
+                return Response(
+                    {
+                        "requires_2fa": True,
+                        "challenge_id": challenge.id,
+                        "channel": channel,
+                        "contact_hint": _mask_contact(contact, channel),
+                        "resend_available_at": resend_available_at.isoformat(),
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
         response = Response(serializer.validated_data, status=status.HTTP_200_OK)
 
-        user = getattr(serializer, "user", None)
         if user:
             audit_login_and_alert(request, user)
 
         return response
+
+    @staticmethod
+    def _select_two_factor_channel(user: User) -> tuple[str | None, str | None]:
+        if (
+            getattr(user, "two_factor_sms_enabled", False)
+            and getattr(user, "phone_verified", False)
+            and getattr(user, "phone", None)
+        ):
+            return TwoFactorChallenge.Channel.SMS, user.phone
+        if (
+            getattr(user, "two_factor_email_enabled", False)
+            and getattr(user, "email_verified", False)
+            and getattr(user, "email", None)
+        ):
+            return TwoFactorChallenge.Channel.EMAIL, user.email
+        return None, None
+
+
+class TwoFactorLoginVerifyView(generics.GenericAPIView):
+    """Complete a login once the user successfully entered their 2FA code."""
+
+    serializer_class = TwoFactorLoginVerifySerializer
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = serializer.validated_data["user"]
+        challenge = serializer.validated_data["challenge"]
+
+        refresh = RefreshToken.for_user(user)
+        access = refresh.access_token
+
+        challenge.consumed = True
+        challenge.save(update_fields=["consumed", "attempts"])
+
+        audit_login_and_alert(request, user)
+        return Response(
+            {"refresh": str(refresh), "access": str(access)},
+            status=status.HTTP_200_OK,
+        )
+
+
+class TwoFactorLoginResendView(generics.GenericAPIView):
+    """Allow a user to request that their login code be sent again."""
+
+    serializer_class = TwoFactorLoginResendSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        challenge = serializer.validated_data["challenge"]
+        now = timezone.now()
+        if challenge.last_sent_at:
+            elapsed = now - challenge.last_sent_at
+            if elapsed < TWO_FACTOR_RESEND_COOLDOWN:
+                remaining = int((TWO_FACTOR_RESEND_COOLDOWN - elapsed).total_seconds())
+                raise serializers.ValidationError(
+                    {"non_field_errors": [f"Please wait {remaining}s before resending."]}
+                )
+
+        raw_code = TwoFactorChallenge.generate_code()
+        challenge.expires_at = now + timedelta(minutes=TWO_FACTOR_EXPIRY_MINUTES)
+        challenge.set_code(raw_code)
+        challenge.save()
+
+        if challenge.channel == TwoFactorChallenge.Channel.EMAIL:
+            _safe_notify(
+                notification_tasks.send_two_factor_code_email,
+                challenge.user_id,
+                challenge.contact,
+                raw_code,
+            )
+        else:
+            _safe_notify(
+                notification_tasks.send_two_factor_code_sms,
+                challenge.user_id,
+                challenge.contact,
+                raw_code,
+            )
+
+        resend_available_at = challenge.last_sent_at + TWO_FACTOR_RESEND_COOLDOWN
+        return Response(
+            {"ok": True, "resend_available_at": resend_available_at.isoformat()},
+            status=status.HTTP_200_OK,
+        )
 
 
 class PasswordResetRequestView(generics.GenericAPIView):
