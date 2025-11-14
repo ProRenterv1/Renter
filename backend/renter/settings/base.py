@@ -153,9 +153,6 @@ else:
         "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
         "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
     }
-    # Nuke AWS vars to avoid accidental use
-    AWS_ACCESS_KEY_ID = AWS_SECRET_ACCESS_KEY = AWS_STORAGE_BUCKET_NAME = None
-    AWS_S3_ENDPOINT_URL = None
 
 # --- IP geolocation ---
 IP_GEO_LOOKUP_ENABLED = env.bool("IP_GEO_LOOKUP_ENABLED", default=False)

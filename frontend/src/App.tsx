@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Routes, Route } from "react-router-dom";
 import { Header } from "@/components/Header";
 import { Hero } from "@/components/Hero";
 import { FeaturedListings } from "@/components/FeaturedListings";
@@ -10,6 +11,7 @@ import { Footer } from "@/components/Footer";
 import { Toaster } from "sonner";
 import UserProfile from "@/pages/UserProfile";
 import Messages from "@/pages/Messages";
+import Feed from "@/pages/Feed";
 
 type Page = "landing" | "profile" | "messages";
 
@@ -47,6 +49,17 @@ export default function App() {
       />
     );
   }
+  const landingContent = (
+    <>
+      <Hero />
+      {/* <FeaturedListings /> */}
+      <Categories />
+      <Features />
+      <HowItWorks />
+      <CallToAction />
+    </>
+  );
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <Header 
@@ -55,12 +68,10 @@ export default function App() {
         onLogout={handleLogout}
       />
       <main>
-        <Hero />
-        {/* <FeaturedListings /> */}
-        <Categories />
-        <Features />
-        <HowItWorks />
-        <CallToAction />
+        <Routes>
+          <Route path="/" element={landingContent} />
+          <Route path="/feed" element={<Feed />} />
+        </Routes>
       </main>
       <Footer />
       <Toaster richColors expand position="top-center" />

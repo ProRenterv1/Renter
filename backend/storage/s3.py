@@ -1,11 +1,12 @@
 import mimetypes
+import os
 import uuid
-from datetime import timedelta
 from typing import Dict, Optional
 
 import boto3
 from botocore.config import Config
 from django.conf import settings
+from django.utils.text import slugify
 
 
 def _client():
@@ -22,10 +23,16 @@ def _client():
 
 
 def object_key(listing_id: int, owner_id: int, filename: str) -> str:
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    uid = uuid.uuid4().hex
-    safe = f"{uid}.{ext}" if ext else uid
-    return f"{settings.S3_UPLOADS_PREFIX}/l{listing_id}/u{owner_id}/{safe}"
+    prefix = (getattr(settings, "S3_UPLOADS_PREFIX", "") or "").strip("/")
+    name, ext = os.path.splitext(filename or "")
+    safe_name = slugify(name) or "upload"
+    ext = ext.lower().lstrip(".")
+    unique_prefix = str(uuid.uuid4())
+    combined_name = f"{unique_prefix}-{safe_name}"
+    if ext:
+        combined_name = f"{combined_name}.{ext}"
+    parts = [prefix, "listings", str(listing_id), str(owner_id), combined_name]
+    return "/".join(part for part in parts if part)
 
 
 def presign_put(
@@ -35,18 +42,28 @@ def presign_put(
     content_md5: Optional[str] = None,
     size_hint: Optional[int] = None,
 ) -> Dict:
-    if size_hint and size_hint > settings.S3_MAX_UPLOAD_BYTES:
-        raise ValueError("File too large")
-    params = {"Bucket": settings.AWS_STORAGE_BUCKET_NAME, "Key": key, "ContentType": content_type}
-    headers = {"Content-Type": content_type, "x-amz-tagging": "av-status=pending"}
+    max_size = getattr(settings, "S3_MAX_UPLOAD_BYTES", None)
+    if size_hint is not None and max_size is not None and size_hint > max_size:
+        raise ValueError("Upload exceeds the maximum allowed size.")
+
+    params = {
+        "Bucket": settings.AWS_STORAGE_BUCKET_NAME,
+        "Key": key,
+        "ContentType": content_type,
+    }
     if content_md5:
         params["ContentMD5"] = content_md5
-        headers["Content-MD5"] = content_md5
+
     url = _client().generate_presigned_url(
         ClientMethod="put_object",
-        Params={**params, "Tagging": "av-status=pending"},
-        ExpiresIn=int(timedelta(minutes=10).total_seconds()),
+        Params=params,
+        ExpiresIn=900,
     )
+
+    headers = {"Content-Type": content_type}
+    if content_md5:
+        headers["Content-MD5"] = content_md5
+
     return {"upload_url": url, "headers": headers}
 
 

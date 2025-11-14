@@ -36,7 +36,7 @@ services:
     <<: *default-env
     command: >
       celery -A renter worker -l info
-      --queues=critical,emails,sms,default
+      --queues=critical,emails,sms,celery,default
       --concurrency=2 --max-tasks-per-child=200
     depends_on: [api]
     restart: unless-stopped
@@ -54,7 +54,6 @@ services:
     command: ["sh","-c","rm -rf /dist/* && cp -r /app/build/* /dist/ || true"]
     volumes:
       - web_dist:/dist
-
   nginx:
     image: nginx:1.27-alpine
     depends_on: [api, web_build]

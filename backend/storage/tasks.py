@@ -1,143 +1,247 @@
 from __future__ import annotations
 
 import io
+import logging
 import subprocess
-from typing import Tuple
+from typing import Dict, Optional, Tuple
 
 import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 from celery import shared_task
 from django.conf import settings
 from django.db import transaction
+from PIL import Image, UnidentifiedImageError
 
 from . import s3 as s3util
 
+logger = logging.getLogger(__name__)
 
-def _download_bytes(key: str) -> bytes:
-    s3 = boto3.client(
+
+class AntivirusError(RuntimeError):
+    """Raised when ClamAV cannot determine the safety of a file."""
+
+
+def _s3_client():
+    return boto3.client(
         "s3",
         endpoint_url=settings.AWS_S3_ENDPOINT_URL,
         region_name=settings.AWS_S3_REGION_NAME,
     )
-    obj = s3.get_object(Bucket=settings.AWS_STORAGE_BUCKET_NAME, Key=key)
-    return obj["Body"].read()
 
 
-def _scan_bytes(data: bytes) -> Tuple[bool, str]:
-    engine = getattr(settings, "AV_ENGINE", "clamd")
-    if engine == "dummy":
-        marker = getattr(settings, "AV_DUMMY_INFECT_MARKER", "").encode()
-        return (marker not in data, "dummy")
-    if engine == "clamscan":
+def _download_bytes(key: str) -> bytes:
+    try:
+        buffer = io.BytesIO()
+        _s3_client().download_fileobj(settings.AWS_STORAGE_BUCKET_NAME, key, buffer)
+        return buffer.getvalue()
+    except (BotoCoreError, ClientError) as exc:
+        raise RuntimeError(f"Unable to download object {key}: {exc}") from exc
+
+
+def _scan_with_clamd(data: bytes) -> Optional[str]:
+    try:
+        import clamd
+    except ImportError:
+        return None
+
+    socket_path = getattr(settings, "CLAMD_UNIX_SOCKET", None)
+    host = getattr(settings, "CLAMD_HOST", "127.0.0.1")
+    port = getattr(settings, "CLAMD_PORT", 3310)
+    try:
+        if socket_path:
+            client = clamd.ClamdUnixSocket(path=socket_path)
+        else:
+            client = clamd.ClamdNetworkSocket(host=host, port=port)
+        response = client.instream(io.BytesIO(data))
+    except Exception as exc:  # pragma: no cover - depends on env
+        logger.warning("Clamd scan failed: %s", exc)
+        return None
+
+    verdict = response.get("stream")
+    status = None
+    if isinstance(verdict, tuple):
+        status = verdict[0]
+    elif isinstance(verdict, dict):
+        status = verdict.get("status")
+    else:
+        status = verdict
+    if status == "OK":
+        return "clean"
+    return "infected"
+
+
+def _scan_with_clamscan(data: bytes) -> str:
+    try:
         proc = subprocess.run(
             ["clamscan", "--no-summary", "-"],
             input=data,
             capture_output=True,
             check=False,
         )
-        output = (proc.stdout or b"").decode().strip()
-        return (proc.returncode == 0, output)
+    except FileNotFoundError as exc:
+        raise AntivirusError("clamscan binary is not available.") from exc
 
+    if proc.returncode == 0:
+        return "clean"
+    if proc.returncode == 1:
+        return "infected"
+
+    stderr = (proc.stderr or b"").decode().strip()
+    raise AntivirusError(f"clamscan failed with exit code {proc.returncode}: {stderr}")
+
+
+def _scan_bytes(data: bytes) -> str:
+    if not getattr(settings, "AV_ENABLED", True):
+        return "clean"
+
+    engine = (getattr(settings, "AV_ENGINE", "clamd") or "clamd").lower()
+    if engine == "dummy":
+        marker = (getattr(settings, "AV_DUMMY_INFECT_MARKER", "EICAR") or "").encode()
+        return "infected" if marker and marker in data else "clean"
+
+    verdict: Optional[str] = None
+    if engine in {"clamd", "auto"}:
+        verdict = _scan_with_clamd(data)
+    if verdict is None:
+        verdict = _scan_with_clamscan(data)
+    if verdict is None:
+        raise AntivirusError("Antivirus did not return a verdict.")
+    return verdict
+
+
+def _apply_av_metadata(key: str, status: str) -> None:
+    tags = {"av-status": status}
     try:
-        import clamd
-
-        cd = clamd.ClamdUnixSocket()
-        resp = cd.instream(io.BytesIO(data))
-        stream = resp.get("stream", {})
-        return (stream.get("status") == "OK", str(resp))
-    except Exception as exc:
-        return (False, f"clamd-error:{exc}")
-
-
-def _coerce_size(value):
+        s3util.tag_object(key, tags)
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.warning("Failed to tag S3 object %s: %s", key, exc)
     try:
-        return int(value) if value not in (None, "") else None
+        s3util.set_metadata_copy(key, {"x-av": status})
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.warning("Failed to update S3 metadata for %s: %s", key, exc)
+
+
+def _extract_dimensions(data: bytes) -> Tuple[Optional[int], Optional[int]]:
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            img.load()
+            width, height = img.size
+            return int(width), int(height)
+    except (UnidentifiedImageError, OSError, ValueError):
+        return None, None
+
+
+def _coerce_int(value) -> Optional[int]:
+    if value in (None, "", False):
+        return None
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None
 
 
-def _apply_av_metadata(key: str, is_clean: bool) -> None:
-    status = "clean" if is_clean else "infected"
-    s3util.tag_object(key, {"av-status": status})
-    try:
-        s3util.set_metadata_copy(key, {"x-av": status})
-    except Exception:
-        # We don't want tagging failures to block the upload flow.
-        pass
+def _finalize_photo_record(
+    *,
+    listing_id: int,
+    owner_id: int,
+    key: str,
+    verdict: str,
+    meta: Dict,
+    dimensions: Tuple[Optional[int], Optional[int]],
+):
+    from listings.models import Listing, ListingPhoto
+
+    etag = (meta.get("etag") or "").strip('"')
+    filename = meta.get("filename") or ""
+    content_type = meta.get("content_type") or ""
+    size = _coerce_int(meta.get("size"))
+    width, height = dimensions
+
+    status = ListingPhoto.Status.ACTIVE if verdict == "clean" else ListingPhoto.Status.BLOCKED
+    av_status = (
+        ListingPhoto.AVStatus.CLEAN if verdict == "clean" else ListingPhoto.AVStatus.INFECTED
+    )
+
+    public_url = s3util.public_url(key)
+
+    with transaction.atomic():
+        try:
+            listing = Listing.objects.select_for_update().get(id=listing_id, owner_id=owner_id)
+        except Listing.DoesNotExist as exc:
+            raise ValueError("Listing not found for provided owner.") from exc
+        photo = (
+            ListingPhoto.objects.select_for_update()
+            .filter(listing_id=listing_id, owner_id=owner_id, key=key)
+            .first()
+        )
+        if not photo:
+            photo = ListingPhoto(
+                listing=listing,
+                owner_id=owner_id,
+                key=key,
+                url=public_url,
+            )
+
+        photo.url = public_url
+        photo.filename = filename
+        photo.content_type = content_type
+        photo.size = size
+        photo.etag = etag
+        photo.width = width
+        photo.height = height
+        photo.status = status
+        photo.av_status = av_status
+        photo.save()
+        return photo
 
 
-def scan_and_finalize_photo(
+def _run_scan_and_finalize(
     *,
     key: str,
     listing_id: int,
     owner_id: int,
-    meta: dict | None = None,
+    meta: Dict | None,
 ):
-    """
-    Core implementation reused by both Celery and direct (synchronous) callers.
-    """
+    data = _download_bytes(key)
+    verdict = _scan_bytes(data)
+    if verdict not in {"clean", "infected"}:
+        raise AntivirusError("Unknown antivirus verdict.")
 
-    from listings.models import Listing, ListingPhoto
-
-    meta = meta or {}
-    blob = _download_bytes(key)
-    is_clean, _msg = _scan_bytes(blob)
-    _apply_av_metadata(key, is_clean)
-
-    with transaction.atomic():
-        Listing.objects.select_for_update().get(id=listing_id, owner_id=owner_id)
-        if is_clean:
-            photo = ListingPhoto.objects.create(
-                listing_id=listing_id,
-                owner_id=owner_id,
-                key=key,
-                url=s3util.public_url(key),
-                status=ListingPhoto.Status.ACTIVE,
-                content_type=meta.get("content_type") or "",
-                size=_coerce_size(meta.get("size")),
-                etag=(meta.get("etag") or "").strip('"'),
-                av_status=ListingPhoto.AVStatus.CLEAN,
-                filename=meta.get("filename") or "",
-            )
-            return {"status": "clean", "photo_id": str(photo.id)}
-        return {"status": "infected"}
+    _apply_av_metadata(key, verdict)
+    photo = _finalize_photo_record(
+        listing_id=listing_id,
+        owner_id=owner_id,
+        key=key,
+        verdict=verdict,
+        meta=meta or {},
+        dimensions=_extract_dimensions(data),
+    )
+    return {"status": verdict, "photo_id": str(photo.id)}
 
 
 @shared_task(
     bind=True,
-    max_retries=3,
-    default_retry_delay=5,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
     name="storage.tasks.scan_and_finalize_photo",
 )
-def scan_and_finalize_photo_task(
+def scan_and_finalize_photo(
     self,
-    *,
     key: str,
     listing_id: int,
     owner_id: int,
-    meta: dict | None = None,
+    meta: Dict | None = None,
 ):
-    try:
-        return scan_and_finalize_photo(
-            key=key,
-            listing_id=listing_id,
-            owner_id=owner_id,
-            meta=meta,
-        )
-    except Exception as exc:  # pragma: no cover - retries exercised in Celery
-        raise self.retry(exc=exc)
+    """
+    Download the uploaded object, run ClamAV, and finalize the ListingPhoto row.
+    """
+
+    return _run_scan_and_finalize(
+        key=key,
+        listing_id=listing_id,
+        owner_id=owner_id,
+        meta=meta or {},
+    )
 
 
-# Preserve the previous API where callers could import scan_and_finalize_photo
-# and call .delay() on it.
-def _delay_wrapper(**kwargs):
-    if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
-        if getattr(settings, "STORAGE_SKIP_TASK_EXECUTION", False):
-            return None
-        return scan_and_finalize_photo(**kwargs)
-    return scan_and_finalize_photo_task.delay(**kwargs)
-
-
-scan_and_finalize_photo.delay = _delay_wrapper  # type: ignore[attr-defined]
-scan_and_finalize_photo.apply_async = scan_and_finalize_photo_task.apply_async
-
-__all__ = ["scan_and_finalize_photo", "scan_and_finalize_photo_task"]
+__all__ = ["scan_and_finalize_photo"]
