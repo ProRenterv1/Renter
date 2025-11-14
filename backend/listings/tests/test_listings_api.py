@@ -257,6 +257,8 @@ def test_listing_list_and_filters(owner_user):
 
 
 def test_categories_endpoint_lists_all_categories():
+    Category.objects.create(name="Camping Gear")
+    Category.objects.create(name="Power Tools")
 
     client = APIClient()
     resp = client.get("/api/listings/categories/")

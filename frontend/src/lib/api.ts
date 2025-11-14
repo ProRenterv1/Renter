@@ -127,6 +127,106 @@ export interface ContactVerificationVerifyResponse {
   profile: Profile;
 }
 
+export interface ListingPhoto {
+  id: number;
+  listing: number;
+  owner: number;
+  key: string;
+  url: string;
+  filename: string;
+  content_type: string;
+  size: number | null;
+  etag: string;
+  status: string;
+  av_status: string;
+  width: number | null;
+  height: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ListingCategory {
+  id: number;
+  name: string;
+  slug: string;
+  icon: string;
+  accent: string;
+  icon_color: string;
+}
+
+export interface Listing {
+  id: number;
+  slug: string;
+  owner: number;
+  owner_username: string;
+  title: string;
+  description: string;
+  daily_price_cad: string;
+  replacement_value_cad: string;
+  damage_deposit_cad: string;
+  city: string;
+  category: string | null;
+  category_name: string | null;
+  is_active: boolean;
+  is_available: boolean;
+  photos: ListingPhoto[];
+  created_at: string;
+}
+
+export interface CreateListingPayload {
+  title: string;
+  description?: string;
+  category?: string | null;
+  daily_price_cad: number;
+  replacement_value_cad?: number;
+  damage_deposit_cad?: number;
+  city: string;
+  is_available?: boolean;
+}
+
+export interface ListingListResponse {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: Listing[];
+}
+
+export interface ListingListParams {
+  q?: string;
+  category?: string;
+  city?: string;
+  price_min?: number;
+  price_max?: number;
+  page?: number;
+}
+
+export interface PhotoPresignRequest {
+  filename: string;
+  content_type?: string;
+  size: number;
+}
+
+export interface PhotoPresignResponse {
+  key: string;
+  upload_url: string;
+  headers: Record<string, string>;
+  max_bytes: number;
+  tagging: string;
+}
+
+export interface PhotoCompletePayload {
+  key: string;
+  etag: string;
+  filename: string;
+  content_type: string;
+  size: number;
+}
+
+export interface PhotoCompleteResponse {
+  status: string;
+  key: string;
+}
+
 export type UpdateProfilePayload = Partial<
   Pick<
     Profile,
@@ -274,5 +374,44 @@ export const authAPI = {
     return jsonFetch<LoginHistoryEntry[]>(`/users/login-events/${query}`, {
       method: "GET",
     });
+  },
+};
+
+export const listingsAPI = {
+  list(params: ListingListParams = {}) {
+    const search = new URLSearchParams();
+    if (params.q) search.set("q", params.q);
+    if (params.category) search.set("category", params.category);
+    if (params.city) search.set("city", params.city);
+    if (params.price_min !== undefined) {
+      search.set("price_min", String(params.price_min));
+    }
+    if (params.price_max !== undefined) {
+      search.set("price_max", String(params.price_max));
+    }
+    if (params.page !== undefined) {
+      search.set("page", String(params.page));
+    }
+    const query = search.toString();
+    const path = `/listings/${query ? `?${query}` : ""}`;
+    return jsonFetch<ListingListResponse>(path, { method: "GET" });
+  },
+  categories() {
+    return jsonFetch<ListingCategory[]>("/listings/categories/", { method: "GET" });
+  },
+  create(payload: CreateListingPayload) {
+    return jsonFetch<Listing>("/listings/", { method: "POST", body: payload });
+  },
+  presignPhoto(listingId: number, payload: PhotoPresignRequest) {
+    return jsonFetch<PhotoPresignResponse>(
+      `/listings/${listingId}/photos/presign/`,
+      { method: "POST", body: payload },
+    );
+  },
+  completePhoto(listingId: number, payload: PhotoCompletePayload) {
+    return jsonFetch<PhotoCompleteResponse>(
+      `/listings/${listingId}/photos/complete/`,
+      { method: "POST", body: payload },
+    );
   },
 };

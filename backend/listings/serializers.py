@@ -49,6 +49,9 @@ class ListingPhotoSerializer(serializers.ModelSerializer):
 
 
 class ListingSerializer(serializers.ModelSerializer):
+    """Serializer for Listing that enforces business rules and permissions."""
+
+    owner = serializers.PrimaryKeyRelatedField(read_only=True)
     photos = serializers.SerializerMethodField()
     owner_username = serializers.ReadOnlyField(source="owner.username")
     category = serializers.SlugRelatedField(
@@ -82,6 +85,7 @@ class ListingSerializer(serializers.ModelSerializer):
         read_only_fields = ["owner", "slug", "created_at"]
 
     def get_photos(self, obj):
+        """Return only photos that passed moderation and AV scans."""
         qs = obj.photos.filter(
             status=ListingPhoto.Status.ACTIVE,
             av_status=ListingPhoto.AVStatus.CLEAN,
@@ -90,6 +94,7 @@ class ListingSerializer(serializers.ModelSerializer):
         return serializer.data
 
     def create(self, validated_data):
+        """Create a listing for the authenticated user if allowed."""
         request = self.context.get("request")
         user = getattr(request, "user", None)
         if not user or not user.is_authenticated:
@@ -100,6 +105,7 @@ class ListingSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
+        """Allow updates only when performed by the owner."""
         request = self.context.get("request")
         user = getattr(request, "user", None)
         if not user or instance.owner_id != getattr(user, "id", None):

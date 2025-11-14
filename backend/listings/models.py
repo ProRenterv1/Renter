@@ -95,16 +95,18 @@ class Listing(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def clean(self):
+        """Enforce Listing-specific business rules before persisting."""
+        super().clean()
+
         errors = {}
 
-        if not self.title or len(self.title.strip()) < 3:
-            errors.setdefault("title", []).append("Title too short")
+        title = (self.title or "").strip()
+        if len(title) < 3:
+            errors.setdefault("title", []).append("Title must be at least 3 characters long.")
 
         price = self.daily_price_cad
         if price is None or price <= 0:
             errors.setdefault("daily_price_cad", []).append("Price per day must be greater than 0.")
-        elif price > Decimal("10000"):
-            errors.setdefault("daily_price_cad", []).append("Unreasonable price")
 
         if self.replacement_value_cad is not None and self.replacement_value_cad < 0:
             errors.setdefault("replacement_value_cad", []).append(

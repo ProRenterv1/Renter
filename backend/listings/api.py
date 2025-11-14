@@ -46,6 +46,11 @@ class ListingViewSet(viewsets.ModelViewSet):
     ]
     lookup_field = "slug"
 
+    def get_permissions(self):
+        if self.action in {"list", "retrieve", "photos_list"}:
+            return [permissions.AllowAny()]
+        return [permission() for permission in self.permission_classes]
+
     def get_queryset(self):
         base_qs = Listing.objects.select_related("owner", "category").prefetch_related("photos")
         params = self.request.query_params
@@ -115,6 +120,7 @@ def _require_listing_owner(listing_id: int, user) -> Listing:
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
 def photos_presign(request, listing_id: int):
+    listing_id = int(listing_id)
     listing = _require_listing_owner(listing_id, request.user)
     filename = request.data.get("filename") or "upload"
     content_type = request.data.get("content_type") or guess_content_type(filename)
@@ -161,6 +167,7 @@ def photos_presign(request, listing_id: int):
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
 def photos_complete(request, listing_id: int):
+    listing_id = int(listing_id)
     listing = _require_listing_owner(listing_id, request.user)
     key = request.data.get("key")
     etag = request.data.get("etag")
