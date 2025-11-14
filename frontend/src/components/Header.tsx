@@ -14,7 +14,7 @@ interface HeaderProps {
 }
 
 const links = [
-  { label: "Browse Tools", href: "#categories" },
+  { label: "Browse Tools", href: "/feed" },
   { label: "How It Works", href: "#how-it-works" },
   { label: "List Your Tools", href: "#call-to-action" },
   { label: "About Us", href: "#about" },
@@ -77,33 +77,28 @@ export function Header({ onNavigateToMessages, onNavigateToProfile, onLogout }: 
             </nav>
           </div>
           
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             <ThemeToggle />
             {isAuthenticated ? (
               <>
                 <Button 
                   variant="ghost" 
-                  size="sm"
-                  className="hidden sm:flex"
                   onClick={handleMessagesClick}
                 >
                   <MessageSquare className="w-4 h-4 mr-2" />
                 </Button>
                 <Button 
                   variant="ghost" 
-                  size="sm"
-                  className="hidden sm:flex"
                   onClick={handleProfileClick}
                 >
-                  <User className="w-4 h-4 mr-2" />
                   Profile
                 </Button>
                 <Button 
                   size="sm"
-                  variant="outline"
+                  variant="ghost"
                   onClick={handleLogoutClick}
                 >
-                  <LogOut className="w-4 h-4 mr-2" />
+
                   Log Out
                 </Button>
               </>

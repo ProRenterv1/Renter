@@ -10,6 +10,21 @@ from django.utils.text import slugify
 class Category(models.Model):
     name = models.CharField(max_length=80, unique=True)
     slug = models.SlugField(max_length=120, unique=True, blank=True)
+    icon = models.CharField(
+        max_length=80,
+        blank=True,
+        help_text="Lucide icon component name to render for this category.",
+    )
+    accent = models.CharField(
+        max_length=80,
+        blank=True,
+        help_text="CSS background color (e.g., Tailwind token or CSS variable).",
+    )
+    icon_color = models.CharField(
+        max_length=80,
+        blank=True,
+        help_text="CSS color for the icon (e.g., Tailwind token or CSS variable).",
+    )
 
     class Meta:
         ordering = ["name"]

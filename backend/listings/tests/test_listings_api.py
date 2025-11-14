@@ -235,22 +235,32 @@ def test_listing_list_and_filters(owner_user):
     client = APIClient()
     base_resp = client.get("/api/listings/")
     assert base_resp.status_code == 200
-    slugs = {item["slug"] for item in base_resp.data}
-    assert visible_tools.slug in slugs
-    assert visible_outdoors.slug in slugs
-    assert len(slugs) == 2
+    assert {"count", "next", "previous", "results"} <= set(base_resp.data.keys())
+    assert base_resp.data["count"] == 2
+    slugs = {item["slug"] for item in base_resp.data["results"]}
+    assert slugs == {visible_tools.slug, visible_outdoors.slug}
 
     price_min_resp = client.get("/api/listings/?price_min=60")
-    assert {item["slug"] for item in price_min_resp.data} == {visible_outdoors.slug}
+    assert {item["slug"] for item in price_min_resp.data["results"]} == {visible_outdoors.slug}
 
     price_max_resp = client.get("/api/listings/?price_max=30")
-    assert {item["slug"] for item in price_max_resp.data} == {visible_tools.slug}
+    assert {item["slug"] for item in price_max_resp.data["results"]} == {visible_tools.slug}
 
     search_resp = client.get("/api/listings/?q=drill")
-    assert {item["slug"] for item in search_resp.data} == {visible_tools.slug}
+    assert {item["slug"] for item in search_resp.data["results"]} == {visible_tools.slug}
 
     category_resp = client.get(f"/api/listings/?category={outdoors.slug}")
-    assert {item["slug"] for item in category_resp.data} == {visible_outdoors.slug}
+    assert {item["slug"] for item in category_resp.data["results"]} == {visible_outdoors.slug}
 
     city_resp = client.get("/api/listings/?city=calgary")
-    assert {item["slug"] for item in city_resp.data} == {visible_outdoors.slug}
+    assert {item["slug"] for item in city_resp.data["results"]} == {visible_outdoors.slug}
+
+
+def test_categories_endpoint_lists_all_categories():
+
+    client = APIClient()
+    resp = client.get("/api/listings/categories/")
+    assert resp.status_code == 200
+    names = [item["name"] for item in resp.data]
+    assert names == ["Camping Gear", "Power Tools"]
+    assert {"id", "name", "slug"} <= set(resp.data[0].keys())

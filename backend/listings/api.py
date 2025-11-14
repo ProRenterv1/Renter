@@ -3,14 +3,21 @@ from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
 from storage.s3 import guess_content_type, object_key, presign_put, public_url
 from storage.tasks import scan_and_finalize_photo
 
-from .models import Listing, ListingPhoto
-from .serializers import ListingPhotoSerializer, ListingSerializer
+from .models import Category, Listing, ListingPhoto
+from .serializers import CategorySerializer, ListingPhotoSerializer, ListingSerializer
 from .services import search_listings
+
+
+class ListingPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 100
 
 
 class IsOwnerOrReadOnly(permissions.BasePermission):
@@ -31,6 +38,7 @@ class CanListItems(permissions.BasePermission):
 class ListingViewSet(viewsets.ModelViewSet):
     queryset = Listing.objects.all().select_related("owner", "category").prefetch_related("photos")
     serializer_class = ListingSerializer
+    pagination_class = ListingPagination
     permission_classes = [
         permissions.IsAuthenticatedOrReadOnly,
         IsOwnerOrReadOnly,
@@ -39,22 +47,32 @@ class ListingViewSet(viewsets.ModelViewSet):
     lookup_field = "slug"
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        base_qs = Listing.objects.select_related("owner", "category").prefetch_related("photos")
         params = self.request.query_params
-        q = params.get("q")
-        category = params.get("category")
-        city = params.get("city")
-        pmin_raw = params.get("price_min")
-        pmax_raw = params.get("price_max")
+        q = params.get("q") or None
+        category = params.get("category") or None
+        city = params.get("city") or None
+
+        price_min_raw = params.get("price_min")
+        price_max_raw = params.get("price_max")
+
         try:
-            pmin = float(pmin_raw) if pmin_raw not in (None, "") else None
+            price_min = float(price_min_raw) if price_min_raw not in (None, "") else None
         except (TypeError, ValueError):
-            pmin = None
+            price_min = None
         try:
-            pmax = float(pmax_raw) if pmax_raw not in (None, "") else None
+            price_max = float(price_max_raw) if price_max_raw not in (None, "") else None
         except (TypeError, ValueError):
-            pmax = None
-        return search_listings(qs, q, pmin, pmax, category=category, city=city)
+            price_max = None
+
+        return search_listings(
+            qs=base_qs,
+            q=q,
+            price_min=price_min,
+            price_max=price_max,
+            category=category,
+            city=city,
+        )
 
     def perform_create(self, serializer):
         serializer.save()
@@ -79,6 +97,12 @@ class ListingViewSet(viewsets.ModelViewSet):
             return Response(status=status.HTTP_403_FORBIDDEN)
         photo.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Category.objects.all().order_by("name")
+    serializer_class = CategorySerializer
+    permission_classes = [permissions.AllowAny]
 
 
 def _require_listing_owner(listing_id: int, user) -> Listing:

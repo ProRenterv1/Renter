@@ -1,10 +1,38 @@
-import { Button } from "@/components/ui/button";
+import { useState, KeyboardEvent } from "react";
+import { useNavigate } from "react-router-dom";
 import { Input } from "./ui/input";
 import { Search, MapPin } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 
 export function Hero() {
   const quickChips = ["Drills", "Lawn", "Ladders", "Pressure Washers"];
+  const [search, setSearch] = useState("");
+  const [city, setCity] = useState("Edmonton");
+  const navigate = useNavigate();
+
+  const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+
+    const trimmedQuery = search.trim();
+    if (!trimmedQuery) {
+      return;
+    }
+
+    navigate(
+      `/feed?q=${encodeURIComponent(trimmedQuery)}&city=${encodeURIComponent(
+        city.trim()
+      )}`
+    );
+  };
+
+  const handleChipClick = (chip: string) => {
+    navigate(
+      `/feed?q=${encodeURIComponent(chip)}&city=${encodeURIComponent(
+        city.trim()
+      )}`
+    );
+  };
 
   return (
     <section className="relative overflow-hidden py-16 pb-4 px-4 sm:px-6 lg:px-8">
@@ -29,13 +57,16 @@ export function Hero() {
                 <Input
                   placeholder="Search for tools..."
                   className="pl-12 pr-4 h-14 text-lg bg-card shadow-xl border-2 hover:border-[var(--primary)] transition-colors rounded-xl"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  onKeyDown={handleSearchKeyDown}
                 />
               </div>
               <div className="relative sm:w-64">
                 <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
                 <Input
-                  value="Edmonton"
-                  readOnly
+                  value={city}
+                  onChange={(event) => setCity(event.target.value)}
                   className="pl-12 pr-4 h-14 text-lg bg-card shadow-xl border-2 rounded-xl cursor-pointer hover:border-[var(--primary)] transition-colors"
                 />
                 <button className="absolute right-4 top-1/2 -translate-y-1/2 text-sm underline" style={{ color: 'var(--primary)' }}>
@@ -49,6 +80,7 @@ export function Hero() {
                 <button
                   key={index}
                   className="px-4 py-2 rounded-full bg-card border-2 border-[var(--border)] hover:border-[var(--primary)] hover:shadow-md transition-all text-sm"
+                  onClick={() => handleChipClick(chip)}
                 >
                   {chip}
                 </button>
