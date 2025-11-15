@@ -181,6 +181,10 @@ def test_owner_cannot_change_owner_field(owner_user, renter_only_user):
     assert listing.owner_id == owner_user.id
     assert listing.daily_price_cad == Decimal("14.00")
 
+def test_owner_cannot_change_owner_field(owner_user, renter_only_user):
+    client = auth(owner_user)
+    create_resp = client.post("/api/listings/", create_listing_payload(), format="json")
+    slug = create_resp.data["slug"]
 
 def test_non_owner_cannot_modify_listing(owner_user, other_user):
     owner_client = auth(owner_user)

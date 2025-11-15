@@ -150,6 +150,19 @@ def _require_listing_owner(listing_id: int, user) -> Listing:
     return listing
 
 
+class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Category.objects.all().order_by("name")
+    serializer_class = CategorySerializer
+    permission_classes = [permissions.AllowAny]
+
+
+def _require_listing_owner(listing_id: int, user) -> Listing:
+    listing = get_object_or_404(Listing, id=listing_id)
+    if listing.owner_id != getattr(user, "id", None):
+        raise PermissionDenied("Only the listing owner can manage photos.")
+    return listing
+
+
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
 def photos_presign(request, listing_id: int):
