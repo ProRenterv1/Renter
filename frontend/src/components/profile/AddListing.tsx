@@ -5,6 +5,7 @@ import { Label } from "../ui/label";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Upload, X } from "lucide-react";
 import {
   listingsAPI,
@@ -12,6 +13,7 @@ import {
   type ListingCategory,
   type JsonError,
 } from "@/lib/api";
+import { AuthStore } from "@/lib/auth";
 
 type Step = 1 | 2 | 3;
 type UploadImage = { file: File; previewUrl: string };
@@ -27,7 +29,7 @@ export function AddListing() {
   const [replacementValue, setReplacementValue] = useState("");
   const [damageDeposit, setDamageDeposit] = useState("");
   const [city, setCity] = useState<CreateListingPayload["city"]>("Edmonton");
-  const [postalCode, setPostalCode] = useState("");
+  const [postalCode, setPostalCode] = useState(() => AuthStore.getCurrentUser()?.postal_code ?? "");
   const [categories, setCategories] = useState<ListingCategory[]>([]);
   const [loadingCategories, setLoadingCategories] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +61,13 @@ export function AddListing() {
     };
   }, []);
 
+  useEffect(() => {
+    const profile = AuthStore.getCurrentUser();
+    if (profile?.postal_code) {
+      setPostalCode((prev) => (prev ? prev : profile.postal_code ?? ""));
+    }
+  }, []);
+
   const goToNextStep = () => {
     setError(null);
     setSuccess(null);
@@ -81,22 +90,30 @@ export function AddListing() {
         setError("Price per day must be greater than zero.");
         return;
       }
-      if (replacementValue) {
-        const replacement = Number(replacementValue);
-        if (!Number.isFinite(replacement) || replacement < 0) {
-          setError("Replacement value cannot be negative.");
-          return;
-        }
+      if (!replacementValue.trim()) {
+        setError("Replacement value is required.");
+        return;
       }
-      if (damageDeposit) {
-        const deposit = Number(damageDeposit);
-        if (!Number.isFinite(deposit) || deposit < 0) {
-          setError("Damage deposit cannot be negative.");
-          return;
-        }
+      const replacement = Number(replacementValue);
+      if (!Number.isFinite(replacement) || replacement < 0) {
+        setError("Replacement value cannot be negative.");
+        return;
+      }
+      if (!damageDeposit.trim()) {
+        setError("Damage deposit is required.");
+        return;
+      }
+      const deposit = Number(damageDeposit);
+      if (!Number.isFinite(deposit) || deposit < 0) {
+        setError("Damage deposit cannot be negative.");
+        return;
       }
       if (!city.trim()) {
         setError("City is required.");
+        return;
+      }
+      if (!postalCode.trim()) {
+        setError("Postal code is required.");
         return;
       }
       setCurrentStep(3);
@@ -162,30 +179,36 @@ export function AddListing() {
       setError("Price per day must be greater than zero.");
       return;
     }
-    if (replacementValue) {
-      const parsedReplacement = Number(replacementValue);
-      if (!Number.isFinite(parsedReplacement) || parsedReplacement < 0) {
-        setError("Replacement value cannot be negative.");
-        return;
-      }
+    if (!replacementValue.trim()) {
+      setError("Replacement value is required.");
+      return;
     }
-    if (damageDeposit) {
-      const parsedDeposit = Number(damageDeposit);
-      if (!Number.isFinite(parsedDeposit) || parsedDeposit < 0) {
-        setError("Damage deposit cannot be negative.");
-        return;
-      }
+    const parsedReplacement = Number(replacementValue);
+    if (!Number.isFinite(parsedReplacement) || parsedReplacement < 0) {
+      setError("Replacement value cannot be negative.");
+      return;
+    }
+    if (!damageDeposit.trim()) {
+      setError("Damage deposit is required.");
+      return;
+    }
+    const parsedDeposit = Number(damageDeposit);
+    if (!Number.isFinite(parsedDeposit) || parsedDeposit < 0) {
+      setError("Damage deposit cannot be negative.");
+      return;
+    }
+    if (!postalCode.trim()) {
+      setError("Postal code is required.");
+      return;
+    }
+    if (uploadedImages.length === 0) {
+      setError("Please upload at least one photo before publishing.");
+      return;
     }
     setSubmitting(true);
     try {
-      const replacementNumber =
-        replacementValue && Number.isFinite(Number(replacementValue))
-          ? Number(replacementValue)
-          : undefined;
-      const depositNumber =
-        damageDeposit && Number.isFinite(Number(damageDeposit))
-          ? Number(damageDeposit)
-          : undefined;
+      const replacementNumber = parsedReplacement;
+      const depositNumber = parsedDeposit;
       const payload: CreateListingPayload = {
         title: title.trim(),
         description: description.trim(),
@@ -233,7 +256,7 @@ export function AddListing() {
         }
       }
 
-      setSuccess("Your listing has been published.");
+      setSuccess("Listing added successfully.");
       resetForm();
     } catch (publishError) {
       console.error(publishError);
@@ -265,6 +288,13 @@ export function AddListing() {
           List your tool for rent
         </p>
       </div>
+
+      {success && (
+        <Alert className="border-green-200 bg-green-50 text-green-900">
+          <AlertTitle>Success</AlertTitle>
+          <AlertDescription>{success}</AlertDescription>
+        </Alert>
+      )}
 
       {/* Progress Indicator */}
       <div className="flex items-center gap-2">
@@ -308,7 +338,6 @@ export function AddListing() {
         </CardHeader>
         <CardContent className="space-y-6">
           {error && <p className="text-sm text-destructive">{error}</p>}
-          {success && <p className="text-sm text-green-600">{success}</p>}
           {currentStep === 1 && (
             <>
               <div className="space-y-2">

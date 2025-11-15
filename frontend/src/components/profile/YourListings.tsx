@@ -1,43 +1,178 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { useEffect, useState, useMemo } from "react";
+import { PlusCircle, MapPin } from "lucide-react";
 import { Button } from "../ui/button";
-import { Edit, Trash2, PlusCircle } from "lucide-react";
 import { Badge } from "../ui/badge";
+import { Input } from "../ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
+import { listingsAPI, type Listing, type JsonError } from "../../lib/api";
+import { formatCurrency } from "../../lib/utils";
 
-export function YourListings() {
-  const listings = [
-    {
-      id: 1,
-      title: "DeWalt 20V Cordless Drill",
-      image: "https://images.unsplash.com/photo-1504148455328-c376907d081c?w=400",
-      city: "Edmonton",
-      price: 15,
-      status: "Active"
-    },
-    {
-      id: 2,
-      title: "Honda Pressure Washer 3000 PSI",
-      image: "https://images.unsplash.com/photo-1581783898377-1c85bf937427?w=400",
-      city: "Edmonton",
-      price: 35,
-      status: "Active"
-    },
-    {
-      id: 3,
-      title: "Werner 8ft Step Ladder",
-      image: "https://images.unsplash.com/photo-1616401784845-180882ba9ba8?w=400",
-      city: "Edmonton",
-      price: 12,
-      status: "Rented"
-    },
-    {
-      id: 4,
-      title: "STIHL Chainsaw MS 170",
-      image: "https://images.unsplash.com/photo-1625225233840-695456021cde?w=400",
-      city: "Calgary",
-      price: 40,
-      status: "Active"
-    },
-  ];
+interface YourListingsProps {
+  onAddListingClick?: () => void;
+}
+
+type StatusFilter = "all" | "active" | "rented" | "inactive";
+
+function computeStatus(listing: Listing): "Active" | "Rented" | "Inactive" {
+  if (!listing.is_active) {
+    return "Inactive";
+  }
+  if (!listing.is_available) {
+    return "Rented";
+  }
+  return "Active";
+}
+
+function isJsonError(error: unknown): error is JsonError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof (error as { status?: unknown }).status === "number"
+  );
+}
+
+export function YourListings({ onAddListingClick }: YourListingsProps) {
+  const [listings, setListings] = useState<Listing[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+
+  useEffect(() => {
+    let active = true;
+    const loadListings = async () => {
+      try {
+        const data = await listingsAPI.mine();
+        if (!active) return;
+        setListings(data.results ?? []);
+        setError(null);
+      } catch (err) {
+        if (!active) return;
+        if (isJsonError(err) && err.status === 401) {
+          setError("Please log in to see your listings.");
+        } else {
+          setError("Could not load your listings. Please try again.");
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+
+    loadListings();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const filteredListings = useMemo(() => {
+    const normalizedQuery = searchQuery.trim().toLowerCase();
+    return listings.filter((listing) => {
+      const title = (listing.title || "").toLowerCase();
+      const city = (listing.city || "").toLowerCase();
+      const matchesQuery =
+        !normalizedQuery || title.includes(normalizedQuery) || city.includes(normalizedQuery);
+      const listingStatus = computeStatus(listing).toLowerCase() as StatusFilter;
+      const matchesStatus = statusFilter === "all" || listingStatus === statusFilter;
+      return matchesQuery && matchesStatus;
+    });
+  }, [listings, searchQuery, statusFilter]);
+
+  const content = useMemo(() => {
+    if (loading) {
+      return <p className="text-sm text-muted-foreground">Loading your listings…</p>;
+    }
+    if (error) {
+      return <p className="text-sm text-destructive">{error}</p>;
+    }
+    if (listings.length === 0) {
+      return (
+        <p className="text-sm text-muted-foreground">
+          You have not created any listings yet.
+        </p>
+      );
+    }
+    if (filteredListings.length === 0) {
+      return (
+        <p className="text-sm text-muted-foreground">
+          No listings match your search or filters.
+        </p>
+      );
+    }
+    return (
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        {filteredListings.map((listing) => {
+          const status = computeStatus(listing);
+          const priceNumber = Number(listing.daily_price_cad);
+          const priceLabel = Number.isFinite(priceNumber)
+            ? formatCurrency(priceNumber, "CAD")
+            : `$${listing.daily_price_cad}`;
+          const imageUrl =
+            listing.photos[0]?.url ??
+            "https://placehold.co/600x400?text=Listing";
+          const depositNumber = Number(listing.damage_deposit_cad);
+          const depositLabel = Number.isFinite(depositNumber)
+            ? formatCurrency(depositNumber, "CAD")
+            : `$${listing.damage_deposit_cad}`;
+          const rentalLabel = listing.is_available ? "Not rented" : "Rented";
+          return (
+            <div
+              key={listing.id}
+              className="bg-card rounded-2xl overflow-hidden border border-border transition-all duration-300 hover:scale-[1.02]"
+              style={{
+                boxShadow:
+                  "0px 51px 21px rgba(0, 0, 0, 0.01), 0px 29px 17px rgba(0, 0, 0, 0.03), 0px 13px 13px rgba(0, 0, 0, 0.05), 0px 3px 7px rgba(0, 0, 0, 0.06)",
+              }}
+            >
+              <div className="relative h-48 overflow-hidden bg-muted">
+                {imageUrl ? (
+                  <img src={imageUrl} alt={listing.title} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                    No photo
+                  </div>
+                )}
+                <div className="absolute top-3 right-3 flex items-center gap-2">
+                  <Badge variant={status === "Active" ? "default" : "secondary"}>{status}</Badge>
+                  <span className="rounded-full bg-background/80 px-2 py-1 text-xs font-medium text-foreground shadow-sm">
+                    {rentalLabel}
+                  </span>
+                </div>
+              </div>
+              <div className="px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[18px] text-foreground font-semibold" style={{ fontFamily: "Manrope" }}>
+                    {listing.title}
+                  </p>
+                  <p className="text-sm text-muted-foreground whitespace-nowrap">
+                    Deposit: <span className="font-medium text-foreground">{depositLabel}</span>
+                  </p>
+                </div>
+                <p className="text-muted-foreground text-sm flex items-center gap-1">
+                  <MapPin className="h-4 w-4" />
+                  <span>{listing.city}</span>
+                </p>
+                <div className="mt-3 flex items-center justify-between text-sm">
+                  <span className="text-primary text-base">
+                    {priceLabel}
+                    <span className="text-muted-foreground text-sm">/day</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }, [loading, error, listings, filteredListings]);
 
   return (
     <div className="space-y-6">
@@ -48,7 +183,8 @@ export function YourListings() {
             Manage your tool listings
           </p>
         </div>
-        <Button 
+        <Button
+          onClick={() => onAddListingClick?.()}
           className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
           style={{ color: "var(--primary-foreground)" }}
         >
@@ -57,47 +193,32 @@ export function YourListings() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {listings.map((listing) => (
-          <Card key={listing.id} className="overflow-hidden">
-            <div className="aspect-video relative overflow-hidden bg-muted">
-              <img 
-                src={listing.image} 
-                alt={listing.title}
-                className="w-full h-full object-cover"
-              />
-              <Badge 
-                className="absolute top-3 right-3"
-                variant={listing.status === "Active" ? "default" : "secondary"}
-              >
-                {listing.status}
-              </Badge>
-            </div>
-            <CardHeader>
-              <CardTitle className="text-lg">{listing.title}</CardTitle>
-              <CardDescription>{listing.city}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-2xl" style={{ color: "var(--primary)" }}>
-                    ${listing.price}
-                    <span className="text-sm" style={{ color: "var(--text-muted)" }}>/day</span>
-                  </p>
-                </div>
-                <div className="flex gap-2">
-                  <Button variant="outline" size="sm">
-                    <Edit className="w-4 h-4" />
-                  </Button>
-                  <Button variant="outline" size="sm">
-                    <Trash2 className="w-4 h-4 text-destructive" />
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+      <div className="flex flex-col gap-4 md:flex-row">
+        <div className="flex-1">
+          <label className="mb-2 block text-sm font-medium text-foreground">Search</label>
+          <Input
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search by title or city"
+          />
+        </div>
+        <div className="md:w-64">
+          <label className="mb-2 block text-sm font-medium text-foreground">Status</label>
+          <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusFilter)}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="All statuses" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All statuses</SelectItem>
+              <SelectItem value="active">Active</SelectItem>
+              <SelectItem value="rented">Rented</SelectItem>
+              <SelectItem value="inactive">Inactive</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
+
+      {content}
     </div>
   );
 }

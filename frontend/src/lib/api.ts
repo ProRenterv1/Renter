@@ -200,6 +200,38 @@ export interface ListingListParams {
   page?: number;
 }
 
+export type BookingStatus = "requested" | "confirmed" | "canceled" | "completed";
+
+export interface BookingTotals {
+  days: string;
+  daily_price_cad: string;
+  rental_subtotal: string;
+  service_fee: string;
+  damage_deposit: string;
+  total_charge: string;
+}
+
+export interface Booking {
+  id: number;
+  status: BookingStatus;
+  start_date: string;
+  end_date: string;
+  listing: number;
+  listing_title: string;
+  owner: number;
+  renter: number;
+  totals: BookingTotals;
+  deposit_hold_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateBookingPayload {
+  listing: number;
+  start_date: string;
+  end_date: string;
+}
+
 export interface PhotoPresignRequest {
   filename: string;
   content_type?: string;
@@ -396,6 +428,24 @@ export const listingsAPI = {
     const path = `/listings/${query ? `?${query}` : ""}`;
     return jsonFetch<ListingListResponse>(path, { method: "GET" });
   },
+  mine(params: ListingListParams = {}) {
+    const search = new URLSearchParams();
+    if (params.q) search.set("q", params.q);
+    if (params.category) search.set("category", params.category);
+    if (params.city) search.set("city", params.city);
+    if (params.price_min !== undefined) {
+      search.set("price_min", String(params.price_min));
+    }
+    if (params.price_max !== undefined) {
+      search.set("price_max", String(params.price_max));
+    }
+    if (params.page !== undefined) {
+      search.set("page", String(params.page));
+    }
+    const query = search.toString();
+    const path = `/listings/mine/${query ? `?${query}` : ""}`;
+    return jsonFetch<ListingListResponse>(path, { method: "GET" });
+  },
   categories() {
     return jsonFetch<ListingCategory[]>("/listings/categories/", { method: "GET" });
   },
@@ -413,5 +463,19 @@ export const listingsAPI = {
       `/listings/${listingId}/photos/complete/`,
       { method: "POST", body: payload },
     );
+  },
+};
+
+export const bookingsAPI = {
+  create(payload: CreateBookingPayload) {
+    return jsonFetch<Booking>("/bookings/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  listMine() {
+    return jsonFetch<Booking[]>("/bookings/my/", {
+      method: "GET",
+    });
   },
 };

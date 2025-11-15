@@ -3,7 +3,6 @@ import { useSearchParams } from "react-router-dom";
 import { Search, SlidersHorizontal, X, MapPin } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { Badge } from "../components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -11,35 +10,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select";
-import { jsonFetch, type JsonError } from "@/lib/api";
+import {
+  listingsAPI,
+  type JsonError,
+  type Listing,
+  type ListingCategory,
+  type ListingListParams,
+} from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
 import { Slider } from "../components/ui/slider";
-
-interface FeedPageProps {
-  onNavigateToMessages?: () => void;
-  onNavigateToProfile?: () => void;
-  onLogout?: () => void;
-}
-
-type Listing = {
-  id: number;
-  slug: string;
-  title: string;
-  description: string;
-  daily_price_cad: string | number;
-  city: string;
-  category_name: string | null;
-  photos?: { id: number; url: string }[];
-};
-
-type ListingCategory = {
-  id: number;
-  name: string;
-  slug: string;
-  icon?: string | null;
-  accent?: string | null;
-  icon_color?: string | null;
-};
 
 const PRICE_SLIDER_MIN = 0;
 const PRICE_SLIDER_MAX = 1000;
@@ -54,11 +33,14 @@ const normalizePriceValues = (values: [number, number]): [number, number] => {
   return clampedMin <= clampedMax ? [clampedMin, clampedMax] : [clampedMax, clampedMin];
 };
 
-export default function Feed({
-  onNavigateToMessages,
-  onNavigateToProfile,
-  onLogout,
-}: FeedPageProps) {
+interface FeedPageProps {
+  onNavigateToMessages?: () => void;
+  onNavigateToProfile?: () => void;
+  onLogout?: () => void;
+  onOpenBooking?: (listing: Listing) => void;
+}
+
+export default function Feed({ onOpenBooking }: FeedPageProps) {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const q = searchParams.get("q") || "";
@@ -107,7 +89,8 @@ export default function Feed({
 
   useEffect(() => {
     let isMounted = true;
-    jsonFetch<ListingCategory[]>("/listings/categories/")
+    listingsAPI
+      .categories()
       .then((data) => {
         if (!isMounted) return;
         setAvailableCategories(Array.isArray(data) ? data : []);
@@ -263,7 +246,6 @@ export default function Feed({
   };
 
   useEffect(() => {
-    const controller = new AbortController();
     let isCancelled = false;
 
     const fetchListings = async () => {
@@ -271,39 +253,35 @@ export default function Feed({
       setError(null);
       let attemptedAnonymousFallback = false;
 
-      const buildParams = () => {
-        const params = new URLSearchParams();
-        if (q.trim()) params.set("q", q.trim());
-        if (category.trim()) params.set("category", category.trim());
-        if (city.trim()) params.set("city", city.trim());
-        if (priceMin.trim()) params.set("price_min", priceMin.trim());
-        if (priceMax.trim()) params.set("price_max", priceMax.trim());
+      const buildParams = (): ListingListParams => {
+        const params: ListingListParams = {};
+        if (q.trim()) params.q = q.trim();
+        if (category.trim()) params.category = category.trim();
+        if (city.trim()) params.city = city.trim();
+        if (priceMin.trim()) {
+          const numericMin = Number(priceMin);
+          if (Number.isFinite(numericMin)) {
+            params.price_min = numericMin;
+          }
+        }
+        if (priceMax.trim()) {
+          const numericMax = Number(priceMax);
+          if (Number.isFinite(numericMax)) {
+            params.price_max = numericMax;
+          }
+        }
         return params;
       };
 
       while (true) {
         try {
-          const params = buildParams();
-          const queryString = params.toString();
-          const path = `/listings/${queryString ? `?${queryString}` : ""}`;
-          const response = await jsonFetch<Listing[] | { results?: Listing[] }>(path, {
-            method: "GET",
-            signal: controller.signal,
-          });
-          const items = Array.isArray(response)
-            ? response
-            : Array.isArray(response?.results)
-              ? response.results
-              : [];
+          const response = await listingsAPI.list(buildParams());
           if (!isCancelled) {
-            setListings(items);
+            setListings(response.results ?? []);
           }
           break;
         } catch (err) {
-          if ((err as DOMException)?.name === "AbortError") {
-            if (!isCancelled) {
-              setLoading(false);
-            }
+          if (isCancelled) {
             return;
           }
 
@@ -320,7 +298,7 @@ export default function Feed({
 
           console.error("Failed to load listings", err);
           if (!isCancelled) {
-            setError("Unable to load listings right now. Please try again.");
+            setError("Unable to load listings. Please try again.");
             setListings([]);
           }
           break;
@@ -336,22 +314,63 @@ export default function Feed({
 
     return () => {
       isCancelled = true;
-      controller.abort();
     };
   }, [q, category, city, priceMin, priceMax]);
 
-  const formatPrice = (price: Listing["daily_price_cad"]) => {
-    if (typeof price === "number") {
-      return `$${price.toLocaleString("en-US")}/day`;
-    }
-    if (!price) {
-      return "Contact for price";
-    }
-    const trimmed = price.trim();
-    return trimmed.includes("/day") ? trimmed : `${trimmed}/day`;
-  };
+  const decoratedListings = listings.map((listing) => {
+    const priceNumber = Number(listing.daily_price_cad ?? "0");
+    const hasValidPrice = Number.isFinite(priceNumber) && priceNumber > 0;
+    const price = hasValidPrice ? `$${priceNumber}/day` : "On request";
+    const image =
+      listing.photos?.[0]?.url ??
+      "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800&q=80";
 
-  const showingCount = listings.length;
+    const feedItem = {
+      id: listing.id,
+      title: listing.title,
+      description: listing.description ?? "",
+      category: listing.category_name || "Other",
+      price,
+      image,
+      tags: [] as string[],
+    };
+
+    return { listing, feedItem };
+  });
+
+  const normalizedSearch = q.trim().toLowerCase();
+  const normalizedCity = city.trim().toLowerCase();
+  const activeCategory = category.trim();
+  const parsedMin = priceMin.trim() ? Number(priceMin) : NaN;
+  const parsedMax = priceMax.trim() ? Number(priceMax) : NaN;
+  const activeMin = Number.isFinite(parsedMin) ? parsedMin : null;
+  const activeMax = Number.isFinite(parsedMax) ? parsedMax : null;
+
+  const filteredItems = decoratedListings.filter(({ listing, feedItem }) => {
+    const matchesSearch =
+      !normalizedSearch ||
+      feedItem.title.toLowerCase().includes(normalizedSearch) ||
+      feedItem.description.toLowerCase().includes(normalizedSearch);
+
+    const matchesCategory = !activeCategory || listing.category === activeCategory;
+
+    const matchesCity =
+      !normalizedCity || listing.city.toLowerCase().includes(normalizedCity);
+
+    const listingPriceRaw = Number(listing.daily_price_cad);
+    const listingPrice = Number.isFinite(listingPriceRaw) ? listingPriceRaw : 0;
+    let matchesPrice = true;
+    if (activeMin !== null) {
+      matchesPrice = matchesPrice && listingPrice >= activeMin;
+    }
+    if (activeMax !== null) {
+      matchesPrice = matchesPrice && listingPrice <= activeMax;
+    }
+
+    return matchesSearch && matchesCategory && matchesCity && matchesPrice;
+  });
+
+  const showingCount = filteredItems.length;
   const isEmptyState = !loading && showingCount === 0;
 
   return (
@@ -372,7 +391,7 @@ export default function Feed({
                 value={searchText}
                 onChange={(e) => handleSearchInputChange(e.target.value)}
                 onKeyDown={handleSearchKeyDown}
-                className="pl-12 pr-4 h-14 rounded-3xl border-border bg-card"
+                className="pl-12 pr-4 h-14 rounded-2xl border-border bg-card"
                 style={{
                   boxShadow: "0px 4px 12px rgba(0, 0, 0, 0.05)",
                 }}
@@ -387,7 +406,7 @@ export default function Feed({
                 onChange={(e) => handleCityInputChange(e.target.value)}
                 onKeyDown={handleCityKeyDown}
                 onBlur={applyCity}
-                className="pl-12 pr-4 h-14 rounded-3xl border-border bg-card"
+                className="pl-12 pr-4 h-14 rounded-2xl border-border bg-card"
                 style={{
                   boxShadow: "0px 4px 12px rgba(0, 0, 0, 0.05)",
                 }}
@@ -558,61 +577,55 @@ export default function Feed({
         )}
 
         {/* Feed Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {listings.map((listing) => {
-            const imageUrl = listing.photos?.[0]?.url;
-            const categoryLabel = listing.category_name || "Uncategorized";
-            return (
-              <div
-                key={listing.id}
-                className="bg-card rounded-3xl overflow-hidden border border-border transition-all duration-300 hover:scale-[1.02] cursor-pointer"
-                style={{
-                  boxShadow:
-                    "0px 51px 21px rgba(0, 0, 0, 0.01), 0px 29px 17px rgba(0, 0, 0, 0.03), 0px 13px 13px rgba(0, 0, 0, 0.05), 0px 3px 7px rgba(0, 0, 0, 0.06)",
-                }}
-              >
-                {/* Image */}
-                <div className="relative h-48 overflow-hidden bg-muted">
-                  {imageUrl ? (
-                    <img
-                      src={imageUrl}
-                      alt={listing.title}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                      No photo
-                    </div>
-                  )}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+          {filteredItems.map(({ listing, feedItem }) => (
+            <div
+              key={feedItem.id}
+              className="bg-card rounded-2xl overflow-hidden border border-border transition-all duration-300 hover:scale-[1.02] cursor-pointer"
+              style={{
+                boxShadow:
+                  "0px 51px 21px rgba(0, 0, 0, 0.01), 0px 29px 17px rgba(0, 0, 0, 0.03), 0px 13px 13px rgba(0, 0, 0, 0.05), 0px 3px 7px rgba(0, 0, 0, 0.06)",
+              }}
+              onClick={() => onOpenBooking?.(listing)}
+            >
+              {/* Image */}
+              <div className="relative h-48 overflow-hidden bg-muted">
+                {feedItem.image ? (
+                  <img
+                    src={feedItem.image}
+                    alt={feedItem.title}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                    No photo
+                  </div>
+                )}
+              </div>
+
+              {/* Content */}
+              <div className="px-4 py-3">
+                <div className="flex items-start justify-between mb-1">
+                  <h3
+                    className="text-[18px] text-foreground"
+                    style={{ fontFamily: "Manrope" }}
+                  >
+                    {feedItem.title}
+                  </h3>
                 </div>
 
-                {/* Content */}
-                <div className="p-5">
-                  <div className="flex items-start justify-between mb-2">
-                    <h3
-                      className="text-[18px] text-foreground"
-                      style={{ fontFamily: "Manrope" }}
-                    >
-                      {listing.title}
-                    </h3>
-                  </div>
-
-                  <p className="text-muted-foreground mb-4 line-clamp-2">
-                    {listing.description}
-                  </p>
-
-                  <div className="flex items-center justify-between">
-                    <span className="text-primary">
-                      {formatPrice(listing.daily_price_cad)}
-                    </span>
-                    <Badge variant="outline" className="rounded-full">
-                      {categoryLabel}
-                    </Badge>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-primary text-base">
+                    {feedItem.price}
+                  </span>
+                  <div className="flex items-center gap-1 text-muted-foreground">
+                    <MapPin className="h-4 w-4" />
+                    <span>{listing.city}</span>
                   </div>
                 </div>
               </div>
-            );
-          })}
+            </div>
+          ))}
         </div>
 
         {/* Empty State */}

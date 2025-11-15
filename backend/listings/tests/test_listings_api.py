@@ -256,11 +256,41 @@ def test_listing_list_and_filters(owner_user):
     assert {item["slug"] for item in city_resp.data["results"]} == {visible_outdoors.slug}
 
 
+def test_listing_list_allows_invalid_bearer_token(owner_user):
+    make_listing(owner_user, title="Public Listing")
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION="Bearer invalid")
+    resp = client.get("/api/listings/")
+    assert resp.status_code == 200, resp.data
+    assert resp.data["count"] == 1
+
+
+def test_my_listings_requires_authentication():
+    client = APIClient()
+    resp = client.get("/api/listings/mine/")
+    assert resp.status_code == 401
+
+
+def test_my_listings_returns_only_owner_records(owner_user, other_user):
+    oldest = make_listing(owner_user, title="Old Drill")
+    make_listing(other_user, title="Other Listing")
+    newest = make_listing(owner_user, title="New Drill")
+
+    client = auth(owner_user)
+    resp = client.get("/api/listings/mine/")
+    assert resp.status_code == 200
+    assert resp.data["count"] == 2
+    slugs = [item["slug"] for item in resp.data["results"]]
+    assert slugs == [newest.slug, oldest.slug]
+    assert all(item["owner"] == owner_user.id for item in resp.data["results"])
+
+
 def test_categories_endpoint_lists_all_categories():
     Category.objects.create(name="Camping Gear")
     Category.objects.create(name="Power Tools")
 
     client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION="Bearer invalid")
     resp = client.get("/api/listings/categories/")
     assert resp.status_code == 200
     names = [item["name"] for item in resp.data]
