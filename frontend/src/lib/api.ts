@@ -165,6 +165,8 @@ export interface Listing {
   replacement_value_cad: string;
   damage_deposit_cad: string;
   city: string;
+  postal_code: string;
+  postalCode?: string;
   category: string | null;
   category_name: string | null;
   is_active: boolean;
@@ -448,6 +450,9 @@ export const listingsAPI = {
   },
   categories() {
     return jsonFetch<ListingCategory[]>("/listings/categories/", { method: "GET" });
+  },
+  retrieve(slug: string) {
+    return jsonFetch<Listing>(`/listings/${slug}/`, { method: "GET" });
   },
   create(payload: CreateListingPayload) {
     return jsonFetch<Listing>("/listings/", { method: "POST", body: payload });

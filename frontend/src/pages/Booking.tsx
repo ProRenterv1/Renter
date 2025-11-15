@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type MouseEvent } from "react";
 import {
   ArrowLeft,
   Star,
@@ -6,13 +6,14 @@ import {
   Shield,
   ChevronLeft,
   ChevronRight,
-  Calendar as CalendarIcon,
+  X,
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Calendar } from "../components/ui/calendar";
 import { Badge } from "../components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
 import { Separator } from "../components/ui/separator";
+import { BookingMap } from "../components/BookingMap";
 import { addDays, differenceInDays, format } from "date-fns";
 import { bookingsAPI, type Listing as ApiListing } from "@/lib/api";
 
@@ -22,6 +23,8 @@ interface BookingPageProps {
   onNavigateToMessages?: () => void;
   onNavigateToProfile?: () => void;
   onLogout?: () => void;
+  isLoading?: boolean;
+  errorMessage?: string;
 }
 
 interface Review {
@@ -40,6 +43,8 @@ export default function Booking({
   onNavigateToMessages,
   onNavigateToProfile,
   onLogout,
+  isLoading = false,
+  errorMessage,
 }: BookingPageProps) {
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [dateRange, setDateRange] = useState<{
@@ -52,6 +57,7 @@ export default function Booking({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [isLightboxOpen, setIsLightboxOpen] = useState(false);
 
   if (!listing) {
     return (
@@ -65,7 +71,11 @@ export default function Booking({
           </div>
         </div>
         <div className="max-w-7xl mx-auto px-6 py-8">
-          <p className="text-muted-foreground">Listing is not available.</p>
+          <p className="text-muted-foreground">
+            {isLoading
+              ? "Loading listing details..."
+              : errorMessage ?? "Listing is not available."}
+          </p>
         </div>
       </div>
     );
@@ -78,7 +88,8 @@ export default function Booking({
 
   const pricePerDay = Number(listing.daily_price_cad || "0");
   const damageDeposit = Number(listing.damage_deposit_cad || "0");
-  const postalCodeOrCity = listing.city || "Unknown";
+  const postalCodeOrCity =
+    listing.postalCode ?? listing.postal_code ?? listing.city ?? "Unknown";
   const categoryName = listing.category_name || "Other";
   const tags = categoryName ? [categoryName] : [];
 
@@ -96,6 +107,20 @@ export default function Booking({
   };
 
   const unavailableDates: Date[] = [];
+
+  const openLightbox = (index?: number) => {
+    if (typeof index === "number") {
+      setCurrentImageIndex(index);
+    }
+    setIsLightboxOpen(true);
+  };
+
+  const closeLightbox = () => setIsLightboxOpen(false);
+  const handleLightboxBackdropClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (event.target === event.currentTarget) {
+      closeLightbox();
+    }
+  };
 
   const nextImage = () => {
     setCurrentImageIndex((prev) => (prev === images.length - 1 ? 0 : prev + 1));
@@ -193,11 +218,18 @@ export default function Booking({
               }}
             >
               <div className="relative h-96">
-                <img
-                  src={images[currentImageIndex]}
-                  alt={listing.title}
-                  className="w-full h-full object-cover"
-                />
+                <button
+                  type="button"
+                  onClick={() => openLightbox(currentImageIndex)}
+                  aria-label="View full-size image"
+                  className="block w-full h-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/70"
+                >
+                  <img
+                    src={images[currentImageIndex]}
+                    alt={listing.title}
+                    className="w-full h-full object-cover cursor-zoom-in"
+                  />
+                </button>
                 {images.length > 1 && (
                   <>
                     <Button
@@ -319,34 +351,16 @@ export default function Booking({
                   <span>Postal Code: {postalCodeOrCity}</span>
                 </div>
                 <div className="mt-4 h-48 bg-muted rounded-xl overflow-hidden border border-border">
-                  {/* Simple placeholder map - in production, use Google Maps or similar */}
-                  <div className="w-full h-full flex items-center justify-center text-muted-foreground">
-                    <div className="text-center">
-                      <MapPin className="w-8 h-8 mx-auto mb-2" />
-                      <p>Approximate location based on {postalCodeOrCity}</p>
-                    </div>
-                  </div>
+                  <BookingMap
+                    postalCode={listing.postalCode ?? listing.postal_code ?? ""}
+                    city={listing.city}
+                    country="Canada"
+                  />
                 </div>
               </div>
 
               <Separator className="my-6" />
 
-              {/* Damage Deposit */}
-              <div className="flex items-start gap-3 p-4 bg-accent rounded-xl">
-                <Shield className="w-5 h-5 text-accent-foreground mt-0.5" />
-                <div>
-                  <p className="text-accent-foreground mb-1">
-                    Refundable Damage Deposit
-                  </p>
-                  <p className="text-[20px] text-accent-foreground">
-                    ${damageDeposit}
-                  </p>
-                  <p className="text-accent-foreground/80 mt-2">
-                    This amount will be held and returned after the rental
-                    period, provided there is no damage to the item.
-                  </p>
-                </div>
-              </div>
             </div>
 
             {/* Calendar Section */}
@@ -356,108 +370,146 @@ export default function Booking({
                 boxShadow: "0px 4px 12px rgba(0, 0, 0, 0.05)",
               }}
             >
-              <div className="mb-6">
-                <div className="flex items-baseline gap-2 mb-1">
-                  <span className="text-[32px] text-primary">
-                    ${pricePerDay}
-                  </span>
-                  <span className="text-muted-foreground">/ day</span>
-                </div>
-              </div>
-
-              <Separator className="my-6" />
-
               <h3
                 className="text-[20px] mb-4"
                 style={{ fontFamily: "Manrope" }}
               >
                 Select Your Dates
               </h3>
-              <div className="border border-border rounded-xl p-4 inline-block">
-                <Calendar
-                  mode="range"
-                  selected={dateRange}
-                  onSelect={(range) =>
-                    setDateRange({
-                      from: range?.from,
-                      to: range?.to,
-                    })
-                  }
-                  disabled={(date) =>
-                    isDateUnavailable(date) || date < new Date()
-                  }
-                  className="rounded-md"
-                />
-              </div>
-              {dateRange.from && dateRange.to && (
-                <div className="mt-4 p-4 bg-accent rounded-xl">
-                  <p className="text-accent-foreground">
-                    {format(dateRange.from, "MMM d, yyyy")} -{" "}
-                    {format(dateRange.to, "MMM d, yyyy")}
-                  </p>
-                  <p className="text-accent-foreground/80 mt-1">
-                    {numberOfDays} {numberOfDays === 1 ? "day" : "days"}
-                  </p>
+              <div className="grid gap-8 lg:grid-cols-2">
+                <div className="space-y-4">
+                  <div className="border border-border rounded-xl p-4 inline-block">
+                    <Calendar
+                      mode="range"
+                      selected={dateRange}
+                      onSelect={(range) =>
+                        setDateRange({
+                          from: range?.from,
+                          to: range?.to,
+                        })
+                      }
+                      disabled={(date) =>
+                        isDateUnavailable(date) || date < new Date()
+                      }
+                      className="rounded-md"
+                    />
+                  </div>
                 </div>
-              )}
 
-              {/* Price Breakdown */}
-              {numberOfDays > 0 && (
-                <>
-                  <Separator className="my-6" />
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">
-                        ${pricePerDay} x {numberOfDays}{" "}
-                        {numberOfDays === 1 ? "day" : "days"}
+                <div className="space-y-4">
+                  <div>
+                    <div className="flex items-baseline gap-2 mb-1">
+                      <span className="text-[32px] text-primary">
+                        ${pricePerDay}
                       </span>
-                      <span>${totalPrice}</span>
+                      <span className="text-muted-foreground">/ day</span>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Service fee</span>
-                      <span>${serviceFee.toFixed(2)}</span>
-                    </div>
-                    <Separator />
-                    <div className="flex items-center justify-between text-[18px]">
-                      <span style={{ fontFamily: "Manrope" }}>Total</span>
-                      <span style={{ fontFamily: "Manrope" }}>
-                        ${totalWithFees.toFixed(2)}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-muted-foreground">
-                      <span>Damage Deposit</span>
-                      <span>${damageDeposit}</span>
+                    <p className="text-sm text-muted-foreground">
+                      Choose your rental window to see a full breakdown.
+                    </p>
+                  </div>
+
+                  <div className="p-4 bg-accent rounded-xl h-fit">
+                    {dateRange.from && dateRange.to ? (
+                      <>
+                        <p className="text-accent-foreground">
+                          {format(dateRange.from, "MMM d, yyyy")} -{" "}
+                          {format(dateRange.to, "MMM d, yyyy")}
+                        </p>
+                        <p className="text-accent-foreground/80 mt-1">
+                          {numberOfDays}{" "}
+                          {numberOfDays === 1 ? "day" : "days"} selected
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-accent-foreground/80">
+                        Select a start and end date to preview your rental
+                        window.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="border border-border rounded-xl p-4 space-y-3">
+                    {numberOfDays > 0 ? (
+                      <>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">
+                            ${pricePerDay} x {numberOfDays}{" "}
+                            {numberOfDays === 1 ? "day" : "days"}
+                          </span>
+                          <span>${totalPrice}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">
+                            Service fee
+                          </span>
+                          <span>${serviceFee.toFixed(2)}</span>
+                        </div>
+                        <Separator />
+                        <div className="flex items-center justify-between text-[18px]">
+                          <span style={{ fontFamily: "Manrope" }}>Total</span>
+                          <span style={{ fontFamily: "Manrope" }}>
+                            ${totalWithFees.toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-muted-foreground">
+                          <span>Damage Deposit</span>
+                          <span>${damageDeposit}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="text-muted-foreground text-sm">
+                        Choose dates to see a complete cost breakdown.
+                      </p>
+                    )}
+                  </div>
+
+                </div>
+
+                <div className="lg:col-span-2 space-y-4">
+                  <Button
+                    className="w-full rounded-full"
+                    size="lg"
+                    disabled={!dateRange.from || !dateRange.to || submitting}
+                    onClick={handleRequestBooking}
+                  >
+                    {submitting
+                      ? "Sending request..."
+                      : dateRange.from && dateRange.to
+                        ? "Request to Book"
+                        : "Select dates to book"}
+                  </Button>
+                  {submitError && (
+                    <p className="text-destructive text-sm">{submitError}</p>
+                  )}
+                  {submitSuccess && (
+                    <p className="text-sm text-green-600">
+                      Booking request sent. You will see it in your bookings
+                      soon.
+                    </p>
+                  )}
+                  {numberOfDays > 0 && (
+                    <p className="text-center text-muted-foreground">
+                      You won't be charged yet
+                    </p>
+                  )}
+                  <div className="flex items-start gap-3 p-4 bg-accent rounded-xl">
+                    <Shield className="w-5 h-5 text-accent-foreground mt-0.5" />
+                    <div>
+                      <p className="text-accent-foreground mb-1">
+                        Refundable Damage Deposit
+                      </p>
+                      <p className="text-[20px] text-accent-foreground">
+                        ${damageDeposit}
+                      </p>
+                      <p className="text-accent-foreground/80 mt-2">
+                        This amount will be held and returned after the rental
+                        period, provided there is no damage to the item.
+                      </p>
                     </div>
                   </div>
-                </>
-              )}
-
-              <Button
-                className="w-full mt-6 rounded-full"
-                size="lg"
-                disabled={!dateRange.from || !dateRange.to || submitting}
-                onClick={handleRequestBooking}
-              >
-                {submitting
-                  ? "Sending request..."
-                  : dateRange.from && dateRange.to
-                    ? "Request to Book"
-                    : "Select dates to book"}
-              </Button>
-              {submitError && (
-                <p className="text-destructive text-sm mt-3">{submitError}</p>
-              )}
-              {submitSuccess && (
-                <p className="text-sm mt-3 text-green-600">
-                  Booking request sent. You will see it in your bookings soon.
-                </p>
-              )}
-
-              {numberOfDays > 0 && (
-                <p className="text-center text-muted-foreground mt-4">
-                  You won't be charged yet
-                </p>
-              )}
+                </div>
+              </div>
             </div>
 
             {/* Owner Info */}
@@ -650,6 +702,82 @@ export default function Booking({
           </div>
         </div>
       </div>
+
+      {isLightboxOpen && (
+        <div
+          className="fixed inset-0 bg-black/90 z-50 flex flex-col"
+          onClick={handleLightboxBackdropClick}
+        >
+          <button
+            type="button"
+            onClick={closeLightbox}
+            aria-label="Close image viewer"
+            className="absolute top-6 right-6 text-white bg-black/50 hover:bg-black/70 rounded-full p-2 transition"
+          >
+            <X className="w-5 h-5" />
+          </button>
+
+          <div className="flex-1 flex items-center justify-center relative px-6">
+            <img
+              src={images[currentImageIndex]}
+              alt={`${listing.title} preview`}
+              className="max-h-full max-w-full object-contain"
+            />
+            {images.length > 1 && (
+              <>
+                <button
+                  type="button"
+                  aria-label="View previous image"
+                  className="absolute left-6 text-white bg-black/40 hover:bg-black/60 rounded-full p-3 transition"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    previousImage();
+                  }}
+                >
+                  <ChevronLeft className="w-6 h-6" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="View next image"
+                  className="absolute right-6 text-white bg-black/40 hover:bg-black/60 rounded-full p-3 transition"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    nextImage();
+                  }}
+                >
+                  <ChevronRight className="w-6 h-6" />
+                </button>
+              </>
+            )}
+          </div>
+
+          {images.length > 1 && (
+            <div
+              className="p-4 bg-black/70 flex gap-3 overflow-x-auto"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {images.map((image, index) => (
+                <button
+                  key={index}
+                  type="button"
+                  onClick={() => setCurrentImageIndex(index)}
+                  className={`flex-shrink-0 w-20 h-20 rounded-xl overflow-hidden border-2 transition-all ${
+                    index === currentImageIndex
+                      ? "border-white"
+                      : "border-transparent opacity-60 hover:opacity-100"
+                  }`}
+                >
+                  <img
+                    src={image}
+                    alt={`${listing.title} thumbnail ${index + 1}`}
+                    className="w-full h-full object-cover"
+                  />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
