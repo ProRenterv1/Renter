@@ -1,17 +1,11 @@
-import { Menu, User, MessageSquare, LogOut } from "lucide-react";
+import { Menu, User, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import logo from "@/assets/logo.png";
 import { LoginModal } from "./LoginModal";
 import { useEffect, useState } from "react";
 import { AuthStore } from "@/lib/auth";
-
-interface HeaderProps {
-  isProfilePage?: boolean;
-  onNavigateToMessages?: () => void;
-  onNavigateToProfile?: () => void;
-  onLogout?: () => void;
-}
+import { Link, useNavigate } from "react-router-dom";
 
 const links = [
   { label: "Browse Tools", href: "/feed" },
@@ -20,10 +14,11 @@ const links = [
   { label: "About Us", href: "#about" },
 ];
 
-export function Header({ onNavigateToMessages, onNavigateToProfile, onLogout }: HeaderProps) {
+export function Header() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [modalMode, setModalMode] = useState<"login" | "signup">("login");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
     setIsAuthenticated(Boolean(AuthStore.getTokens()));
@@ -35,18 +30,18 @@ export function Header({ onNavigateToMessages, onNavigateToProfile, onLogout }: 
   };
 
   const handleMessagesClick = () => {
-    onNavigateToMessages?.();
+    navigate("/messages");
   };
 
   const handleProfileClick = () => {
-    onNavigateToProfile?.();
+    navigate("/profile");
   };
 
   const handleLogoutClick = () => {
     AuthStore.clearTokens();
     setIsAuthenticated(false);
     setModalMode("login");
-    onLogout?.();
+    navigate("/");
   };
 
   return (
@@ -54,26 +49,37 @@ export function Header({ onNavigateToMessages, onNavigateToProfile, onLogout }: 
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="flex h-16 items-center justify-between">
           <div className="flex items-center gap-8">
-            <a href="/" className="flex items-center">
+            <Link to="/" className="flex items-center">
               <img
               src={logo}
               alt="Renter"
               className="h-9 w-auto dark:brightness-110 dark:invert"
               loading="lazy"
             />
-            </a>
+            </Link>
             
             <nav className="hidden md:flex items-center gap-6">
-              {links.map((link) => (
-              <a
-                key={link.href}
-                href={link.href}
-                className="text-sm hover:opacity-70 transition-opacity"
-                style={{ color: 'var(--text-heading)' }}
-              >
-                {link.label}
-              </a>
-            ))}
+              {links.map((link) =>
+                link.href.startsWith("#") ? (
+                  <a
+                    key={link.href}
+                    href={link.href}
+                    className="text-sm hover:opacity-70 transition-opacity"
+                    style={{ color: "var(--text-heading)" }}
+                  >
+                    {link.label}
+                  </a>
+                ) : (
+                  <Link
+                    key={link.href}
+                    to={link.href}
+                    className="text-sm hover:opacity-70 transition-opacity"
+                    style={{ color: "var(--text-heading)" }}
+                  >
+                    {link.label}
+                  </Link>
+                ),
+              )}
             </nav>
           </div>
           

@@ -27,13 +27,7 @@ interface Conversation {
   toolName?: string;
 }
 
-interface MessagesProps {
-  onNavigateToMessages?: () => void;
-  onNavigateToProfile?: () => void;
-  onLogout?: () => void;
-}
-
-export default function Messages({ onNavigateToMessages, onNavigateToProfile, onLogout }: MessagesProps) {
+export default function Messages() {
   const [selectedConversation, setSelectedConversation] = useState<number | null>(1);
   const [messageText, setMessageText] = useState("");
 
@@ -99,12 +93,7 @@ export default function Messages({ onNavigateToMessages, onNavigateToProfile, on
 
   return (
     <div className="min-h-screen bg-background">
-      <Header 
-        isProfilePage={true} 
-        onNavigateToMessages={onNavigateToMessages}
-        onNavigateToProfile={onNavigateToProfile}
-        onLogout={onLogout}
-      />
+      <Header />
       
       <div className="h-[calc(100vh-64px)] flex">
         {/* Conversations List */}

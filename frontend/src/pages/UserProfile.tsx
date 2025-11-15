@@ -23,13 +23,7 @@ import { AuthStore, type Profile } from "@/lib/auth";
 
 type Tab = "personal" | "security" | "listings" | "add-listing" | "rentals" | "statistics" | "payments";
 
-interface UserProfileProps {
-  onNavigateToMessages?: () => void;
-  onNavigateToProfile?: () => void;
-  onLogout?: () => void;
-}
-
-export default function UserProfile({ onNavigateToMessages, onNavigateToProfile, onLogout }: UserProfileProps) {
+export default function UserProfile() {
   const [activeTab, setActiveTab] = useState<Tab>("personal");
   const [profile, setProfile] = useState<Profile | null>(() => AuthStore.getCurrentUser());
 
@@ -53,17 +47,12 @@ export default function UserProfile({ onNavigateToMessages, onNavigateToProfile,
   ];
 
   return (
-    <div className="min-h-screen bg-background">
-      <Header 
-        isProfilePage={true} 
-        onNavigateToMessages={onNavigateToMessages}
-        onNavigateToProfile={onNavigateToProfile}
-        onLogout={onLogout}
-      />
+    <div className="min-h-screen bg-background flex flex-col">
+      <Header />
       
-      <div className="flex">
+      <div className="flex-1 lg:flex">
         {/* Sidebar */}
-        <aside className="w-64 min-h-[calc(100vh-64px)] border-r bg-card hidden lg:block sticky top-16">
+        <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:fixed lg:top-16 lg:bottom-0 lg:border-r bg-card lg:overflow-y-auto">
           <div className="p-6 border-b">
             <div className="flex items-center gap-3">
               <Avatar className="w-16 h-16">
@@ -109,11 +98,13 @@ export default function UserProfile({ onNavigateToMessages, onNavigateToProfile,
         </aside>
 
         {/* Main Content */}
-        <main className="flex-1 p-6 lg:p-8">
+        <main className="flex-1 p-6 lg:p-8 lg:ml-64">
           <div className="max-w-5xl mx-auto">
             {activeTab === "personal" && <PersonalInfo onProfileUpdate={setProfile} />}
             {activeTab === "security" && <Security />}
-            {activeTab === "listings" && <YourListings />}
+            {activeTab === "listings" && (
+              <YourListings onAddListingClick={() => setActiveTab("add-listing")} />
+            )}
             {activeTab === "add-listing" && <AddListing />}
             {activeTab === "rentals" && <RecentRentals />}
             {activeTab === "statistics" && <Statistics />}

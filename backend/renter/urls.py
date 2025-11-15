@@ -8,4 +8,5 @@ urlpatterns = [
     path("api/healthz", healthz),
     path("api/users/", include("users.urls")),
     path("api/listings/", include("listings.urls")),
+    path("api/bookings/", include(("bookings.urls", "bookings"), namespace="bookings")),
 ]

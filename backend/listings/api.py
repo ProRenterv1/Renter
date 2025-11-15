@@ -2,8 +2,9 @@ from django.conf import settings
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from storage.s3 import guess_content_type, object_key, presign_put, public_url
@@ -47,9 +48,19 @@ class ListingViewSet(viewsets.ModelViewSet):
     lookup_field = "slug"
 
     def get_permissions(self):
-        if self.action in {"list", "retrieve", "photos_list"}:
+        if getattr(self, "action", None) in {"list", "retrieve", "photos_list"}:
             return [permissions.AllowAny()]
         return [permission() for permission in self.permission_classes]
+
+    def perform_authentication(self, request):
+        """Downgrade to anonymous user when public actions receive invalid tokens."""
+        try:
+            return super().perform_authentication(request)
+        except AuthenticationFailed:
+            if getattr(self, "action", None) in {"list", "retrieve", "photos_list"}:
+                request._not_authenticated()
+                return
+            raise
 
     def get_queryset(self):
         base_qs = Listing.objects.select_related("owner", "category").prefetch_related("photos")
@@ -103,11 +114,33 @@ class ListingViewSet(viewsets.ModelViewSet):
         photo.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="mine",
+        permission_classes=[IsAuthenticated],
+    )
+    def mine(self, request):
+        """Return the authenticated user's listings using existing pagination."""
+        qs = (
+            Listing.objects.filter(owner=request.user)
+            .select_related("category")
+            .prefetch_related("photos")
+            .order_by("-created_at")
+        )
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
+
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Category.objects.all().order_by("name")
     serializer_class = CategorySerializer
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
 
 
 def _require_listing_owner(listing_id: int, user) -> Listing:

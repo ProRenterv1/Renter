@@ -1,3 +1,4 @@
+from datetime import timedelta
 from pathlib import Path
 
 import environ
@@ -21,6 +22,7 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "django_filters",
     "anymail",
+    "bookings.apps.BookingsConfig",
     "users",
     "listings",
     "storage",
@@ -95,6 +97,8 @@ CORS_ALLOW_ALL_ORIGINS = True
 
 AUTH_USER_MODEL = "users.User"
 SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(days=1),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
     "AUTH_COOKIE": "access",
     "AUTH_COOKIE_SECURE": True,
     "AUTH_COOKIE_HTTP_ONLY": True,
