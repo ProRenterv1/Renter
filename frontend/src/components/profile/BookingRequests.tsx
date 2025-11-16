@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Card,
   CardContent,
@@ -32,147 +32,165 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
-import { Star } from "lucide-react";
+import { format } from "date-fns";
+import { AuthStore } from "@/lib/auth";
+import { bookingsAPI, listingsAPI, type Booking } from "@/lib/api";
+import { formatCurrency } from "@/lib/utils";
 
-interface BookingRequest {
-  id: number;
-  toolName: string;
-  toolImage: string;
-  dateRange: string;
-  amount: number;
-  status: "pending" | "approved" | "denied";
-  renterName: string;
-  renterAvatar: string;
-  renterRating: number;
-  renterReviewCount: number;
+type RequestStatus = "pending" | "approved" | "denied";
+type StatusFilter = "all" | RequestStatus;
+
+interface BookingRequestRow {
+  booking: Booking;
+  listingPhoto?: string;
+  listingCity?: string;
 }
 
+const statusClasses: Record<RequestStatus, string> = {
+  pending: "bg-warning-bg text-warning-text",
+  approved: "bg-success-bg text-success-text",
+  denied: "bg-destructive-bg text-destructive-text",
+};
+
+const statusLabel: Record<RequestStatus, string> = {
+  pending: "Pending",
+  approved: "Approved",
+  denied: "Denied",
+};
+
+const bookingStatusToRequestStatus = (status: Booking["status"]): RequestStatus => {
+  switch (status) {
+    case "confirmed":
+    case "completed":
+      return "approved";
+    case "canceled":
+      return "denied";
+    default:
+      return "pending";
+  }
+};
+
+const formatDateRange = (start: string, end: string) => {
+  try {
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    return `${format(startDate, "MMM d")} - ${format(endDate, "MMM d, yyyy")}`;
+  } catch {
+    return `${start} - ${end}`;
+  }
+};
+
+const placeholderImage = "https://placehold.co/200x200?text=Listing";
+
 export function BookingRequests() {
-  const [requests, setRequests] = useState<BookingRequest[]>([
-    {
-      id: 1,
-      toolName: "Modern Design Studio",
-      toolImage:
-        "https://images.unsplash.com/photo-1497366216548-37526070297c?w=400&q=80",
-      dateRange: "Jan 20-22, 2025",
-      amount: 360,
-      status: "pending",
-      renterName: "Michael Chen",
-      renterAvatar:
-        "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=200&q=80",
-      renterRating: 4.8,
-      renterReviewCount: 23,
-    },
-    {
-      id: 2,
-      toolName: "Professional Camera Kit",
-      toolImage:
-        "https://images.unsplash.com/photo-1502920917128-1aa500764cbd?w=400&q=80",
-      dateRange: "Jan 25-27, 2025",
-      amount: 255,
-      status: "approved",
-      renterName: "Emily Rodriguez",
-      renterAvatar:
-        "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=200&q=80",
-      renterRating: 4.9,
-      renterReviewCount: 45,
-    },
-    {
-      id: 3,
-      toolName: "Recording Studio Pro",
-      toolImage:
-        "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?w=400&q=80",
-      dateRange: "Jan 18-19, 2025",
-      amount: 300,
-      status: "denied",
-      renterName: "James Wilson",
-      renterAvatar:
-        "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200&q=80",
-      renterRating: 4.2,
-      renterReviewCount: 12,
-    },
-    {
-      id: 4,
-      toolName: "Luxury Event Space",
-      toolImage:
-        "https://images.unsplash.com/photo-1464366400600-7168b8af9bc3?w=400&q=80",
-      dateRange: "Feb 1-3, 2025",
-      amount: 1350,
-      status: "pending",
-      renterName: "Lisa Anderson",
-      renterAvatar:
-        "https://images.unsplash.com/photo-1487412720507-e7ab37603c6f?w=200&q=80",
-      renterRating: 5.0,
-      renterReviewCount: 67,
-    },
-    {
-      id: 5,
-      toolName: "Cozy Mountain Cabin",
-      toolImage:
-        "https://images.unsplash.com/photo-1449158743715-0a90ebb6d2d8?w=400&q=80",
-      dateRange: "Jan 28-30, 2025",
-      amount: 600,
-      status: "pending",
-      renterName: "David Park",
-      renterAvatar:
-        "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=200&q=80",
-      renterRating: 4.6,
-      renterReviewCount: 31,
-    },
-  ]);
+  const [requests, setRequests] = useState<BookingRequestRow[]>([]);
+  const [selectedRequest, setSelectedRequest] = useState<BookingRequestRow | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [actionLoading, setActionLoading] = useState(false);
+  const currentUserId = AuthStore.getCurrentUser()?.id ?? null;
 
-  const [selectedRequest, setSelectedRequest] =
-    useState<BookingRequest | null>(null);
-  const [statusFilter, setStatusFilter] = useState("all");
-
-  const handleApprove = () => {
-    if (selectedRequest) {
-      setRequests((prev) =>
-        prev.map((req) =>
-          req.id === selectedRequest.id ? { ...req, status: "approved" } : req
-        )
-      );
-      setSelectedRequest(null);
+  useEffect(() => {
+    let active = true;
+    if (!currentUserId) {
+      setError("Please sign in to see booking requests.");
+      setLoading(false);
+      return;
     }
-  };
+    setLoading(true);
+    const loadData = async () => {
+      try {
+        const [bookings, listingsResponse] = await Promise.all([
+          bookingsAPI.listMine(),
+          listingsAPI.mine(),
+        ]);
+        if (!active) return;
+        const listingEntries = (listingsResponse.results ?? []).map((listing) => [listing.id, listing]);
+        const listingMap = new Map<number, Listing>(listingEntries);
+        const ownerBookings = bookings.filter((booking) => booking.owner === currentUserId);
+        const prepared: BookingRequestRow[] = ownerBookings.map((booking) => {
+          const listingInfo = listingMap.get(booking.listing);
+          return {
+            booking,
+            listing: listingInfo,
+            listingPhoto: listingInfo?.photos[0]?.url,
+            listingCity: listingInfo?.city ?? "",
+          };
+        });
+        setRequests(prepared);
+        setError(null);
+      } catch (err) {
+        if (!active) return;
+        setError("Could not load booking requests. Please try again.");
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
 
-  const handleDeny = () => {
-    if (selectedRequest) {
-      setRequests((prev) =>
-        prev.map((req) =>
-          req.id === selectedRequest.id ? { ...req, status: "denied" } : req
-        )
-      );
-      setSelectedRequest(null);
-    }
-  };
+    loadData();
+    return () => {
+      active = false;
+    };
+  }, [currentUserId]);
 
-  const filteredRequests = requests.filter((request) => {
-    if (statusFilter === "all") return true;
-    return request.status === statusFilter;
-  });
+  const filteredRequests = useMemo(() => {
+    if (statusFilter === "all") {
+      return requests;
+    }
+    return requests.filter((row) => bookingStatusToRequestStatus(row.booking.status) === statusFilter);
+  }, [requests, statusFilter]);
 
-  const getStatusBadge = (status: BookingRequest["status"]) => {
-    if (status === "pending") {
-      return (
-        <Badge variant="outline" className="bg-warning-bg text-warning-text">
-          Pending
-        </Badge>
-      );
-    }
-    if (status === "approved") {
-      return (
-        <Badge variant="outline" className="bg-success-bg text-success-text">
-          Approved
-        </Badge>
-      );
-    }
-    return (
-      <Badge variant="outline" className="bg-destructive-bg text-destructive-text">
-        Denied
-      </Badge>
+  const getStatusBadge = (status: RequestStatus) => (
+    <Badge variant="outline" className={statusClasses[status]}>
+      {statusLabel[status]}
+    </Badge>
+  );
+
+  const updateBookingInState = (updated: Booking) => {
+    setRequests((prev) =>
+      prev.map((row) =>
+        row.booking.id === updated.id
+          ? { ...row, booking: updated }
+          : row,
+      ),
+    );
+    setSelectedRequest((prev) =>
+      prev && prev.booking.id === updated.id ? { ...prev, booking: updated } : prev,
     );
   };
+
+  const handleApprove = async () => {
+    if (!selectedRequest) return;
+    setActionLoading(true);
+    try {
+      const updated = await bookingsAPI.confirm(selectedRequest.booking.id);
+      updateBookingInState(updated);
+    } catch (err) {
+      setError("Could not approve this booking. Please try again.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeny = async () => {
+    if (!selectedRequest) return;
+    setActionLoading(true);
+    try {
+      const updated = await bookingsAPI.cancel(selectedRequest.booking.id);
+      updateBookingInState(updated);
+    } catch (err) {
+      setError("Could not deny this booking. Please try again.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const pendingRequests = requests.filter(
+    (row) => bookingStatusToRequestStatus(row.booking.status) === "pending",
+  ).length;
 
   return (
     <div className="space-y-6">
@@ -180,195 +198,223 @@ export function BookingRequests() {
         <div>
           <h1 className="text-3xl">Booking Requests</h1>
           <p className="mt-2" style={{ color: "var(--text-muted)" }}>
-            Manage booking requests for your listings
+            Manage incoming requests for your listings
           </p>
         </div>
-        <div className="flex gap-3">
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-[140px]">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Status</SelectItem>
-              <SelectItem value="pending">Pending</SelectItem>
-              <SelectItem value="approved">Approved</SelectItem>
-              <SelectItem value="denied">Denied</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
+        <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusFilter)}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Status</SelectItem>
+            <SelectItem value="pending">Pending</SelectItem>
+            <SelectItem value="approved">Approved</SelectItem>
+            <SelectItem value="denied">Denied</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {error && (
+        <Card>
+          <CardContent className="py-4">
+            <p className="text-sm text-destructive">{error}</p>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card>
+          <CardHeader>
+            <CardTitle>Pending Requests</CardTitle>
+            <CardDescription>Awaiting your approval</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-semibold">{pendingRequests}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Total Requests</CardTitle>
+            <CardDescription>All time</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-semibold">{requests.length}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Filtered</CardTitle>
+            <CardDescription>Matching current filter</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-semibold">{filteredRequests.length}</p>
+          </CardContent>
+        </Card>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Booking Requests</CardTitle>
-          <CardDescription>
-            Review and manage booking requests from renters
-          </CardDescription>
+          <CardTitle>Requests</CardTitle>
+          <CardDescription>Review and respond to renter requests</CardDescription>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Tool Name</TableHead>
+                <TableHead>Listing</TableHead>
                 <TableHead>Date Range</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">You Receive</TableHead>
+                <TableHead className="text-right">Action</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredRequests.map((request) => (
-                <TableRow
-                  key={request.id}
-                  className="cursor-pointer hover:bg-muted/50"
-                  onClick={() => setSelectedRequest(request)}
-                >
-                  <TableCell>{request.toolName}</TableCell>
-                  <TableCell>{request.dateRange}</TableCell>
-                  <TableCell>{getStatusBadge(request.status)}</TableCell>
-                  <TableCell className="text-right text-green-600">
-                    ${request.amount}
-                  </TableCell>
-                </TableRow>
-              ))}
-              {filteredRequests.length === 0 && (
+              {loading && (
                 <TableRow>
-                  <TableCell colSpan={4} className="text-center py-8">
-                    <p style={{ color: "var(--text-muted)" }}>
-                      No booking requests found
-                    </p>
+                  <TableCell colSpan={5} className="text-center py-8 text-sm text-muted-foreground">
+                    Loading booking requests...
                   </TableCell>
                 </TableRow>
               )}
+              {!loading && filteredRequests.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-center py-8 text-sm text-muted-foreground">
+                    No booking requests match the selected filter.
+                  </TableCell>
+                </TableRow>
+              )}
+              {!loading &&
+                filteredRequests.map((row) => {
+                  const status = bookingStatusToRequestStatus(row.booking.status);
+                  const amountRaw = Number(row.booking.totals?.rental_subtotal ?? row.booking.totals?.total_charge ?? 0);
+                  const amountLabel = formatCurrency(amountRaw, "CAD");
+                  const dateRange = formatDateRange(row.booking.start_date, row.booking.end_date);
+
+                  return (
+                    <TableRow key={row.booking.id} className="hover:bg-muted/50">
+                      <TableCell>
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={row.listingPhoto || placeholderImage}
+                            alt={row.booking.listing_title}
+                            className="w-12 h-12 rounded-lg object-cover border border-border"
+                          />
+                          <div>
+                            <p className="font-medium">{row.booking.listing_title}</p>
+                            <p className="text-xs text-muted-foreground">{row.listingCity || "City unknown"}</p>
+                          </div>
+                        </div>
+                      </TableCell>
+                      <TableCell>{dateRange}</TableCell>
+                      <TableCell>{getStatusBadge(status)}</TableCell>
+                      <TableCell className="text-right text-green-600">{amountLabel}</TableCell>
+                      <TableCell className="text-right">
+                        <Button variant="outline" size="sm" onClick={() => setSelectedRequest(row)}>
+                          Review
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
             </TableBody>
           </Table>
         </CardContent>
       </Card>
 
-      {/* Booking Details Dialog */}
-      <Dialog
-        open={selectedRequest !== null}
-        onOpenChange={(open) => !open && setSelectedRequest(null)}
-      >
-        <DialogContent className="sm:max-w-[500px]">
+      <Dialog open={Boolean(selectedRequest)} onOpenChange={(open) => !open && setSelectedRequest(null)}>
+        <DialogContent className="sm:max-w-lg">
           {selectedRequest && (
             <>
               <DialogHeader>
                 <DialogTitle>Booking Request Details</DialogTitle>
-                <DialogDescription>
-                  Review the booking request information
-                </DialogDescription>
+                <DialogDescription>Review the booking request information</DialogDescription>
               </DialogHeader>
 
               <div className="space-y-6 py-4">
-                {/* Tool Info */}
                 <div className="flex items-center gap-4">
                   <img
-                    src={selectedRequest.toolImage}
-                    alt={selectedRequest.toolName}
+                    src={selectedRequest.listingPhoto || placeholderImage}
+                    alt={selectedRequest.booking.listing_title}
                     className="w-20 h-20 rounded-xl object-cover border border-border"
                   />
                   <div className="flex-1">
-                    <h3
-                      className="text-[18px] mb-1"
-                      style={{ fontFamily: "Manrope" }}
-                    >
-                      {selectedRequest.toolName}
+                    <h3 className="text-[18px] mb-1" style={{ fontFamily: "Manrope" }}>
+                      {selectedRequest.booking.listing_title}
                     </h3>
                     <p className="text-muted-foreground">
-                      {selectedRequest.dateRange}
+                      {formatDateRange(selectedRequest.booking.start_date, selectedRequest.booking.end_date)}
                     </p>
                   </div>
                 </div>
 
                 <div className="h-px bg-border" />
 
-                {/* Renter Info */}
                 <div>
-                  <p className="text-sm text-muted-foreground mb-3">
-                    Requested by
-                  </p>
+                  <p className="text-sm text-muted-foreground mb-3">Requested by</p>
                   <div className="flex items-center gap-3">
                     <Avatar className="w-12 h-12">
-                      <AvatarImage src={selectedRequest.renterAvatar} />
+                      <AvatarImage src="" alt="Renter avatar" />
                       <AvatarFallback>
-                        {selectedRequest.renterName
-                          .split(" ")
-                          .map((n) => n[0])
-                          .join("")}
+                        {String(selectedRequest.booking.renter ?? "R").slice(0, 2).toUpperCase()}
                       </AvatarFallback>
                     </Avatar>
                     <div className="flex-1">
-                      <p style={{ fontFamily: "Manrope" }}>
-                        {selectedRequest.renterName}
+                      <p style={{ fontFamily: "Manrope" }}>Renter #{selectedRequest.booking.renter}</p>
+                      <p className="text-sm text-muted-foreground">
+                        Contact details are shared after approval.
                       </p>
-                      <div className="flex items-center gap-2 text-muted-foreground">
-                        <div className="flex items-center gap-1">
-                          <Star className="w-3 h-3 fill-yellow-400 text-yellow-400" />
-                          <span className="text-sm">
-                            {selectedRequest.renterRating.toFixed(1)}
-                          </span>
-                        </div>
-                        <span className="text-sm">•</span>
-                        <span className="text-sm">
-                          {selectedRequest.renterReviewCount} reviews
-                        </span>
-                      </div>
                     </div>
                   </div>
                 </div>
 
                 <div className="h-px bg-border" />
 
-                {/* Booking Details */}
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">Date Range</span>
-                    <span>{selectedRequest.dateRange}</span>
+                    <span>{formatDateRange(selectedRequest.booking.start_date, selectedRequest.booking.end_date)}</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">Status</span>
-                    {getStatusBadge(selectedRequest.status)}
+                    {getStatusBadge(bookingStatusToRequestStatus(selectedRequest.booking.status))}
                   </div>
                   <div className="h-px bg-border" />
                   <div className="flex items-center justify-between">
-                    <span
-                      className="text-[18px]"
-                      style={{ fontFamily: "Manrope" }}
-                    >
+                    <span className="text-[18px]" style={{ fontFamily: "Manrope" }}>
                       You Receive
                     </span>
-                    <span
-                      className="text-[20px] text-green-600"
-                      style={{ fontFamily: "Manrope" }}
-                    >
-                      ${selectedRequest.amount}
+                    <span className="text-[20px] text-green-600" style={{ fontFamily: "Manrope" }}>
+                      {formatCurrency(
+                        Number(
+                          selectedRequest.booking.totals?.rental_subtotal ??
+                            selectedRequest.booking.totals?.total_charge ??
+                            0,
+                        ),
+                        "CAD",
+                      )}
                     </span>
                   </div>
                 </div>
               </div>
 
-              {selectedRequest.status === "pending" && (
+              {bookingStatusToRequestStatus(selectedRequest.booking.status) === "pending" ? (
                 <DialogFooter className="gap-2 sm:gap-0">
                   <Button
                     variant="outline"
                     onClick={handleDeny}
                     className="rounded-full"
+                    disabled={actionLoading}
                   >
-                    Deny Booking
+                    {actionLoading ? "Processing..." : "Deny Booking"}
                   </Button>
-                  <Button onClick={handleApprove} className="rounded-full">
-                    Approve Booking
+                  <Button onClick={handleApprove} className="rounded-full" disabled={actionLoading}>
+                    {actionLoading ? "Processing..." : "Approve Booking"}
                   </Button>
                 </DialogFooter>
-              )}
-
-              {selectedRequest.status !== "pending" && (
+              ) : (
                 <div className="text-center py-2">
                   <p className="text-muted-foreground">
-                    This request has been{" "}
-                    {selectedRequest.status === "approved"
-                      ? "approved"
-                      : "denied"}
+                    This request has been {bookingStatusToRequestStatus(selectedRequest.booking.status)}.
                   </p>
                 </div>
               )}

@@ -1,7 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { PlusCircle, MapPin } from "lucide-react";
 import { Button } from "../ui/button";
-import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import {
   Select,
@@ -15,6 +14,8 @@ import { formatCurrency } from "../../lib/utils";
 
 interface YourListingsProps {
   onAddListingClick?: () => void;
+  onListingSelect?: (listing: Listing) => void;
+  refreshToken?: number;
 }
 
 type StatusFilter = "all" | "active" | "rented" | "inactive";
@@ -38,7 +39,7 @@ function isJsonError(error: unknown): error is JsonError {
   );
 }
 
-export function YourListings({ onAddListingClick }: YourListingsProps) {
+export function YourListings({ onAddListingClick, onListingSelect, refreshToken = 0 }: YourListingsProps) {
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +48,7 @@ export function YourListings({ onAddListingClick }: YourListingsProps) {
 
   useEffect(() => {
     let active = true;
+    setLoading(true);
     const loadListings = async () => {
       try {
         const data = await listingsAPI.mine();
@@ -71,7 +73,7 @@ export function YourListings({ onAddListingClick }: YourListingsProps) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [refreshToken]);
 
   const filteredListings = useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLowerCase();
@@ -110,7 +112,6 @@ export function YourListings({ onAddListingClick }: YourListingsProps) {
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {filteredListings.map((listing) => {
-          const status = computeStatus(listing);
           const priceNumber = Number(listing.daily_price_cad);
           const priceLabel = Number.isFinite(priceNumber)
             ? formatCurrency(priceNumber, "CAD")
@@ -118,18 +119,26 @@ export function YourListings({ onAddListingClick }: YourListingsProps) {
           const imageUrl =
             listing.photos[0]?.url ??
             "https://placehold.co/600x400?text=Listing";
-          const depositNumber = Number(listing.damage_deposit_cad);
-          const depositLabel = Number.isFinite(depositNumber)
-            ? formatCurrency(depositNumber, "CAD")
-            : `$${listing.damage_deposit_cad}`;
           const rentalLabel = listing.is_available ? "Not rented" : "Rented";
           return (
             <div
               key={listing.id}
-              className="bg-card rounded-2xl overflow-hidden border border-border transition-all duration-300 hover:scale-[1.02]"
+              role={onListingSelect ? "button" : undefined}
+              tabIndex={onListingSelect ? 0 : undefined}
+              className={`bg-card rounded-2xl overflow-hidden border border-border transition-all duration-300 hover:scale-[1.02] ${
+                onListingSelect ? "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] focus-visible:ring-offset-2" : ""
+              }`}
               style={{
                 boxShadow:
                   "0px 51px 21px rgba(0, 0, 0, 0.01), 0px 29px 17px rgba(0, 0, 0, 0.03), 0px 13px 13px rgba(0, 0, 0, 0.05), 0px 3px 7px rgba(0, 0, 0, 0.06)",
+              }}
+              onClick={() => onListingSelect?.(listing)}
+              onKeyDown={(event) => {
+                if (!onListingSelect) return;
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onListingSelect(listing);
+                }
               }}
             >
               <div className="relative h-48 overflow-hidden bg-muted">
@@ -140,20 +149,14 @@ export function YourListings({ onAddListingClick }: YourListingsProps) {
                     No photo
                   </div>
                 )}
-                <div className="absolute top-3 right-3 flex items-center gap-2">
-                  <Badge variant={status === "Active" ? "default" : "secondary"}>{status}</Badge>
-                  <span className="rounded-full bg-background/80 px-2 py-1 text-xs font-medium text-foreground shadow-sm">
-                    {rentalLabel}
-                  </span>
-                </div>
               </div>
               <div className="px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-[18px] text-foreground font-semibold" style={{ fontFamily: "Manrope" }}>
                     {listing.title}
                   </p>
-                  <p className="text-sm text-muted-foreground whitespace-nowrap">
-                    Deposit: <span className="font-medium text-foreground">{depositLabel}</span>
+                  <p className="text-sm text-muted-foreground whitespace-nowrap font-medium">
+                    {rentalLabel}
                   </p>
                 </div>
                 <p className="text-muted-foreground text-sm flex items-center gap-1">
@@ -172,7 +175,7 @@ export function YourListings({ onAddListingClick }: YourListingsProps) {
         })}
       </div>
     );
-  }, [loading, error, listings, filteredListings]);
+  }, [loading, error, listings, filteredListings, onListingSelect]);
 
   return (
     <div className="space-y-6">
