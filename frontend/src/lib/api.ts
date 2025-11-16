@@ -159,12 +159,16 @@ export interface Listing {
   slug: string;
   owner: number;
   owner_username: string;
+  owner_first_name: string;
+  owner_last_name: string;
   title: string;
   description: string;
   daily_price_cad: string;
   replacement_value_cad: string;
   damage_deposit_cad: string;
   city: string;
+  postal_code: string;
+  postalCode?: string;
   category: string | null;
   category_name: string | null;
   is_active: boolean;
@@ -181,8 +185,22 @@ export interface CreateListingPayload {
   replacement_value_cad?: number;
   damage_deposit_cad?: number;
   city: string;
+  postal_code: string;
   is_available?: boolean;
 }
+
+export type UpdateListingPayload = Partial<{
+  title: string;
+  description: string;
+  category: string | null;
+  daily_price_cad: number;
+  replacement_value_cad: number;
+  damage_deposit_cad: number;
+  city: string;
+  postal_code: string;
+  is_active: boolean;
+  is_available: boolean;
+}>;
 
 export interface ListingListResponse {
   count: number;
@@ -449,8 +467,22 @@ export const listingsAPI = {
   categories() {
     return jsonFetch<ListingCategory[]>("/listings/categories/", { method: "GET" });
   },
+  retrieve(slug: string) {
+    return jsonFetch<Listing>(`/listings/${slug}/`, { method: "GET" });
+  },
   create(payload: CreateListingPayload) {
     return jsonFetch<Listing>("/listings/", { method: "POST", body: payload });
+  },
+  update(slug: string, payload: UpdateListingPayload) {
+    return jsonFetch<Listing>(`/listings/${slug}/`, {
+      method: "PATCH",
+      body: payload,
+    });
+  },
+  delete(slug: string) {
+    return jsonFetch<void>(`/listings/${slug}/`, {
+      method: "DELETE",
+    });
   },
   presignPhoto(listingId: number, payload: PhotoPresignRequest) {
     return jsonFetch<PhotoPresignResponse>(
@@ -464,6 +496,16 @@ export const listingsAPI = {
       { method: "POST", body: payload },
     );
   },
+  photos(slug: string) {
+    return jsonFetch<ListingPhoto[]>(`/listings/${slug}/photos/`, {
+      method: "GET",
+    });
+  },
+  deletePhoto(slug: string, photoId: number) {
+    return jsonFetch<void>(`/listings/${slug}/photos/${photoId}/`, {
+      method: "DELETE",
+    });
+  },
 };
 
 export const bookingsAPI = {
@@ -476,6 +518,21 @@ export const bookingsAPI = {
   listMine() {
     return jsonFetch<Booking[]>("/bookings/my/", {
       method: "GET",
+    });
+  },
+  confirm(id: number) {
+    return jsonFetch<Booking>(`/bookings/${id}/confirm/`, {
+      method: "POST",
+    });
+  },
+  cancel(id: number) {
+    return jsonFetch<Booking>(`/bookings/${id}/cancel/`, {
+      method: "POST",
+    });
+  },
+  complete(id: number) {
+    return jsonFetch<Booking>(`/bookings/${id}/complete/`, {
+      method: "POST",
     });
   },
 };

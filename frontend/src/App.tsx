@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
+import { useEffect, useState, type ReactNode } from "react";
+import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Header } from "@/components/Header";
 import { Hero } from "@/components/Hero";
 import { Categories } from "@/components/Categories";
@@ -13,7 +13,7 @@ import Messages from "@/pages/Messages";
 import Feed from "@/pages/Feed";
 import Booking from "@/pages/Booking";
 import { AuthStore } from "@/lib/auth";
-import type { Listing as ApiListing } from "@/lib/api";
+import { listingsAPI, type Listing as ApiListing } from "@/lib/api";
 
 function LandingPage() {
   return (
@@ -33,31 +33,78 @@ function LandingPage() {
 }
 
 function FeedPage() {
-  const [page, setPage] = useState<"feed" | "booking">("feed");
-  const [selectedListing, setSelectedListing] = useState<ApiListing | null>(null);
+  const navigate = useNavigate();
 
   const handleOpenBooking = (listing: ApiListing) => {
-    setSelectedListing(listing);
-    setPage("booking");
-  };
-
-  const handleBackToFeed = () => {
-    setSelectedListing(null);
-    setPage("feed");
+    navigate(`/listings/${listing.slug}`, { state: { listing } });
   };
 
   return (
     <>
       <Header />
       <main>
-        {page === "feed" ? (
-          <Feed onOpenBooking={handleOpenBooking} />
-        ) : (
-          <Booking listing={selectedListing} onBack={handleBackToFeed} />
-        )}
+        <Feed onOpenBooking={handleOpenBooking} />
       </main>
       <Footer />
     </>
+  );
+}
+
+type BookingLocationState = {
+  listing?: ApiListing;
+} | null;
+
+function BookingRoutePage() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { slug } = useParams<{ slug: string }>();
+  const initialListing =
+    (location.state as BookingLocationState)?.listing ?? null;
+  const [listing, setListing] = useState<ApiListing | null>(initialListing);
+  const [loading, setLoading] = useState(!initialListing);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!slug) {
+      setListing(null);
+      setLoading(false);
+      setError("Listing not found.");
+      return;
+    }
+    setListing((current) =>
+      current && current.slug === slug ? current : null,
+    );
+    setLoading(true);
+    setError(null);
+    let isMounted = true;
+    listingsAPI
+      .retrieve(slug)
+      .then((data) => {
+        if (!isMounted) return;
+        setListing(data);
+      })
+      .catch((err) => {
+        console.error("Failed to load listing", err);
+        if (!isMounted) return;
+        setError("Listing could not be found.");
+        setListing(null);
+      })
+      .finally(() => {
+        if (!isMounted) return;
+        setLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [slug]);
+
+  return (
+    <Booking
+      listing={listing}
+      onBack={() => navigate("/feed")}
+      isLoading={loading}
+      errorMessage={error ?? undefined}
+    />
   );
 }
 
@@ -109,6 +156,7 @@ export default function App() {
             </RequireAuth>
           }
         />
+        <Route path="/listings/:slug" element={<BookingRoutePage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <Toaster richColors expand position="top-center" />
