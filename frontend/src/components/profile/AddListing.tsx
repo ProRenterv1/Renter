@@ -15,6 +15,16 @@ import {
 } from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
 
+const normalizePostalCodeInput = (value: string) => {
+  const alphanumeric = value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (!alphanumeric) return "";
+  if (alphanumeric.length <= 3) return alphanumeric;
+  return `${alphanumeric.slice(0, 3)} ${alphanumeric.slice(3, 6)}`.trim();
+};
+
+const sanitizePostalCodeForPayload = (value: string) =>
+  normalizePostalCodeInput(value).trim();
+
 type Step = 1 | 2 | 3;
 type UploadImage = { file: File; previewUrl: string };
 
@@ -112,10 +122,12 @@ export function AddListing() {
         setError("City is required.");
         return;
       }
-      if (!postalCode.trim()) {
+      const normalized = sanitizePostalCodeForPayload(postalCode);
+      if (!normalized) {
         setError("Postal code is required.");
         return;
       }
+      setPostalCode(normalized);
       setCurrentStep(3);
     }
   };
@@ -197,7 +209,8 @@ export function AddListing() {
       setError("Damage deposit cannot be negative.");
       return;
     }
-    if (!postalCode.trim()) {
+    const normalizedPostalCode = sanitizePostalCodeForPayload(postalCode);
+    if (!normalizedPostalCode) {
       setError("Postal code is required.");
       return;
     }
@@ -217,6 +230,7 @@ export function AddListing() {
         replacement_value_cad: replacementNumber,
         damage_deposit_cad: depositNumber,
         city: city.trim() || "Edmonton",
+        postal_code: normalizedPostalCode,
         is_available: true,
       };
       const listing = await listingsAPI.create(payload);
@@ -412,7 +426,7 @@ export function AddListing() {
                     id="postal"
                     placeholder="T5K 2M5"
                     value={postalCode}
-                    onChange={(event) => setPostalCode(event.target.value)}
+                    onChange={(event) => setPostalCode(normalizePostalCodeInput(event.target.value))}
                   />
                 </div>
               </div>

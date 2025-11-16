@@ -66,6 +66,7 @@ def create_listing_payload(**overrides):
         "replacement_value_cad": "200.00",
         "damage_deposit_cad": "50.00",
         "city": "Edmonton",
+        "postal_code": "T5K 2M5",
     }
     payload.update(overrides)
     return payload
@@ -80,6 +81,7 @@ def make_listing(owner, **overrides):
         "replacement_value_cad": Decimal("200.00"),
         "damage_deposit_cad": Decimal("50.00"),
         "city": "Edmonton",
+        "postal_code": "T5K 2M5",
         "is_active": True,
         "is_available": True,
     }

@@ -159,6 +159,8 @@ export interface Listing {
   slug: string;
   owner: number;
   owner_username: string;
+  owner_first_name: string;
+  owner_last_name: string;
   title: string;
   description: string;
   daily_price_cad: string;
@@ -183,6 +185,7 @@ export interface CreateListingPayload {
   replacement_value_cad?: number;
   damage_deposit_cad?: number;
   city: string;
+  postal_code: string;
   is_available?: boolean;
 }
 

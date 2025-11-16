@@ -14,15 +14,13 @@ import { Badge } from "../components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
 import { Separator } from "../components/ui/separator";
 import { BookingMap } from "../components/BookingMap";
+import { Header } from "../components/Header";
 import { addDays, differenceInDays, format } from "date-fns";
 import { bookingsAPI, type Listing as ApiListing } from "@/lib/api";
 
 interface BookingPageProps {
   listing: ApiListing | null;
   onBack: () => void;
-  onNavigateToMessages?: () => void;
-  onNavigateToProfile?: () => void;
-  onLogout?: () => void;
   isLoading?: boolean;
   errorMessage?: string;
 }
@@ -40,9 +38,6 @@ interface Review {
 export default function Booking({
   listing,
   onBack,
-  onNavigateToMessages,
-  onNavigateToProfile,
-  onLogout,
   isLoading = false,
   errorMessage,
 }: BookingPageProps) {
@@ -62,15 +57,14 @@ export default function Booking({
   if (!listing) {
     return (
       <div className="min-h-screen w-full" style={{ backgroundColor: "#f9f9f9" }}>
-        <div className="border-b border-border bg-card sticky top-0 z-10">
-          <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+        <Header />
+        <div className="max-w-7xl mx-auto px-6 py-8">
+          <div className="mb-4">
             <Button variant="ghost" onClick={onBack} className="gap-2">
               <ArrowLeft className="w-4 h-4" />
               Back to Feed
             </Button>
           </div>
-        </div>
-        <div className="max-w-7xl mx-auto px-6 py-8">
           <p className="text-muted-foreground">
             {isLoading
               ? "Loading listing details..."
@@ -88,8 +82,12 @@ export default function Booking({
 
   const pricePerDay = Number(listing.daily_price_cad || "0");
   const damageDeposit = Number(listing.damage_deposit_cad || "0");
-  const postalCodeOrCity =
-    listing.postalCode ?? listing.postal_code ?? listing.city ?? "Unknown";
+  const postalCode = listing.postalCode ?? listing.postal_code ?? "";
+  const cityName = listing.city ?? "";
+  const cityText = cityName || "City not provided";
+  const postalCodeText = postalCode || "Postal code not provided";
+  const locationDisplay =
+    [cityName].filter(Boolean).join(", ") || "Unknown location";
   const categoryName = listing.category_name || "Other";
   const tags = categoryName ? [categoryName] : [];
 
@@ -98,8 +96,12 @@ export default function Booking({
     ? reviews.reduce((sum, review) => sum + review.rating, 0) / reviews.length
     : 5;
 
+  const ownerFullName = [listing.owner_first_name, listing.owner_last_name]
+    .map((part) => part?.trim())
+    .filter(Boolean)
+    .join(" ");
   const owner = {
-    name: listing.owner_username ?? "Owner",
+    name: ownerFullName || listing.owner_username || "Owner",
     avatar: "",
     rating: averageRating,
     reviewCount: reviews.length,
@@ -116,10 +118,9 @@ export default function Booking({
   };
 
   const closeLightbox = () => setIsLightboxOpen(false);
-  const handleLightboxBackdropClick = (event: MouseEvent<HTMLDivElement>) => {
-    if (event.target === event.currentTarget) {
-      closeLightbox();
-    }
+  const handleCloseButtonClick = (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    closeLightbox();
   };
 
   const nextImage = () => {
@@ -181,31 +182,16 @@ export default function Booking({
       className="min-h-screen w-full"
       style={{ backgroundColor: "#f9f9f9" }}
     >
-      {/* Header */}
-      <div className="border-b border-border bg-card sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Button variant="ghost" onClick={onBack} className="gap-2">
-              <ArrowLeft className="w-4 h-4" />
-              Back to Feed
-            </Button>
-          </div>
-          <div className="flex items-center gap-3">
-            <Button variant="ghost" onClick={onNavigateToMessages}>
-              Messages
-            </Button>
-            <Button variant="ghost" onClick={onNavigateToProfile}>
-              Profile
-            </Button>
-            <Button variant="outline" onClick={onLogout}>
-              Logout
-            </Button>
-          </div>
-        </div>
-      </div>
+      <Header />
 
       {/* Main Content */}
       <div className="max-w-7xl mx-auto px-6 py-8">
+        <div className="mb-6">
+          <Button variant="ghost" onClick={onBack} className="gap-2">
+            <ArrowLeft className="w-4 h-4" />
+            Back to Feed
+          </Button>
+        </div>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left Column - Listing Details */}
           <div className="lg:col-span-2 space-y-6">
@@ -348,13 +334,15 @@ export default function Booking({
                 </h3>
                 <div className="flex items-center gap-2 text-muted-foreground">
                   <MapPin className="w-5 h-5" />
-                  <span>Postal Code: {postalCodeOrCity}</span>
+                  <span>
+                    City: {cityText} 
+                  </span>
                 </div>
                 <div className="mt-4 h-48 bg-muted rounded-xl overflow-hidden border border-border">
                   <BookingMap
                     postalCode={listing.postalCode ?? listing.postal_code ?? ""}
-                    city={listing.city}
-                    country="Canada"
+                    city={listing.city ?? "Edmonton"}
+                    region="AB, Canada"
                   />
                 </div>
               </div>
@@ -677,7 +665,7 @@ export default function Booking({
                 
                 <div className="flex items-center gap-2 text-muted-foreground">
                   <MapPin className="w-4 h-4" />
-                  <span className="text-sm">{postalCodeOrCity}</span>
+                  <span className="text-sm">{locationDisplay}</span>
                 </div>
               </div>
 
@@ -706,18 +694,21 @@ export default function Booking({
       {isLightboxOpen && (
         <div
           className="fixed inset-0 bg-black/90 z-50 flex flex-col"
-          onClick={handleLightboxBackdropClick}
+          onClick={closeLightbox}
         >
           <button
             type="button"
-            onClick={closeLightbox}
+            onClick={handleCloseButtonClick}
             aria-label="Close image viewer"
-            className="absolute top-6 right-6 text-white bg-black/50 hover:bg-black/70 rounded-full p-2 transition"
+            className="absolute top-6 right-6 text-white z-[1000] bg-black/50 hover:bg-black/70 rounded-full p-2 transition"
           >
             <X className="w-5 h-5" />
           </button>
 
-          <div className="flex-1 flex items-center justify-center relative px-6">
+          <div
+            className="flex-1 flex items-center justify-center relative px-6"
+            onClick={(event) => event.stopPropagation()}
+          >
             <img
               src={images[currentImageIndex]}
               alt={`${listing.title} preview`}

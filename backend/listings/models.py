@@ -90,6 +90,12 @@ class Listing(models.Model):
         help_text="Owner-controlled availability flag for rentals.",
     )
     city = models.CharField(max_length=60, default="Edmonton")
+    postal_code = models.CharField(
+        max_length=12,
+        blank=True,
+        default="",
+        help_text="Optional postal code to approximate the item's location.",
+    )
     is_active = models.BooleanField(default=True)
     slug = models.SlugField(max_length=180, unique=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -115,6 +121,8 @@ class Listing(models.Model):
 
         if self.damage_deposit_cad is not None and self.damage_deposit_cad < 0:
             errors.setdefault("damage_deposit_cad", []).append("Damage deposit cannot be negative.")
+
+        self.postal_code = (self.postal_code or "").strip().upper()
 
         if errors:
             raise ValidationError(errors)

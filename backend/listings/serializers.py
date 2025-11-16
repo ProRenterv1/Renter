@@ -54,6 +54,8 @@ class ListingSerializer(serializers.ModelSerializer):
     owner = serializers.PrimaryKeyRelatedField(read_only=True)
     photos = serializers.SerializerMethodField()
     owner_username = serializers.ReadOnlyField(source="owner.username")
+    owner_first_name = serializers.ReadOnlyField(source="owner.first_name")
+    owner_last_name = serializers.ReadOnlyField(source="owner.last_name")
     category = serializers.SlugRelatedField(
         slug_field="slug",
         queryset=Category.objects.all(),
@@ -69,12 +71,15 @@ class ListingSerializer(serializers.ModelSerializer):
             "slug",
             "owner",
             "owner_username",
+            "owner_first_name",
+            "owner_last_name",
             "title",
             "description",
             "daily_price_cad",
             "replacement_value_cad",
             "damage_deposit_cad",
             "city",
+            "postal_code",
             "category",
             "category_name",
             "is_active",

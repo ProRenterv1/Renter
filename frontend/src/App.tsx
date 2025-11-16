@@ -98,18 +98,10 @@ function BookingRoutePage() {
     };
   }, [slug]);
 
-  const handleLogout = () => {
-    AuthStore.clearTokens();
-    navigate("/");
-  };
-
   return (
     <Booking
       listing={listing}
       onBack={() => navigate("/feed")}
-      onNavigateToMessages={() => navigate("/messages")}
-      onNavigateToProfile={() => navigate("/profile")}
-      onLogout={handleLogout}
       isLoading={loading}
       errorMessage={error ?? undefined}
     />
