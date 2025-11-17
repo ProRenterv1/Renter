@@ -1,4 +1,4 @@
-import { useState, type MouseEvent } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import {
   ArrowLeft,
   Star,
@@ -6,6 +6,8 @@ import {
   Shield,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   X,
 } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -17,8 +19,10 @@ import { BookingMap } from "../components/BookingMap";
 import { LoginModal } from "../components/LoginModal";
 import { Header } from "../components/Header";
 import { addDays, differenceInDays, format } from "date-fns";
-import { bookingsAPI, type Listing as ApiListing } from "@/lib/api";
+import { useNavigate } from "react-router-dom";
+import { bookingsAPI, usersAPI, type Listing as ApiListing, type PublicProfile } from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
+import { cn } from "@/lib/utils";
 
 interface BookingPageProps {
   listing: ApiListing | null;
@@ -43,6 +47,7 @@ export default function Booking({
   isLoading = false,
   errorMessage,
 }: BookingPageProps) {
+  const navigate = useNavigate();
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [dateRange, setDateRange] = useState<{
     from: Date | undefined;
@@ -60,6 +65,34 @@ export default function Booking({
   const [loginModalMode, setLoginModalMode] = useState<"login" | "signup">(
     "login",
   );
+  const [ownerProfile, setOwnerProfile] = useState<PublicProfile | null>(null);
+  const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!listing?.owner) {
+      setOwnerProfile(null);
+      return;
+    }
+    let isMounted = true;
+    usersAPI
+      .publicProfile(listing.owner)
+      .then((data) => {
+        if (!isMounted) return;
+        setOwnerProfile(data);
+      })
+      .catch((error) => {
+        console.error("Failed to load owner profile", error);
+        if (!isMounted) return;
+        setOwnerProfile(null);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [listing?.owner]);
+
+  useEffect(() => {
+    setIsDescriptionExpanded(false);
+  }, [listing?.slug]);
 
   if (!listing) {
     return (
@@ -103,19 +136,70 @@ export default function Booking({
     ? reviews.reduce((sum, review) => sum + review.rating, 0) / reviews.length
     : 5;
 
+  const rawDescription = listing.description ?? "";
+  const hasCustomDescription = Boolean(rawDescription.trim().length);
+  const descriptionText = hasCustomDescription
+    ? rawDescription
+    : "No description provided.";
+  const descriptionHasManyLines =
+    rawDescription.split(/\r?\n/).length > 3;
+  const descriptionIsLong = rawDescription.length > 280;
+  const allowDescriptionToggle =
+    hasCustomDescription && (descriptionHasManyLines || descriptionIsLong);
+  const shouldClampDescription = allowDescriptionToggle && !isDescriptionExpanded;
+
   const ownerFullName = [listing.owner_first_name, listing.owner_last_name]
     .map((part) => part?.trim())
     .filter(Boolean)
     .join(" ");
-  const owner = {
-    name: ownerFullName || listing.owner_username || "Owner",
-    avatar: "",
-    rating: averageRating,
-    reviewCount: reviews.length,
-    joinedDate: "2025",
-  };
+  const baseOwnerName = ownerFullName || listing.owner_username || "Owner";
+  const profileName = [ownerProfile?.first_name, ownerProfile?.last_name]
+    .map((part) => part?.trim())
+    .filter(Boolean)
+    .join(" ");
+  const ownerDisplayName = profileName || ownerProfile?.username || baseOwnerName;
+  const ownerAvatarUrl = ownerProfile?.avatar_url ?? undefined;
+  const ownerInitials =
+    ownerDisplayName
+      .split(" ")
+      .filter(Boolean)
+      .map((segment) => segment[0]?.toUpperCase() ?? "")
+      .join("")
+      .slice(0, 2) || "O";
+  const ownerRating =
+    typeof ownerProfile?.rating === "number" ? ownerProfile.rating : averageRating;
+  const ownerReviewCount =
+    typeof ownerProfile?.review_count === "number" ? ownerProfile.review_count : reviews.length;
+  const fallbackJoinedDate = (() => {
+    const createdAt = listing.created_at ? new Date(listing.created_at) : null;
+    if (createdAt && !Number.isNaN(createdAt.getTime())) {
+      try {
+        return format(createdAt, "MMM yyyy");
+      } catch {
+        return "2025";
+      }
+    }
+    return "2025";
+  })();
+  const ownerJoinedDate = (() => {
+    if (!ownerProfile?.date_joined) {
+      return fallbackJoinedDate;
+    }
+    const joined = new Date(ownerProfile.date_joined);
+    if (Number.isNaN(joined.getTime())) {
+      return fallbackJoinedDate;
+    }
+    try {
+      return format(joined, "MMM yyyy");
+    } catch {
+      return fallbackJoinedDate;
+    }
+  })();
 
   const unavailableDates: Date[] = [];
+  const handleViewOwnerProfile = () => {
+    navigate(`/users/${listing.owner}`);
+  };
 
   const openLightbox = (index?: number) => {
     if (typeof index === "number") {
@@ -335,9 +419,29 @@ export default function Booking({
                 >
                   Description
                 </h3>
-                <p className="text-muted-foreground leading-relaxed">
-                  {listing.description}
+                <p
+                  className={cn(
+                    "text-muted-foreground whitespace-pre-wrap break-words leading-relaxed transition-all",
+                    shouldClampDescription && "line-clamp-3",
+                  )}
+                >
+                  {descriptionText}
                 </p>
+                {allowDescriptionToggle && (
+                  <button
+                    type="button"
+                    className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-primary"
+                    onClick={() => setIsDescriptionExpanded((prev) => !prev)}
+                    aria-expanded={isDescriptionExpanded}
+                  >
+                    {isDescriptionExpanded ? "Show less" : "Show more"}
+                    {isDescriptionExpanded ? (
+                      <ChevronUp className="h-4 w-4" />
+                    ) : (
+                      <ChevronDown className="h-4 w-4" />
+                    )}
+                  </button>
+                )}
               </div>
 
               <Separator className="my-6" />
@@ -549,31 +653,35 @@ export default function Booking({
               </h3>
               <div className="flex items-start gap-4">
                 <Avatar className="w-16 h-16">
-                  <AvatarImage src={owner.avatar} />
-                  <AvatarFallback>
-                    {owner.name
-                      .split(" ")
-                      .map((n) => n[0])
-                      .join("")}
-                  </AvatarFallback>
+                  <AvatarImage src={ownerAvatarUrl} alt={ownerDisplayName} />
+                  <AvatarFallback>{ownerInitials}</AvatarFallback>
                 </Avatar>
                 <div className="flex-1">
                   <p className="text-[18px] mb-1" style={{ fontFamily: "Manrope" }}>
-                    {owner.name}
+                    {ownerDisplayName}
                   </p>
                   <div className="flex items-center gap-3 text-muted-foreground mb-2">
                     <div className="flex items-center gap-1">
                       <Star className="w-4 h-4 fill-yellow-400 text-yellow-400" />
-                      <span>{owner.rating}</span>
+                      <span>{ownerRating.toFixed(1)}</span>
                     </div>
                     <span>•</span>
-                    <span>{owner.reviewCount} reviews</span>
+                    <span>{ownerReviewCount} reviews</span>
                     <span>•</span>
-                    <span>Joined {owner.joinedDate}</span>
+                    <span>Joined {ownerJoinedDate}</span>
                   </div>
-                  <Button variant="outline" className="rounded-full mt-2">
-                    Contact Owner
-                  </Button>
+                  <div className="mt-2 flex flex-wrap gap-3">
+                    <Button variant="outline" className="rounded-full">
+                      Contact Owner
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      className="rounded-full"
+                      onClick={handleViewOwnerProfile}
+                    >
+                      View Profile
+                    </Button>
+                  </div>
                 </div>
               </div>
             </div>

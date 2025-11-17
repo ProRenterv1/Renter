@@ -27,6 +27,7 @@ export type UserProfile = {
   two_factor_sms_enabled: boolean;
   avatar_url?: string | null;
   avatar_uploaded?: boolean;
+  date_joined?: string;
 };
 
 const TOKENS_KEY = "renter.auth.tokens";

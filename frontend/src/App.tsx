@@ -13,6 +13,7 @@ import Messages from "@/pages/Messages";
 import Feed from "@/pages/Feed";
 import Booking from "@/pages/Booking";
 import AllCategoriesPage from "@/pages/AllCategories";
+import PublicProfile from "@/pages/PublicProfile";
 import { AuthStore } from "@/lib/auth";
 import { listingsAPI, type Listing as ApiListing } from "@/lib/api";
 
@@ -176,6 +177,7 @@ export default function App() {
           }
         />
         <Route path="/listings/:slug" element={<BookingRoutePage />} />
+        <Route path="/users/:userId" element={<PublicProfile />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <Toaster richColors expand position="top-center" />

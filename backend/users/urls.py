@@ -11,6 +11,7 @@ from .api import (
     PasswordResetCompleteView,
     PasswordResetRequestView,
     PasswordResetVerifyView,
+    PublicProfileView,
     SignupView,
     TwoFactorLoginResendView,
     TwoFactorLoginVerifyView,
@@ -24,6 +25,7 @@ urlpatterns = [
     path("token/", FlexibleTokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("me/", MeView.as_view(), name="me"),
+    path("public/<int:pk>/", PublicProfileView.as_view(), name="public_profile"),
     path(
         "two-factor/settings/",
         TwoFactorSettingsView.as_view(),

@@ -19,6 +19,7 @@ import {
 } from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
 import { Slider } from "../components/ui/slider";
+import { ListingCard } from "@/components/listings/ListingCard";
 
 const PRICE_SLIDER_MIN = 0;
 const PRICE_SLIDER_MAX = 1000;
@@ -577,54 +578,13 @@ export default function Feed({ onOpenBooking }: FeedPageProps) {
         )}
 
         {/* Feed Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-          {filteredItems.map(({ listing, feedItem }) => (
-            <div
-              key={feedItem.id}
-              className="bg-card rounded-2xl overflow-hidden border border-border transition-all duration-300 hover:scale-[1.02] cursor-pointer"
-              style={{
-                boxShadow:
-                  "0px 51px 21px rgba(0, 0, 0, 0.01), 0px 29px 17px rgba(0, 0, 0, 0.03), 0px 13px 13px rgba(0, 0, 0, 0.05), 0px 3px 7px rgba(0, 0, 0, 0.06)",
-              }}
+        <div className="grid grid-cols-2 gap-6 md:grid-cols-3 lg:grid-cols-4">
+          {filteredItems.map(({ listing }) => (
+            <ListingCard
+              key={listing.id}
+              listing={listing}
               onClick={() => onOpenBooking?.(listing)}
-            >
-              {/* Image */}
-              <div className="relative h-48 overflow-hidden bg-muted">
-                {feedItem.image ? (
-                  <img
-                    src={feedItem.image}
-                    alt={feedItem.title}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                    No photo
-                  </div>
-                )}
-              </div>
-
-              {/* Content */}
-              <div className="px-4 py-3">
-                <div className="flex items-start justify-between mb-1">
-                  <h3
-                    className="text-[18px] text-foreground"
-                    style={{ fontFamily: "Manrope" }}
-                  >
-                    {feedItem.title}
-                  </h3>
-                </div>
-
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-primary text-base">
-                    {feedItem.price}
-                  </span>
-                  <div className="flex items-center gap-1 text-muted-foreground">
-                    <MapPin className="h-4 w-4" />
-                    <span>{listing.city}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
+            />
           ))}
         </div>
 

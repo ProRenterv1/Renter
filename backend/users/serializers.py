@@ -103,6 +103,7 @@ class ProfileSerializer(serializers.ModelSerializer):
             "avatar_url",
             "avatar_uploaded",
             "avatar",
+            "date_joined",
         ]
         read_only_fields = (
             "id",
@@ -112,6 +113,7 @@ class ProfileSerializer(serializers.ModelSerializer):
             "two_factor_sms_enabled",
             "avatar_url",
             "avatar_uploaded",
+            "date_joined",
         )
 
     @staticmethod
@@ -179,6 +181,33 @@ class ProfileSerializer(serializers.ModelSerializer):
             if new_phone != instance.phone:
                 instance.phone_verified = False
         return super().update(instance, validated_data)
+
+
+class PublicProfileSerializer(serializers.ModelSerializer):
+    """Limited profile details that are safe to expose publicly."""
+
+    avatar_url = serializers.SerializerMethodField()
+    avatar_uploaded = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "username",
+            "first_name",
+            "last_name",
+            "city",
+            "avatar_url",
+            "avatar_uploaded",
+            "date_joined",
+        ]
+        read_only_fields = tuple(fields)
+
+    def get_avatar_url(self, obj: User) -> str:
+        return obj.avatar_url
+
+    def get_avatar_uploaded(self, obj: User) -> bool:
+        return obj.avatar_uploaded
 
 
 class LoginEventSerializer(serializers.ModelSerializer):

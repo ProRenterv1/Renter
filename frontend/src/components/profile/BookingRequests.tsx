@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Card,
   CardContent,
@@ -95,6 +96,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const currentUserId = AuthStore.getCurrentUser()?.id ?? null;
+  const navigate = useNavigate();
 
   useEffect(() => {
     let active = true;
@@ -177,6 +179,15 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
       rating,
     };
   }, [selectedRequest]);
+
+  const handleViewRenterProfile = () => {
+    if (!selectedRequest?.booking?.renter) {
+      return;
+    }
+    const renterId = selectedRequest.booking.renter;
+    setSelectedRequest(null);
+    navigate(`/users/${renterId}`);
+  };
 
   const getStatusBadge = (status: RequestStatus) => (
     <Badge variant="outline" className={statusClasses[status]}>
@@ -417,7 +428,12 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                           )}
                         </div>
                       </div>
-                      <Button variant="outline" size="sm" className="ml-auto whitespace-nowrap">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="ml-auto whitespace-nowrap"
+                        onClick={handleViewRenterProfile}
+                      >
                         View Profile
                       </Button>
                     </div>

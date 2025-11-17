@@ -126,6 +126,19 @@ export interface ContactVerificationVerifyResponse {
   profile: Profile;
 }
 
+export interface PublicProfile {
+  id: number;
+  username: string;
+  first_name: string;
+  last_name: string;
+  city: string | null;
+  avatar_url?: string | null;
+  avatar_uploaded?: boolean;
+  date_joined?: string;
+  rating?: number | null;
+  review_count?: number | null;
+}
+
 export interface ListingPhoto {
   id: number;
   listing: number;
@@ -215,6 +228,7 @@ export interface ListingListParams {
   price_min?: number;
   price_max?: number;
   page?: number;
+  owner_id?: number;
 }
 
 export interface ListingGeocodeParams {
@@ -478,6 +492,14 @@ export const authAPI = {
   },
 };
 
+export const usersAPI = {
+  publicProfile(userId: number) {
+    return jsonFetch<PublicProfile>(`/users/public/${userId}/`, {
+      method: "GET",
+    });
+  },
+};
+
 export const listingsAPI = {
   list(params: ListingListParams = {}) {
     const search = new URLSearchParams();
@@ -492,6 +514,9 @@ export const listingsAPI = {
     }
     if (params.page !== undefined) {
       search.set("page", String(params.page));
+    }
+    if (params.owner_id !== undefined) {
+      search.set("owner_id", String(params.owner_id));
     }
     const query = search.toString();
     const path = `/listings/${query ? `?${query}` : ""}`;
