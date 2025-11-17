@@ -5,20 +5,24 @@ import logo from "@/assets/logo.png";
 import { LoginModal } from "./LoginModal";
 import { useEffect, useState } from "react";
 import { AuthStore } from "@/lib/auth";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 const links = [
-  { label: "Browse Tools", href: "/feed" },
-  { label: "How It Works", href: "#how-it-works" },
-  { label: "List Your Tools", href: "#call-to-action" },
-  { label: "About Us", href: "#about" },
-];
+  { label: "Browse Tools", type: "route", href: "/feed" as const },
+  { label: "How It Works", type: "section", sectionId: "how-it-works" as const },
+  { label: "List Your Tools", type: "action" as const },
+  { label: "About Us", type: "section", sectionId: "about" as const },
+] as const;
+
+type NavLink = (typeof links)[number];
 
 export function Header() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [modalMode, setModalMode] = useState<"login" | "signup">("login");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [postLoginAction, setPostLoginAction] = useState<null | "add-listing">(null);
   const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
     const updateAuthState = () => {
@@ -31,9 +35,17 @@ export function Header() {
     };
   }, []);
 
-  const openModal = (mode: "login" | "signup") => {
+  const openModal = (mode: "login" | "signup", nextAction: "add-listing" | null = null) => {
     setModalMode(mode);
+    setPostLoginAction(nextAction);
     setLoginOpen(true);
+  };
+
+  const handleModalOpenChange = (open: boolean) => {
+    setLoginOpen(open);
+    if (!open) {
+      setPostLoginAction(null);
+    }
   };
 
   const handleMessagesClick = () => {
@@ -51,6 +63,81 @@ export function Header() {
     navigate("/");
   };
 
+  const handleListYourTools = () => {
+    if (isAuthenticated) {
+      navigate("/profile?tab=add-listing");
+      return;
+    }
+    openModal("login", "add-listing");
+  };
+
+  const scrollToSection = (sectionId: string) => {
+    const element = document.getElementById(sectionId);
+    if (element) {
+      element.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
+  const handleSectionNavigation = (sectionId: string) => {
+    const hash = `#${sectionId}`;
+    if (location.pathname !== "/") {
+      navigate({ pathname: "/", hash });
+      return;
+    }
+    navigate({ hash });
+    scrollToSection(sectionId);
+  };
+
+  const handleAuthSuccess = () => {
+    setIsAuthenticated(true);
+    if (postLoginAction === "add-listing") {
+      navigate("/profile?tab=add-listing");
+    }
+    setPostLoginAction(null);
+  };
+
+  const renderNavLink = (link: NavLink) => {
+    const baseClass =
+      "text-sm font-normal hover:opacity-70 transition-opacity text-left";
+    const buttonClass = `${baseClass} bg-transparent p-0 border-0`;
+    if (link.type === "route") {
+      return (
+        <Link
+          key={link.label}
+          to={link.href}
+          className={baseClass}
+          style={{ color: "var(--text-heading)" }}
+        >
+          {link.label}
+        </Link>
+      );
+    }
+    if (link.type === "section") {
+      return (
+        <button
+          key={link.label}
+          type="button"
+          className={buttonClass}
+          style={{ color: "var(--text-heading)" }}
+          onClick={() => handleSectionNavigation(link.sectionId)}
+        >
+          {link.label}
+        </button>
+      );
+    }
+    return (
+      <button
+        key={link.label}
+        type="button"
+        className={buttonClass}
+        style={{ color: "var(--text-heading)" }}
+        onClick={handleListYourTools}
+      >
+        {link.label}
+      </button>
+    );
+  };
+
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -66,27 +153,7 @@ export function Header() {
             </Link>
             
             <nav className="hidden md:flex items-center gap-6">
-              {links.map((link) =>
-                link.href.startsWith("#") ? (
-                  <a
-                    key={link.href}
-                    href={link.href}
-                    className="text-sm hover:opacity-70 transition-opacity"
-                    style={{ color: "var(--text-heading)" }}
-                  >
-                    {link.label}
-                  </a>
-                ) : (
-                  <Link
-                    key={link.href}
-                    to={link.href}
-                    className="text-sm hover:opacity-70 transition-opacity"
-                    style={{ color: "var(--text-heading)" }}
-                  >
-                    {link.label}
-                  </Link>
-                ),
-              )}
+              {links.map((link) => renderNavLink(link))}
             </nav>
           </div>
           
@@ -148,9 +215,9 @@ export function Header() {
       </div>
       <LoginModal
         open={loginOpen}
-        onOpenChange={setLoginOpen}
+        onOpenChange={handleModalOpenChange}
         defaultMode={modalMode}
-        onAuthSuccess={() => setIsAuthenticated(true)}
+        onAuthSuccess={handleAuthSuccess}
       />
     </header>
   );

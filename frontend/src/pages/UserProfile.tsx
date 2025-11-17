@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useLocation } from "react-router-dom";
 import { Header } from "../components/Header";
 import { 
   User, 
@@ -27,18 +28,32 @@ import { AuthStore, type Profile } from "@/lib/auth";
 import { authAPI } from "@/lib/api";
 import type { Listing } from "@/lib/api";
 
-type Tab =
-  | "personal"
-  | "security"
-  | "listings"
-  | "add-listing"
-  | "rentals"
-  | "statistics"
-  | "payments"
-  | "booking-requests";
+const TAB_KEYS = [
+  "personal",
+  "security",
+  "listings",
+  "add-listing",
+  "rentals",
+  "statistics",
+  "payments",
+  "booking-requests",
+] as const;
+
+type Tab = (typeof TAB_KEYS)[number];
+
+const DEFAULT_TAB: Tab = "personal";
+
+const isValidTab = (value: string | null): value is Tab => {
+  return typeof value === "string" && (TAB_KEYS as readonly string[]).includes(value);
+};
 
 export default function UserProfile() {
-  const [activeTab, setActiveTab] = useState<Tab>("personal");
+  const location = useLocation();
+  const [activeTab, setActiveTab] = useState<Tab>(() => {
+    const params = new URLSearchParams(location.search);
+    const requestedTab = params.get("tab");
+    return isValidTab(requestedTab) ? requestedTab : DEFAULT_TAB;
+  });
   const [profile, setProfile] = useState<Profile | null>(() => AuthStore.getCurrentUser());
   const [listingBeingEdited, setListingBeingEdited] = useState<Listing | null>(null);
   const [listingsRefreshToken, setListingsRefreshToken] = useState(0);
@@ -51,6 +66,18 @@ export default function UserProfile() {
       setListingBeingEdited(null);
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const requestedTab = params.get("tab");
+    if (isValidTab(requestedTab)) {
+      setActiveTab((current) => (current === requestedTab ? current : requestedTab));
+      return;
+    }
+    if (!requestedTab) {
+      setActiveTab((current) => (current === DEFAULT_TAB ? current : DEFAULT_TAB));
+    }
+  }, [location.search]);
 
   const handleListingSelected = (listing: Listing) => {
     setListingBeingEdited(listing);
