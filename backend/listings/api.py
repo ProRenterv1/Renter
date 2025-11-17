@@ -372,8 +372,8 @@ def photos_presign(request, listing_id: int):
             content_md5=content_md5,
             size_hint=size_hint,
         )
-    except ValueError as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except ValueError:
+        return Response(status=status.HTTP_400_BAD_REQUEST)
     return Response(
         {
             "key": key,
