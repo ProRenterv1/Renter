@@ -1,38 +1,18 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Header } from "@/components/Header";
-import { Hero } from "@/components/Hero";
-import { Categories } from "@/components/Categories";
-import { Features } from "@/components/Features";
-import { HowItWorks } from "@/components/HowItWorks";
-import { CallToAction } from "@/components/CallToAction";
 import { Footer } from "@/components/Footer";
 import { Toaster } from "sonner";
-import UserProfile from "@/pages/UserProfile";
-import Messages from "@/pages/Messages";
-import Feed from "@/pages/Feed";
-import Booking from "@/pages/Booking";
-import AllCategoriesPage from "@/pages/AllCategories";
-import PublicProfile from "@/pages/PublicProfile";
 import { AuthStore } from "@/lib/auth";
 import { listingsAPI, type Listing as ApiListing } from "@/lib/api";
 
-function LandingPage() {
-  return (
-    <>
-      <Header />
-      <main>
-        <Hero />
-        {/* <FeaturedListings /> */}
-        <Categories />
-        <Features />
-        <HowItWorks />
-        <CallToAction />
-      </main>
-      <Footer />
-    </>
-  );
-}
+const LandingPage = lazy(() => import("@/pages/LandingPage"));
+const Feed = lazy(() => import("@/pages/Feed"));
+const Booking = lazy(() => import("@/pages/Booking"));
+const UserProfile = lazy(() => import("@/pages/UserProfile"));
+const Messages = lazy(() => import("@/pages/Messages"));
+const AllCategoriesPage = lazy(() => import("@/pages/AllCategories"));
+const PublicProfile = lazy(() => import("@/pages/PublicProfile"));
 
 function FeedPage() {
   const navigate = useNavigate();
@@ -45,7 +25,9 @@ function FeedPage() {
     <>
       <Header />
       <main>
-        <Feed onOpenBooking={handleOpenBooking} />
+        <Suspense fallback={<SectionFallback message="Loading listings..." />}>
+          <Feed onOpenBooking={handleOpenBooking} />
+        </Suspense>
       </main>
       <Footer />
     </>
@@ -101,12 +83,14 @@ function BookingRoutePage() {
   }, [slug]);
 
   return (
-    <Booking
-      listing={listing}
-      onBack={() => navigate("/feed")}
-      isLoading={loading}
-      errorMessage={error ?? undefined}
-    />
+    <Suspense fallback={<SectionFallback message="Loading listing..." />}>
+      <Booking
+        listing={listing}
+        onBack={() => navigate("/feed")}
+        isLoading={loading}
+        errorMessage={error ?? undefined}
+      />
+    </Suspense>
   );
 }
 
@@ -136,6 +120,20 @@ function RequireAuth({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+function PageLoader() {
+  return (
+    <div className="flex min-h-[60vh] items-center justify-center">
+      <p className="text-sm text-muted-foreground">Loading...</p>
+    </div>
+  );
+}
+
+function SectionFallback({ message }: { message: string }) {
+  return (
+    <div className="py-16 text-center text-muted-foreground">{message}</div>
+  );
+}
+
 export default function App() {
   const location = useLocation();
 
@@ -156,30 +154,32 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <Routes>
-        <Route path="/" element={<LandingPage />} />
-        <Route path="/feed" element={<FeedPage />} />
-        <Route path="/categories" element={<AllCategoriesPage />} />
-        <Route
-          path="/profile"
-          element={
-            <RequireAuth>
-              <UserProfile />
-            </RequireAuth>
-          }
-        />
-        <Route
-          path="/messages"
-          element={
-            <RequireAuth>
-              <Messages />
-            </RequireAuth>
-          }
-        />
-        <Route path="/listings/:slug" element={<BookingRoutePage />} />
-        <Route path="/users/:userId" element={<PublicProfile />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/feed" element={<FeedPage />} />
+          <Route path="/categories" element={<AllCategoriesPage />} />
+          <Route
+            path="/profile"
+            element={
+              <RequireAuth>
+                <UserProfile />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/messages"
+            element={
+              <RequireAuth>
+                <Messages />
+              </RequireAuth>
+            }
+          />
+          <Route path="/listings/:slug" element={<BookingRoutePage />} />
+          <Route path="/users/:userId" element={<PublicProfile />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
       <Toaster richColors expand position="top-center" />
     </div>
   );
