@@ -1,0 +1,17 @@
+{% if renter %}Hi {{ renter.get_full_name|default:renter.username }},{% else %}Hi,{% endif %}
+
+Good news about your booking for "{{ listing_title }}": it was {{ status_label|default:"updated" }}.
+
+Dates: {{ start_date }} to {{ end_date }}
+
+Cost summary:
+- Rental subtotal: ${{ totals.rental_subtotal|default:"0.00" }}
+- Damage deposit: ${{ totals.damage_deposit|default:"0.00" }}
+- Service fee: ${{ totals.service_fee|default:"0.00" }}
+- Total charge: ${{ totals.total_charge|default:"0.00" }}
+
+Next steps:
+Review the booking details and continue in your dashboard:
+{{ cta_url }}
+
+If you have questions, you can reply to connect with {{ owner.get_full_name|default:owner.username }}.

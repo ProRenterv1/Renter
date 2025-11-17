@@ -158,15 +158,6 @@ else:
         "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
     }
 
-# --- IP geolocation ---
-IP_GEO_LOOKUP_ENABLED = env.bool("IP_GEO_LOOKUP_ENABLED", default=False)
-IP_GEO_LOOKUP_URL = env("IP_GEO_LOOKUP_URL", default="https://ipapi.co/{ip}/json/")
-IP_GEO_LOOKUP_TOKEN = env("IP_GEO_LOOKUP_TOKEN", default=None)
-IP_GEO_LOOKUP_TOKEN_PARAM = env("IP_GEO_LOOKUP_TOKEN_PARAM", default="key")
-IP_GEO_LOOKUP_TIMEOUT = env.float("IP_GEO_LOOKUP_TIMEOUT", default=1.5)
-IP_GEO_CACHE_TTL = env.int("IP_GEO_CACHE_TTL", default=6 * 60 * 60)
-IP_GEO_PRIVATE_LABEL = env("IP_GEO_PRIVATE_LABEL", default="Local network")
-
 # --- AV ---
 AV_ENABLED              = env.bool("AV_ENABLED", default=True)
 AV_ENGINE               = env("AV_ENGINE", default="clamd")
@@ -178,3 +169,8 @@ CELERY_BROKER_URL       = env("CELERY_BROKER_URL", default=REDIS_URL)
 CELERY_RESULT_BACKEND   = env("CELERY_RESULT_BACKEND", default=REDIS_URL)
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 FRONTEND_ORIGIN = env("FRONTEND_ORIGIN", default="http://localhost:5173")
+
+# --- Geocoding ---
+GOOGLE_MAPS_API_KEY       = env("GOOGLE_MAPS_API_KEY", default=None)
+GEOCODE_CACHE_TTL         = env.int("GEOCODE_CACHE_TTL", default=7 * 24 * 60 * 60)
+GEOCODE_REQUEST_TIMEOUT   = env.float("GEOCODE_REQUEST_TIMEOUT", default=5.0)

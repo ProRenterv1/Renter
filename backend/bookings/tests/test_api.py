@@ -10,6 +10,7 @@ from rest_framework.test import APIClient
 
 from bookings.models import Booking
 from listings.models import Listing
+from notifications import tasks as notification_tasks
 
 pytestmark = pytest.mark.django_db
 
@@ -46,6 +47,79 @@ def test_create_booking_success(renter_user, listing):
     assert resp.data["owner"] == listing.owner_id
     assert resp.data["renter"] == renter_user.id
     assert {"days", "total_charge"} <= set(resp.data["totals"].keys())
+
+
+def test_create_booking_queues_owner_notification(renter_user, listing, monkeypatch):
+    client = auth(renter_user)
+    start = date.today() + timedelta(days=2)
+    end = start + timedelta(days=4)
+
+    captured = []
+
+    def _capture(owner_id, booking_id):
+        captured.append((owner_id, booking_id))
+
+    monkeypatch.setattr(notification_tasks.send_booking_request_email, "delay", _capture)
+
+    resp = client.post("/api/bookings/", booking_payload(listing, start, end), format="json")
+
+    assert resp.status_code == 201
+    assert captured
+    assert captured[0][0] == listing.owner_id
+    assert captured[0][1] == resp.data["id"]
+
+
+def test_confirm_booking_notifies_renter(booking_factory, owner_user, renter_user, monkeypatch):
+    booking = booking_factory(
+        start_date=date.today() + timedelta(days=6),
+        end_date=date.today() + timedelta(days=8),
+        status=Booking.Status.REQUESTED,
+    )
+    owner_client = auth(owner_user)
+
+    captured = []
+
+    def _capture(renter_id, booking_id, status):
+        captured.append((renter_id, booking_id, status))
+
+    monkeypatch.setattr(notification_tasks.send_booking_status_email, "delay", _capture)
+
+    resp = owner_client.post(f"/api/bookings/{booking.id}/confirm/")
+
+    assert resp.status_code == 200
+    assert captured
+    assert captured[0][0] == booking.renter_id
+    assert captured[0][1] == booking.id
+    assert captured[0][2] == Booking.Status.CONFIRMED
+
+
+def test_owner_cancel_booking_notifies_renter(
+    booking_factory,
+    owner_user,
+    renter_user,
+    monkeypatch,
+):
+    booking = booking_factory(
+        start_date=date.today() + timedelta(days=7),
+        end_date=date.today() + timedelta(days=9),
+        status=Booking.Status.REQUESTED,
+    )
+    owner_client = auth(owner_user)
+
+    captured = []
+
+    def _capture(renter_id, booking_id, status):
+        captured.append((renter_id, booking_id, status))
+
+    monkeypatch.setattr(notification_tasks.send_booking_status_email, "delay", _capture)
+
+    resp = owner_client.post(f"/api/bookings/{booking.id}/cancel/")
+
+    assert resp.status_code == 200
+    assert captured
+    assert captured[0][0] == booking.renter_id
+    assert captured[0][1] == booking.id
+    assert captured[0][2] == Booking.Status.CANCELED
 
 
 def test_cannot_book_own_listing(owner_user, listing):
@@ -185,6 +259,20 @@ def test_my_bookings_endpoint_lists_owner_and_renter(
     client = auth(owner_user)
     resp = client.get("/api/bookings/my/")
     assert resp.status_code == 200
-    returned_ids = {item["id"] for item in resp.data}
-    assert returned_ids == {owner_booking_newer.id, owner_booking_older.id, renter_booking.id}
-    assert unrelated_booking.id not in returned_ids
+    returned = {item["id"]: item for item in resp.data}
+    assert set(returned.keys()) == {
+        owner_booking_newer.id,
+        owner_booking_older.id,
+        renter_booking.id,
+    }
+    assert unrelated_booking.id not in returned
+
+    owner_view_data = returned[owner_booking_newer.id]
+    assert owner_view_data["renter_first_name"] == renter_user.first_name
+    assert owner_view_data["renter_last_name"] == renter_user.last_name
+    assert owner_view_data["renter_username"] == renter_user.username
+    assert owner_view_data["renter_avatar_url"]
+
+    renter_view_data = returned[renter_booking.id]
+    assert renter_view_data["renter_first_name"] == owner_user.first_name
+    assert renter_view_data["renter_last_name"] == owner_user.last_name

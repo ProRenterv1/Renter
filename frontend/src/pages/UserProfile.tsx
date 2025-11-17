@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useLocation } from "react-router-dom";
 import { Header } from "../components/Header";
 import { 
   User, 
@@ -22,30 +23,61 @@ import { EditListing } from "../components/profile/EditListing";
 import { BookingRequests } from "../components/profile/BookingRequests";
 import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
 import { Badge } from "../components/ui/badge";
+import { toast } from "sonner";
 import { AuthStore, type Profile } from "@/lib/auth";
+import { authAPI } from "@/lib/api";
 import type { Listing } from "@/lib/api";
 
-type Tab =
-  | "personal"
-  | "security"
-  | "listings"
-  | "add-listing"
-  | "rentals"
-  | "statistics"
-  | "payments"
-  | "booking-requests";
+const TAB_KEYS = [
+  "personal",
+  "security",
+  "listings",
+  "add-listing",
+  "rentals",
+  "statistics",
+  "payments",
+  "booking-requests",
+] as const;
+
+type Tab = (typeof TAB_KEYS)[number];
+
+const DEFAULT_TAB: Tab = "personal";
+
+const isValidTab = (value: string | null): value is Tab => {
+  return typeof value === "string" && (TAB_KEYS as readonly string[]).includes(value);
+};
 
 export default function UserProfile() {
-  const [activeTab, setActiveTab] = useState<Tab>("personal");
+  const location = useLocation();
+  const [activeTab, setActiveTab] = useState<Tab>(() => {
+    const params = new URLSearchParams(location.search);
+    const requestedTab = params.get("tab");
+    return isValidTab(requestedTab) ? requestedTab : DEFAULT_TAB;
+  });
   const [profile, setProfile] = useState<Profile | null>(() => AuthStore.getCurrentUser());
   const [listingBeingEdited, setListingBeingEdited] = useState<Listing | null>(null);
   const [listingsRefreshToken, setListingsRefreshToken] = useState(0);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [pendingBookingCount, setPendingBookingCount] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (activeTab !== "listings") {
       setListingBeingEdited(null);
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const requestedTab = params.get("tab");
+    if (isValidTab(requestedTab)) {
+      setActiveTab((current) => (current === requestedTab ? current : requestedTab));
+      return;
+    }
+    if (!requestedTab) {
+      setActiveTab((current) => (current === DEFAULT_TAB ? current : DEFAULT_TAB));
+    }
+  }, [location.search]);
 
   const handleListingSelected = (listing: Listing) => {
     setListingBeingEdited(listing);
@@ -73,6 +105,50 @@ export default function UserProfile() {
   const initialsSource = (firstInitial + lastInitial) || firstInitial || lastInitial || "";
   const fallbackInitial = displayName ? displayName[0] : "U";
   const initials = (initialsSource || fallbackInitial).toUpperCase();
+  const hasCustomAvatar = Boolean(profile?.avatar_uploaded);
+
+  const triggerAvatarPicker = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleAvatarChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setAvatarUploading(true);
+    try {
+      const updatedProfile = await authAPI.uploadAvatar(file);
+      setProfile(updatedProfile);
+      AuthStore.setCurrentUser(updatedProfile);
+      toast.success("Profile photo updated.");
+    } catch (error) {
+      console.error("Failed to upload avatar", error);
+      toast.error("Unable to upload photo. Please try again.");
+    } finally {
+      setAvatarUploading(false);
+      if (event.target) {
+        event.target.value = "";
+      }
+    }
+  };
+
+  const handleAvatarDelete = async () => {
+    if (!hasCustomAvatar) {
+      return;
+    }
+    setAvatarUploading(true);
+    try {
+      const updatedProfile = await authAPI.deleteAvatar();
+      setProfile(updatedProfile);
+      AuthStore.setCurrentUser(updatedProfile);
+      toast.success("Profile photo removed.");
+    } catch (error) {
+      console.error("Failed to delete avatar", error);
+      toast.error("Unable to delete photo. Please try again.");
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
 
   const tabs = [
     { id: "personal" as Tab, label: "Personal Info", icon: User },
@@ -94,8 +170,11 @@ export default function UserProfile() {
         <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:fixed lg:top-16 lg:bottom-0 lg:border-r bg-card lg:overflow-y-auto">
           <div className="p-6 border-b">
             <div className="flex items-center gap-3">
-              <Avatar className="w-16 h-16">
-                <AvatarImage src="" alt={displayName} />
+                <Avatar className="w-16 h-16">
+                <AvatarImage
+                  src={hasCustomAvatar ? profile?.avatar_url ?? "" : undefined}
+                  alt={displayName}
+                />
                 <AvatarFallback className="bg-[var(--primary)]" style={{ color: "var(--primary-foreground)" }}>
                   {initials}
                 </AvatarFallback>
@@ -107,6 +186,33 @@ export default function UserProfile() {
                     <Shield className="w-3 h-3 mr-1" />
                     Verified
                   </Badge>
+                </div>
+                <div className="mt-2 space-y-1">
+                  <button
+                    type="button"
+                    onClick={triggerAvatarPicker}
+                    className="text-xs font-medium text-[var(--primary)] hover:underline disabled:opacity-60"
+                    disabled={avatarUploading}
+                  >
+                    {avatarUploading ? "Processing..." : "Change Photo"}
+                  </button>
+                  {hasCustomAvatar && (
+                    <button
+                      type="button"
+                      onClick={handleAvatarDelete}
+                      className="text-xs font-medium text-destructive hover:underline disabled:opacity-60"
+                      disabled={avatarUploading}
+                    >
+                      Delete Photo
+                    </button>
+                  )}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    ref={fileInputRef}
+                    className="hidden"
+                    onChange={handleAvatarChange}
+                  />
                 </div>
               </div>
             </div>
@@ -127,7 +233,12 @@ export default function UserProfile() {
                       }`}
                     >
                       <Icon className="w-4 h-4" />
-                      {tab.label}
+                      <span className="flex-1 text-left">{tab.label}</span>
+                      {tab.id === "booking-requests" && pendingBookingCount > 0 && (
+                        <span className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-[var(--error-solid)] text-[10px] font-semibold leading-none text-white">
+                          {pendingBookingCount > 99 ? "99+" : pendingBookingCount}
+                        </span>
+                      )}
                     </button>
                   </li>
                 );
@@ -163,7 +274,9 @@ export default function UserProfile() {
             {activeTab === "rentals" && <RecentRentals />}
             {activeTab === "statistics" && <Statistics />}
             {activeTab === "payments" && <Payments />}
-            {activeTab === "booking-requests" && <BookingRequests />}
+            {activeTab === "booking-requests" && (
+              <BookingRequests onPendingCountChange={setPendingBookingCount} />
+            )}
           </div>
         </main>
       </div>

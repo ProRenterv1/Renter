@@ -1,3 +1,9 @@
+import json
+import logging
+from functools import lru_cache
+
+import redis
+import requests
 from django.conf import settings
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status, viewsets
@@ -13,6 +19,182 @@ from storage.tasks import scan_and_finalize_photo
 from .models import Category, Listing, ListingPhoto
 from .serializers import CategorySerializer, ListingPhotoSerializer, ListingSerializer
 from .services import search_listings
+
+logger = logging.getLogger(__name__)
+
+GEOCODE_ENDPOINT = "https://maps.googleapis.com/maps/api/geocode/json"
+GEOCODE_CACHE_PREFIX = "listings:geocode:"
+
+
+class GeocodeServiceError(Exception):
+    """Raised when the external geocode service fails."""
+
+
+class GeocodeNotFoundError(Exception):
+    """Raised when no coordinates are returned for an address."""
+
+
+@lru_cache(maxsize=1)
+def get_redis_client():
+    return redis.Redis.from_url(settings.REDIS_URL)
+
+
+def _normalize_component(value: str) -> str:
+    return " ".join(value.split()).strip()
+
+
+def _normalize_postal_code(value: str) -> str:
+    normalized = _normalize_component(value)
+    return normalized.upper()
+
+
+def _postal_fingerprint(value: str) -> str:
+    return "".join(value.split()).upper()
+
+
+def _fingerprint(value: str) -> str:
+    return _normalize_component(value).lower()
+
+
+def _cache_key(postal_code: str, city: str, region: str) -> str:
+    parts = [
+        _postal_fingerprint(postal_code),
+        _fingerprint(city),
+        _fingerprint(region),
+    ]
+    return f"{GEOCODE_CACHE_PREFIX}{'|'.join(parts)}"
+
+
+def _load_cached_geocode(cache_key: str):
+    try:
+        cached = get_redis_client().get(cache_key)
+    except redis.RedisError as exc:
+        logger.warning("Failed to read geocode cache", exc_info=exc)
+        return None
+    if not cached:
+        return None
+    try:
+        if isinstance(cached, bytes):
+            cached_str = cached.decode("utf-8")
+        else:
+            cached_str = cached
+        return json.loads(cached_str)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        logger.warning("Failed to decode cached geocode payload", exc_info=exc)
+        return None
+
+
+def _store_cached_geocode(cache_key: str, payload: dict) -> None:
+    ttl = getattr(settings, "GEOCODE_CACHE_TTL", 24 * 60 * 60)
+    try:
+        get_redis_client().setex(cache_key, ttl, json.dumps(payload))
+    except redis.RedisError as exc:
+        logger.warning("Failed to write geocode cache", exc_info=exc)
+
+
+def _request_geocode(address: str, api_key: str):
+    try:
+        response = requests.get(
+            GEOCODE_ENDPOINT,
+            params={
+                "address": address,
+                "key": api_key,
+            },
+            timeout=getattr(settings, "GEOCODE_REQUEST_TIMEOUT", 5.0),
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise GeocodeServiceError("Geocoding request failed") from exc
+
+    payload = response.json()
+    status_value = payload.get("status")
+    if status_value == "ZERO_RESULTS":
+        raise GeocodeNotFoundError("No results for address")
+    if status_value != "OK":
+        logger.warning(
+            "Google Geocoding returned error", extra={"status": status_value, "address": address}
+        )
+        raise GeocodeServiceError(f"Geocoding service error: {status_value}")
+
+    results = payload.get("results") or []
+    if not results:
+        raise GeocodeServiceError("Geocoding response missing results")
+
+    geometry = results[0].get("geometry") or {}
+    location = geometry.get("location") or {}
+    lat = location.get("lat")
+    lng = location.get("lng")
+    if lat is None or lng is None:
+        raise GeocodeServiceError("Geocoding response missing coordinates")
+
+    formatted_address = results[0].get("formatted_address") or address
+    return formatted_address, float(lat), float(lng)
+
+
+@api_view(["GET"])
+@permission_classes([permissions.AllowAny])
+def geocode_listing_location(request):
+    postal_code_raw = (request.query_params.get("postal_code") or "").strip()
+    city_raw = (request.query_params.get("city") or "").strip()
+    region_raw = (request.query_params.get("region") or "").strip()
+
+    if not postal_code_raw:
+        return Response(
+            {"detail": "postal_code is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    api_key = getattr(settings, "GOOGLE_MAPS_API_KEY", None)
+    if not api_key:
+        return Response(
+            {"detail": "Geocoding is not configured."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    sanitized_postal_code = _normalize_postal_code(postal_code_raw)
+    sanitized_city = _normalize_component(city_raw)
+    sanitized_region = _normalize_component(region_raw)
+
+    cache_key = _cache_key(sanitized_postal_code, sanitized_city, sanitized_region)
+    cached_payload = _load_cached_geocode(cache_key)
+    if cached_payload:
+        response_payload = dict(cached_payload)
+        response_payload["cache_hit"] = True
+        return Response(response_payload)
+
+    address_parts = [sanitized_postal_code]
+    if sanitized_city:
+        address_parts.append(sanitized_city)
+    if sanitized_region:
+        address_parts.append(sanitized_region)
+    address_str = ", ".join(address_parts)
+
+    try:
+        formatted_address, lat, lng = _request_geocode(address_str, api_key)
+    except GeocodeNotFoundError:
+        return Response(
+            {"detail": "Location not found for the provided address."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    except GeocodeServiceError:
+        return Response(
+            {"detail": "Unable to fetch location details at this time."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    payload = {
+        "location": {"lat": lat, "lng": lng},
+        "formatted_address": formatted_address,
+        "address": {
+            "postal_code": sanitized_postal_code,
+            "city": sanitized_city or None,
+            "region": sanitized_region or None,
+        },
+    }
+    _store_cached_geocode(cache_key, payload)
+    response_payload = dict(payload)
+    response_payload["cache_hit"] = False
+    return Response(response_payload)
 
 
 class ListingPagination(PageNumberPagination):

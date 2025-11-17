@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Circle, GoogleMap, useLoadScript } from "@react-google-maps/api";
 import { MapPin } from "lucide-react";
+import { listingsAPI } from "@/lib/api";
 
 type BookingMapProps = {
   postalCode: string;
@@ -34,6 +35,8 @@ const CIRCLE_OPTIONS: google.maps.CircleOptions = {
   clickable: false,
 };
 
+const geocodeCache = new Map<string, google.maps.LatLngLiteral>();
+
 export function BookingMap({
   postalCode,
   city = DEFAULT_CITY,
@@ -42,11 +45,14 @@ export function BookingMap({
   const sanitizedPostalCode = postalCode ? postalCode.trim() : "";
   const sanitizedCity = city.trim() || DEFAULT_CITY;
   const sanitizedRegion = region.trim() || DEFAULT_REGION;
-  const address = useMemo(() => {
+  const cacheKey = useMemo(() => {
     if (!sanitizedPostalCode) {
       return "";
     }
-    return `${sanitizedPostalCode}, ${sanitizedCity}, ${sanitizedRegion}`;
+    const normalizedPostal = sanitizedPostalCode.replace(/\s+/g, "").toUpperCase();
+    const normalizedCity = sanitizedCity.toLowerCase();
+    const normalizedRegion = sanitizedRegion.toLowerCase();
+    return `${normalizedPostal}|${normalizedCity}|${normalizedRegion}`;
   }, [sanitizedPostalCode, sanitizedCity, sanitizedRegion]);
   const [center, setCenter] = useState<google.maps.LatLngLiteral | null>(null);
   const [geocodeFailed, setGeocodeFailed] = useState(false);
@@ -59,37 +65,64 @@ export function BookingMap({
   });
 
   useEffect(() => {
-    if (!isLoaded || !address || typeof window === "undefined") {
+    if (!sanitizedPostalCode) {
+      setCenter(null);
+      setGeocodeFailed(false);
       return;
     }
 
-    let cancelled = false;
+    if (!cacheKey) {
+      setCenter(null);
+      setGeocodeFailed(true);
+      return;
+    }
+
+    const cachedCenter = geocodeCache.get(cacheKey);
+    if (cachedCenter) {
+      setCenter(cachedCenter);
+      setGeocodeFailed(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    let active = true;
     setCenter(null);
     setGeocodeFailed(false);
 
-    const geocoder = new google.maps.Geocoder();
-    geocoder.geocode({ address }, (results, status) => {
-      if (cancelled) return;
-
-      const resultLocation = results?.[0]?.geometry?.location;
-      if (status === "OK" && resultLocation) {
-        const { lat, lng } = resultLocation.toJSON();
-        setCenter({ lat, lng });
-        return;
-      }
-
-      console.warn("Failed to geocode booking map address", {
-        address,
-        status,
-        results,
+    listingsAPI
+      .geocodeLocation(
+        {
+          postalCode: sanitizedPostalCode,
+          city: sanitizedCity,
+          region: sanitizedRegion,
+        },
+        { signal: controller.signal },
+      )
+      .then((response) => {
+        if (!active) return;
+        const nextCenter = response.location;
+        geocodeCache.set(cacheKey, nextCenter);
+        setCenter(nextCenter);
+      })
+      .catch((error) => {
+        if (!active) return;
+        if (
+          error &&
+          typeof error === "object" &&
+          "name" in error &&
+          (error as { name?: string }).name === "AbortError"
+        ) {
+          return;
+        }
+        console.warn("Failed to geocode booking map address", error);
+        setGeocodeFailed(true);
       });
-      setGeocodeFailed(true);
-    });
 
     return () => {
-      cancelled = true;
+      active = false;
+      controller.abort();
     };
-  }, [address, isLoaded]);
+  }, [cacheKey, sanitizedCity, sanitizedPostalCode, sanitizedRegion]);
 
   if (!sanitizedPostalCode) {
     return (

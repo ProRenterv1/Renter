@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from typing import Any
 
@@ -9,9 +10,12 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from listings.models import Listing
+from notifications import tasks as notification_tasks
 
 from .domain import ensure_no_conflict, validate_booking_dates
 from .models import Booking
+
+logger = logging.getLogger(__name__)
 
 
 class BookingSerializer(serializers.ModelSerializer):
@@ -23,6 +27,10 @@ class BookingSerializer(serializers.ModelSerializer):
     owner = serializers.PrimaryKeyRelatedField(read_only=True)
     renter = serializers.PrimaryKeyRelatedField(read_only=True)
     listing_title = serializers.ReadOnlyField(source="listing.title")
+    renter_first_name = serializers.ReadOnlyField(source="renter.first_name")
+    renter_last_name = serializers.ReadOnlyField(source="renter.last_name")
+    renter_username = serializers.ReadOnlyField(source="renter.username")
+    renter_avatar_url = serializers.ReadOnlyField(source="renter.avatar_url")
 
     class Meta:
         model = Booking
@@ -35,6 +43,10 @@ class BookingSerializer(serializers.ModelSerializer):
             "listing_title",
             "owner",
             "renter",
+            "renter_first_name",
+            "renter_last_name",
+            "renter_username",
+            "renter_avatar_url",
             "totals",
             "deposit_hold_id",
             "created_at",
@@ -107,7 +119,7 @@ class BookingSerializer(serializers.ModelSerializer):
             "total_charge": str(total_charge),
         }
 
-        return Booking.objects.create(
+        booking = Booking.objects.create(
             listing=listing,
             owner=listing.owner,
             renter=user,
@@ -117,3 +129,13 @@ class BookingSerializer(serializers.ModelSerializer):
             totals=totals,
             deposit_hold_id="",
         )
+
+        try:
+            notification_tasks.send_booking_request_email.delay(listing.owner_id, booking.id)
+        except Exception:
+            logger.info(
+                "notifications: could not queue send_booking_request_email",
+                exc_info=True,
+            )
+
+        return booking

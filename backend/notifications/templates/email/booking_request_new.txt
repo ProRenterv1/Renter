@@ -1,0 +1,16 @@
+{% if owner %}Hi {{ owner.get_full_name|default:owner.username }},{% else %}Hi,{% endif %}
+
+You have a new booking request for "{{ listing_title }}".
+
+Dates: {{ start_date }} to {{ end_date }}
+{% if renter %}Renter: {{ renter.get_full_name|default:renter.username }} (username: {{ renter.username }}){% endif %}
+
+Cost summary:
+- Days: {{ totals.days|default:booking.days }}
+- Rental subtotal: ${{ totals.rental_subtotal|default:"0.00" }}
+- Damage deposit: ${{ totals.damage_deposit|default:"0.00" }}
+- Service fee: ${{ totals.service_fee|default:"0.00" }}
+- Total charge: ${{ totals.total_charge|default:"0.00" }}
+
+Review booking request:
+{{ cta_url }}

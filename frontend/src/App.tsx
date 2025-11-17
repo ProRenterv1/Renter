@@ -12,6 +12,7 @@ import UserProfile from "@/pages/UserProfile";
 import Messages from "@/pages/Messages";
 import Feed from "@/pages/Feed";
 import Booking from "@/pages/Booking";
+import AllCategoriesPage from "@/pages/AllCategories";
 import { AuthStore } from "@/lib/auth";
 import { listingsAPI, type Listing as ApiListing } from "@/lib/api";
 
@@ -135,11 +136,29 @@ function RequireAuth({ children }: { children: ReactNode }) {
 }
 
 export default function App() {
+  const location = useLocation();
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (location.hash) {
+      const sectionId = location.hash.replace("#", "");
+      const element = document.getElementById(sectionId);
+      if (element) {
+        element.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      return;
+    }
+    window.scrollTo({ top: 0 });
+  }, [location.pathname, location.hash]);
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/feed" element={<FeedPage />} />
+        <Route path="/categories" element={<AllCategoriesPage />} />
         <Route
           path="/profile"
           element={

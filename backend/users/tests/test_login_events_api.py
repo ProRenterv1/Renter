@@ -1,7 +1,6 @@
 import hashlib
 
 import pytest
-from django.conf import settings
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
@@ -62,8 +61,7 @@ def test_login_events_are_scoped_to_authenticated_user(user):
     assert returned_ids <= user_ids
     assert not returned_ids & other_ids
     for payload in resp.data:
-        assert {"id", "device", "ip", "location", "date", "is_new_device"} <= payload.keys()
-        assert payload["location"] == settings.IP_GEO_PRIVATE_LABEL
+        assert {"id", "device", "ip", "date", "is_new_device"} <= payload.keys()
 
 
 def test_login_events_are_returned_newest_first(user):
