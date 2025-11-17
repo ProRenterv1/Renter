@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from urllib.parse import quote_plus
 
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
@@ -53,12 +54,53 @@ class User(AbstractUser):
 
     can_rent = models.BooleanField(default=True)
     can_list = models.BooleanField(default=True)
+    avatar = models.ImageField(
+        upload_to="avatars/",
+        blank=True,
+        null=True,
+        help_text="Optional profile photo shown to other users.",
+    )
 
     def is_owner(self) -> bool:
         return bool(self.can_list)
 
     def is_renter(self) -> bool:
         return bool(self.can_rent)
+
+    def _avatar_placeholder_seed(self) -> str:
+        base_seed = (self.get_full_name() or self.username or f"user-{self.pk or 'anon'}").strip()
+        if not base_seed:
+            base_seed = f"user-{self.pk or 'anon'}"
+        return base_seed
+
+    def _build_media_url(self, url: str) -> str:
+        if not url:
+            return ""
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        base_url = getattr(settings, "MEDIA_BASE_URL", "") or ""
+        if base_url:
+            return f"{base_url.rstrip('/')}{url}"
+        return url
+
+    @property
+    def avatar_url(self) -> str:
+        """
+        Return either the uploaded avatar URL or a deterministic placeholder.
+        """
+        if self.avatar:
+            try:
+                return self._build_media_url(self.avatar.url)
+            except ValueError:
+                # Missing file or storage misconfiguration; fall back to placeholder.
+                pass
+
+        seed = quote_plus(self._avatar_placeholder_seed())
+        return f"https://api.dicebear.com/7.x/initials/svg?seed={seed}&backgroundColor=5B8CA6"
+
+    @property
+    def avatar_uploaded(self) -> bool:
+        return bool(self.avatar)
 
 
 class LoginEvent(models.Model):

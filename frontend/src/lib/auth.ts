@@ -25,10 +25,13 @@ export type UserProfile = {
   phone_verified: boolean;
   two_factor_email_enabled: boolean;
   two_factor_sms_enabled: boolean;
+  avatar_url?: string | null;
+  avatar_uploaded?: boolean;
 };
 
 const TOKENS_KEY = "renter.auth.tokens";
 const USER_KEY = "renter.auth.user";
+const AUTH_CHANGE_EVENT = "renter:auth-change";
 
 function read<T>(key: string): T | null {
   try {
@@ -51,6 +54,13 @@ function write<T>(key: string, value: T | null) {
   }
 }
 
+function emitAuthChange() {
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") {
+    return;
+  }
+  window.dispatchEvent(new Event(AUTH_CHANGE_EVENT));
+}
+
 /** Lightweight auth store for tokens + cached profile. */
 export const AuthStore = {
   getTokens(): AuthTokens | null {
@@ -58,10 +68,12 @@ export const AuthStore = {
   },
   setTokens(tokens: AuthTokens) {
     write(TOKENS_KEY, tokens);
+    emitAuthChange();
   },
   clearTokens() {
     write<AuthTokens>(TOKENS_KEY, null);
     write<UserProfile>(USER_KEY, null);
+    emitAuthChange();
   },
   getAccess(): string | null {
     return this.getTokens()?.access ?? null;
@@ -71,6 +83,14 @@ export const AuthStore = {
   },
   getCurrentUser(): UserProfile | null {
     return read<UserProfile>(USER_KEY);
+  },
+  subscribe(listener: () => void) {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") {
+      return () => {};
+    }
+    const handler = () => listener();
+    window.addEventListener(AUTH_CHANGE_EVENT, handler);
+    return () => window.removeEventListener(AUTH_CHANGE_EVENT, handler);
   },
 };
 

@@ -32,9 +32,10 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
+import { Star } from "lucide-react";
 import { format } from "date-fns";
 import { AuthStore } from "@/lib/auth";
-import { bookingsAPI, listingsAPI, type Booking } from "@/lib/api";
+import { bookingsAPI, listingsAPI, type Booking, type Listing } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
 
 type RequestStatus = "pending" | "approved" | "denied";
@@ -44,6 +45,10 @@ interface BookingRequestRow {
   booking: Booking;
   listingPhoto?: string;
   listingCity?: string;
+}
+
+export interface BookingRequestsProps {
+  onPendingCountChange?: (count: number) => void;
 }
 
 const statusClasses: Record<RequestStatus, string> = {
@@ -82,7 +87,7 @@ const formatDateRange = (start: string, end: string) => {
 
 const placeholderImage = "https://placehold.co/200x200?text=Listing";
 
-export function BookingRequests() {
+export function BookingRequests({ onPendingCountChange }: BookingRequestsProps = {}) {
   const [requests, setRequests] = useState<BookingRequestRow[]>([]);
   const [selectedRequest, setSelectedRequest] = useState<BookingRequestRow | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -143,6 +148,36 @@ export function BookingRequests() {
     return requests.filter((row) => bookingStatusToRequestStatus(row.booking.status) === statusFilter);
   }, [requests, statusFilter]);
 
+  const selectedRenterDetails = useMemo(() => {
+    if (!selectedRequest) {
+      return null;
+    }
+    const renterFirstName = selectedRequest.booking.renter_first_name?.trim() ?? "";
+    const renterLastName = selectedRequest.booking.renter_last_name?.trim() ?? "";
+    const renterUsername = selectedRequest.booking.renter_username ?? "";
+    const renterDisplayName =
+      [renterFirstName, renterLastName].filter(Boolean).join(" ") ||
+      renterUsername ||
+      `Renter #${selectedRequest.booking.renter}`;
+    const renterAvatarUrl =
+      selectedRequest.booking.renter_avatar_url ||
+      `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(renterDisplayName)}`;
+    const initials =
+      (renterFirstName[0] ?? "") + (renterLastName[0] ?? "") ||
+      renterUsername.slice(0, 2).toUpperCase() ||
+      String(selectedRequest.booking.renter ?? "R").slice(0, 2).toUpperCase();
+    const rating =
+      selectedRequest.booking.renter_rating ??
+      null;
+
+    return {
+      displayName: renterDisplayName,
+      avatarUrl: renterAvatarUrl,
+      initials,
+      rating,
+    };
+  }, [selectedRequest]);
+
   const getStatusBadge = (status: RequestStatus) => (
     <Badge variant="outline" className={statusClasses[status]}>
       {statusLabel[status]}
@@ -191,6 +226,12 @@ export function BookingRequests() {
   const pendingRequests = requests.filter(
     (row) => bookingStatusToRequestStatus(row.booking.status) === "pending",
   ).length;
+
+  useEffect(() => {
+    if (onPendingCountChange) {
+      onPendingCountChange(pendingRequests);
+    }
+  }, [pendingRequests, onPendingCountChange]);
 
   return (
     <div className="space-y-6">
@@ -351,20 +392,36 @@ export function BookingRequests() {
 
                 <div>
                   <p className="text-sm text-muted-foreground mb-3">Requested by</p>
-                  <div className="flex items-center gap-3">
-                    <Avatar className="w-12 h-12">
-                      <AvatarImage src="" alt="Renter avatar" />
-                      <AvatarFallback>
-                        {String(selectedRequest.booking.renter ?? "R").slice(0, 2).toUpperCase()}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1">
-                      <p style={{ fontFamily: "Manrope" }}>Renter #{selectedRequest.booking.renter}</p>
-                      <p className="text-sm text-muted-foreground">
-                        Contact details are shared after approval.
-                      </p>
+                  {selectedRenterDetails && (
+                    <div className="flex items-center gap-3">
+                      <Avatar className="w-12 h-12">
+                        <AvatarImage
+                          src={selectedRenterDetails.avatarUrl}
+                          alt={`${selectedRenterDetails.displayName} avatar`}
+                        />
+                        <AvatarFallback>{selectedRenterDetails.initials}</AvatarFallback>
+                      </Avatar>
+                      <div className="flex-1">
+                        <p style={{ fontFamily: "Manrope" }}>{selectedRenterDetails.displayName}</p>
+                        <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
+                          <Star className="w-4 h-4 text-yellow-500 fill-yellow-500" />
+                          {typeof selectedRenterDetails.rating === "number" ? (
+                            <>
+                              <span className="font-medium text-foreground">
+                                {selectedRenterDetails.rating.toFixed(1)}
+                              </span>
+                              <span>/ 5</span>
+                            </>
+                          ) : (
+                            <span>No rating yet</span>
+                          )}
+                        </div>
+                      </div>
+                      <Button variant="outline" size="sm" className="ml-auto whitespace-nowrap">
+                        View Profile
+                      </Button>
                     </div>
-                  </div>
+                  )}
                 </div>
 
                 <div className="h-px bg-border" />

@@ -1,14 +1,30 @@
 from decimal import Decimal
 
 import pytest
+import responses
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
+from listings.api import GEOCODE_ENDPOINT
 from listings.models import Category, Listing
 
 pytestmark = pytest.mark.django_db
 
 User = get_user_model()
+
+
+class DummyRedis:
+    def __init__(self):
+        self._data = {}
+
+    def get(self, key):
+        return self._data.get(key)
+
+    def setex(self, key, ttl, value):
+        if isinstance(value, str):
+            self._data[key] = value.encode("utf-8")
+        else:
+            self._data[key] = value
 
 
 def auth(user):
@@ -298,3 +314,72 @@ def test_categories_endpoint_lists_all_categories():
     names = [item["name"] for item in resp.data]
     assert names == ["Camping Gear", "Power Tools"]
     assert {"id", "name", "slug"} <= set(resp.data[0].keys())
+
+
+def test_geocode_requires_postal_code(settings):
+    settings.GOOGLE_MAPS_API_KEY = "test-key"
+    client = APIClient()
+    resp = client.get("/api/listings/geocode/")
+    assert resp.status_code == 400
+
+
+def test_geocode_requires_api_key(settings):
+    settings.GOOGLE_MAPS_API_KEY = None
+    client = APIClient()
+    resp = client.get("/api/listings/geocode/?postal_code=T5K+2M5")
+    assert resp.status_code == 503
+
+
+def test_geocode_fetches_and_caches_coordinates(settings, monkeypatch):
+    settings.GOOGLE_MAPS_API_KEY = "test-key"
+    dummy_cache = DummyRedis()
+    monkeypatch.setattr("listings.api.get_redis_client", lambda: dummy_cache)
+    client = APIClient()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.GET,
+            GEOCODE_ENDPOINT,
+            json={
+                "status": "OK",
+                "results": [
+                    {
+                        "formatted_address": "T5K 2M5, Edmonton, AB",
+                        "geometry": {"location": {"lat": 53.5, "lng": -113.5}},
+                    }
+                ],
+            },
+            status=200,
+        )
+        resp = client.get(
+            "/api/listings/geocode/?postal_code=T5K+2M5&city=Edmonton&region=AB",
+        )
+        assert resp.status_code == 200
+        assert resp.data["location"] == {"lat": 53.5, "lng": -113.5}
+        assert resp.data["cache_hit"] is False
+        assert len(rsps.calls) == 1
+
+    with responses.RequestsMock() as rsps:
+        resp_cached = client.get(
+            "/api/listings/geocode/?postal_code=T5K+2M5&city=Edmonton&region=AB",
+        )
+        assert resp_cached.status_code == 200
+        assert resp_cached.data["cache_hit"] is True
+        assert resp_cached.data["location"] == {"lat": 53.5, "lng": -113.5}
+        assert len(rsps.calls) == 0
+
+
+def test_geocode_returns_404_for_unknown(settings, monkeypatch):
+    settings.GOOGLE_MAPS_API_KEY = "test-key"
+    dummy_cache = DummyRedis()
+    monkeypatch.setattr("listings.api.get_redis_client", lambda: dummy_cache)
+    client = APIClient()
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.GET,
+            GEOCODE_ENDPOINT,
+            json={"status": "ZERO_RESULTS", "results": []},
+            status=200,
+        )
+        resp = client.get("/api/listings/geocode/?postal_code=00000")
+    assert resp.status_code == 404

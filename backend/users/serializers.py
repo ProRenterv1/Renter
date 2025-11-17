@@ -11,7 +11,6 @@ from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .geo import get_location_for_ip
 from .models import (
     ContactVerificationChallenge,
     LoginEvent,
@@ -74,6 +73,14 @@ def _normalize_contact(contact: str) -> Tuple[str, str]:
 class ProfileSerializer(serializers.ModelSerializer):
     """Read-only profile details with verification flags."""
 
+    avatar = serializers.ImageField(
+        required=False,
+        allow_null=True,
+        write_only=True,
+    )
+    avatar_url = serializers.SerializerMethodField()
+    avatar_uploaded = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = [
@@ -93,6 +100,9 @@ class ProfileSerializer(serializers.ModelSerializer):
             "phone_verified",
             "two_factor_email_enabled",
             "two_factor_sms_enabled",
+            "avatar_url",
+            "avatar_uploaded",
+            "avatar",
         ]
         read_only_fields = (
             "id",
@@ -100,6 +110,8 @@ class ProfileSerializer(serializers.ModelSerializer):
             "phone_verified",
             "two_factor_email_enabled",
             "two_factor_sms_enabled",
+            "avatar_url",
+            "avatar_uploaded",
         )
 
     @staticmethod
@@ -144,7 +156,24 @@ class ProfileSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Enter a valid postal or ZIP code.")
         return cleaned
 
-    def update(self, instance, validated_data):
+    def get_avatar_url(self, obj: User) -> str:
+        return obj.avatar_url
+
+    def get_avatar_uploaded(self, obj: User) -> bool:
+        return obj.avatar_uploaded
+
+    def update(self, instance: User, validated_data: dict):
+        avatar = validated_data.pop("avatar", serializers.empty)
+        if avatar is not serializers.empty:
+            if avatar:
+                if instance.avatar:
+                    instance.avatar.delete(save=False)
+                instance.avatar = avatar
+            else:
+                if instance.avatar:
+                    instance.avatar.delete(save=False)
+                instance.avatar = None
+
         if "phone" in validated_data:
             new_phone = validated_data.get("phone")
             if new_phone != instance.phone:
@@ -156,12 +185,11 @@ class LoginEventSerializer(serializers.ModelSerializer):
     """Expose login events with UX-friendly fields."""
 
     device = serializers.SerializerMethodField()
-    location = serializers.SerializerMethodField()
     date = serializers.SerializerMethodField()
 
     class Meta:
         model = LoginEvent
-        fields = ("id", "device", "ip", "location", "date", "is_new_device")
+        fields = ("id", "device", "ip", "date", "is_new_device")
 
     def get_device(self, obj: LoginEvent) -> str:
         ua = (obj.user_agent or "").lower()
@@ -182,9 +210,6 @@ class LoginEventSerializer(serializers.ModelSerializer):
         if "edge" in ua and "windows" in ua:
             return "Edge on Windows"
         return "Unknown device"
-
-    def get_location(self, obj: LoginEvent) -> Optional[str]:
-        return get_location_for_ip(obj.ip)
 
     def get_date(self, obj: LoginEvent) -> str:
         dt = timezone.localtime(obj.created_at)

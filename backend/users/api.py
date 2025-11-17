@@ -6,7 +6,7 @@ from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.utils import timezone
-from rest_framework import generics, permissions, serializers, status
+from rest_framework import generics, parsers, permissions, serializers, status
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -161,6 +161,11 @@ class MeView(generics.RetrieveUpdateAPIView):
 
     serializer_class = ProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
+    parser_classes = (
+        parsers.JSONParser,
+        parsers.FormParser,
+        parsers.MultiPartParser,
+    )
 
     def get_object(self):
         user = self.request.user

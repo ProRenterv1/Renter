@@ -148,3 +148,83 @@ def send_password_changed_sms(user_id: int):
         return
     context = {"user": user}
     _send_sms("password_changed.txt", context, getattr(user, "phone", None))
+
+
+@shared_task(queue="emails")
+def send_booking_request_email(owner_id: int, booking_id: int):
+    """Notify the listing owner that a renter submitted a new booking request."""
+    from bookings.models import Booking
+
+    owner = _get_user(owner_id)
+    if not owner:
+        return
+
+    try:
+        booking = Booking.objects.select_related("listing", "renter").get(pk=booking_id)
+    except Booking.DoesNotExist:
+        logger.warning("notifications: booking %s no longer exists", booking_id)
+        return
+
+    listing_title = getattr(booking.listing, "title", "your listing")
+    renter = booking.renter
+    frontend_origin = getattr(settings, "FRONTEND_ORIGIN", "").rstrip("/") or ""
+    context = {
+        "owner": owner,
+        "booking": booking,
+        "listing_title": listing_title,
+        "start_date": booking.start_date,
+        "end_date": booking.end_date,
+        "totals": booking.totals or {},
+        "renter": renter,
+        "cta_url": f"{frontend_origin}/profile?tab=booking-requests" if frontend_origin else "",
+    }
+    _send_email(
+        f"New booking request for {listing_title}",
+        "booking_request_new.txt",
+        context,
+        owner.email,
+    )
+
+
+@shared_task(queue="emails")
+def send_booking_status_email(renter_id: int, booking_id: int, new_status: str):
+    """Notify the renter that their booking status changed (e.g., approved or denied)."""
+    from bookings.models import Booking
+
+    renter = _get_user(renter_id)
+    if not renter:
+        return
+
+    try:
+        booking = Booking.objects.select_related("listing", "owner", "renter").get(pk=booking_id)
+    except Booking.DoesNotExist:
+        logger.warning("notifications: booking %s no longer exists", booking_id)
+        return
+
+    listing_title = getattr(booking.listing, "title", "your listing")
+    status_word_map = {
+        Booking.Status.CONFIRMED: "approved",
+        Booking.Status.CANCELED: "denied",
+        Booking.Status.REQUESTED: "updated",
+        Booking.Status.COMPLETED: "completed",
+    }
+    status_word = status_word_map.get(new_status, "updated")
+    status_label = status_word.capitalize()
+    frontend_origin = getattr(settings, "FRONTEND_ORIGIN", "").rstrip("/") or ""
+    context = {
+        "renter": renter,
+        "booking": booking,
+        "listing_title": listing_title,
+        "status_label": status_label,
+        "start_date": booking.start_date,
+        "end_date": booking.end_date,
+        "totals": booking.totals or {},
+        "cta_url": f"{frontend_origin}/profile?tab=rentals" if frontend_origin else "",
+        "owner": booking.owner,
+    }
+    _send_email(
+        f"Your booking for {listing_title} was {status_word}",
+        "booking_status_update.txt",
+        context,
+        getattr(renter, "email", None),
+    )

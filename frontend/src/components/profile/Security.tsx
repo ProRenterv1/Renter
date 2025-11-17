@@ -37,7 +37,6 @@ type LoginHistoryEntry = {
   id: number;
   device: string;
   ip: string;
-  location: string | null;
   date: string;
   is_new_device: boolean;
 };
@@ -688,7 +687,7 @@ export function Security() {
                   <div>
                     <p>{login.device}</p>
                     <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>
-                      {login.location ? `${login.ip} - ${login.location}` : login.ip}
+                      {login.ip}
                     </p>
                   </div>
                   <p className="text-sm" style={{ color: "var(--text-muted)" }}>

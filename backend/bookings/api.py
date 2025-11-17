@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from django.core.exceptions import ValidationError
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
@@ -9,9 +11,13 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from notifications import tasks as notification_tasks
+
 from .domain import assert_can_cancel, assert_can_complete, assert_can_confirm, ensure_no_conflict
 from .models import Booking
 from .serializers import BookingSerializer
+
+logger = logging.getLogger(__name__)
 
 
 class IsBookingParticipant(permissions.BasePermission):
@@ -85,6 +91,17 @@ class BookingViewSet(viewsets.ModelViewSet):
 
         booking.status = Booking.Status.CONFIRMED
         booking.save(update_fields=["status", "updated_at"])
+        try:
+            notification_tasks.send_booking_status_email.delay(
+                booking.renter_id,
+                booking.id,
+                booking.status,
+            )
+        except Exception:
+            logger.info(
+                "notifications: could not queue send_booking_status_email",
+                exc_info=True,
+            )
         return Response(self.get_serializer(booking).data)
 
     @action(detail=True, methods=["post"], url_path="cancel")
@@ -98,6 +115,18 @@ class BookingViewSet(viewsets.ModelViewSet):
 
         booking.status = Booking.Status.CANCELED
         booking.save(update_fields=["status", "updated_at"])
+        if booking.owner_id == request.user.id:
+            try:
+                notification_tasks.send_booking_status_email.delay(
+                    booking.renter_id,
+                    booking.id,
+                    booking.status,
+                )
+            except Exception:
+                logger.info(
+                    "notifications: could not queue send_booking_status_email",
+                    exc_info=True,
+                )
         return Response(self.get_serializer(booking).data)
 
     @action(detail=True, methods=["post"], url_path="complete")

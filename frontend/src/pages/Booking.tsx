@@ -14,9 +14,11 @@ import { Badge } from "../components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
 import { Separator } from "../components/ui/separator";
 import { BookingMap } from "../components/BookingMap";
+import { LoginModal } from "../components/LoginModal";
 import { Header } from "../components/Header";
 import { addDays, differenceInDays, format } from "date-fns";
 import { bookingsAPI, type Listing as ApiListing } from "@/lib/api";
+import { AuthStore } from "@/lib/auth";
 
 interface BookingPageProps {
   listing: ApiListing | null;
@@ -53,6 +55,11 @@ export default function Booking({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState(false);
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
+  const [isMapVisible, setIsMapVisible] = useState(false);
+  const [loginModalOpen, setLoginModalOpen] = useState(false);
+  const [loginModalMode, setLoginModalMode] = useState<"login" | "signup">(
+    "login",
+  );
 
   if (!listing) {
     return (
@@ -145,8 +152,18 @@ export default function Booking({
         format(unavailableDate, "yyyy-MM-dd") === format(date, "yyyy-MM-dd"),
     );
 
+  const requireLogin = () => {
+    setLoginModalMode("login");
+    setLoginModalOpen(true);
+  };
+
   async function handleRequestBooking() {
     if (!listing || !dateRange.from || !dateRange.to) return;
+
+    if (!AuthStore.getTokens()) {
+      requireLogin();
+      return;
+    }
     setSubmitting(true);
     setSubmitError(null);
     setSubmitSuccess(false);
@@ -178,11 +195,12 @@ export default function Booking({
   }
 
   return (
-    <div
-      className="min-h-screen w-full"
-      style={{ backgroundColor: "#f9f9f9" }}
-    >
-      <Header />
+    <>
+      <div
+        className="min-h-screen w-full"
+        style={{ backgroundColor: "#f9f9f9" }}
+      >
+        <Header />
 
       {/* Main Content */}
       <div className="max-w-7xl mx-auto px-6 py-8">
@@ -338,13 +356,29 @@ export default function Booking({
                     City: {cityText} 
                   </span>
                 </div>
-                <div className="mt-4 h-48 bg-muted rounded-xl overflow-hidden border border-border">
-                  <BookingMap
-                    postalCode={listing.postalCode ?? listing.postal_code ?? ""}
-                    city={listing.city ?? "Edmonton"}
-                    region="AB, Canada"
-                  />
-                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-3"
+                  type="button"
+                  aria-expanded={isMapVisible}
+                  aria-controls="booking-location-map"
+                  onClick={() => setIsMapVisible((prev) => !prev)}
+                >
+                  {isMapVisible ? "Hide map" : "Show map"}
+                </Button>
+                {isMapVisible && (
+                  <div
+                    id="booking-location-map"
+                    className="mt-4 h-48 bg-muted rounded-xl overflow-hidden border border-border"
+                  >
+                    <BookingMap
+                      postalCode={listing.postalCode ?? listing.postal_code ?? ""}
+                      city={listing.city ?? "Edmonton"}
+                      region="AB, Canada"
+                    />
+                  </div>
+                )}
               </div>
 
               <Separator className="my-6" />
@@ -769,6 +803,14 @@ export default function Booking({
           )}
         </div>
       )}
-    </div>
+      </div>
+
+      <LoginModal
+        open={loginModalOpen}
+        onOpenChange={setLoginModalOpen}
+        defaultMode={loginModalMode}
+        onAuthSuccess={() => setLoginModalOpen(false)}
+      />
+    </>
   );
 }

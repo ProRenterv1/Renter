@@ -21,7 +21,14 @@ export function Header() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    setIsAuthenticated(Boolean(AuthStore.getTokens()));
+    const updateAuthState = () => {
+      setIsAuthenticated(Boolean(AuthStore.getTokens()));
+    };
+    updateAuthState();
+    const unsubscribe = AuthStore.subscribe(updateAuthState);
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   const openModal = (mode: "login" | "signup") => {

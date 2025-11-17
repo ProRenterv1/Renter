@@ -33,7 +33,6 @@ export interface LoginHistoryEntry {
   id: number;
   device: string;
   ip: string;
-  location: string | null;
   date: string;
   is_new_device: boolean;
 }
@@ -218,6 +217,26 @@ export interface ListingListParams {
   page?: number;
 }
 
+export interface ListingGeocodeParams {
+  postalCode: string;
+  city?: string;
+  region?: string;
+}
+
+export interface ListingGeocodeResponse {
+  location: {
+    lat: number;
+    lng: number;
+  };
+  formatted_address: string;
+  address: {
+    postal_code: string;
+    city?: string | null;
+    region?: string | null;
+  };
+  cache_hit: boolean;
+}
+
 export type BookingStatus = "requested" | "confirmed" | "canceled" | "completed";
 
 export interface BookingTotals {
@@ -238,6 +257,11 @@ export interface Booking {
   listing_title: string;
   owner: number;
   renter: number;
+  renter_first_name?: string | null;
+  renter_last_name?: string | null;
+  renter_username?: string;
+  renter_avatar_url?: string | null;
+  renter_rating?: number | null;
   totals: BookingTotals;
   deposit_hold_id: string;
   created_at: string;
@@ -289,7 +313,7 @@ export type UpdateProfilePayload = Partial<
     | "can_rent"
     | "can_list"
   >
-> & { phone?: string | null };
+> & { phone?: string | null; avatar?: null };
 
 /**
  * Wrapper around fetch that automatically attaches JSON headers + auth token.
@@ -348,6 +372,33 @@ export const authAPI = {
   },
   updateProfile(payload: UpdateProfilePayload) {
     return jsonFetch<Profile>("/users/me/", { method: "PATCH", body: payload });
+  },
+  async uploadAvatar(file: File) {
+    const formData = new FormData();
+    formData.append("avatar", file);
+    const token = AuthStore.getAccess();
+    const headers = new Headers();
+    if (token) {
+      headers.set("Authorization", `Bearer ${token}`);
+    }
+    const response = await fetch(`${API_BASE}/users/me/`, {
+      method: "PATCH",
+      headers,
+      body: formData,
+    });
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!response.ok) {
+      const error: JsonError = { status: response.status, data };
+      throw error;
+    }
+    return data as Profile;
+  },
+  deleteAvatar() {
+    return jsonFetch<Profile>("/users/me/", {
+      method: "PATCH",
+      body: { avatar: null },
+    });
   },
   changePassword(payload: ChangePasswordPayload) {
     return jsonFetch<ChangePasswordResponse>("/users/change-password/", {
@@ -504,6 +555,25 @@ export const listingsAPI = {
   deletePhoto(slug: string, photoId: number) {
     return jsonFetch<void>(`/listings/${slug}/photos/${photoId}/`, {
       method: "DELETE",
+    });
+  },
+  geocodeLocation(params: ListingGeocodeParams, options?: { signal?: AbortSignal }) {
+    const postalCode = params.postalCode?.trim();
+    if (!postalCode) {
+      throw new Error("postalCode is required");
+    }
+    const search = new URLSearchParams();
+    search.set("postal_code", postalCode);
+    if (params.city) {
+      search.set("city", params.city);
+    }
+    if (params.region) {
+      search.set("region", params.region);
+    }
+    const query = search.toString();
+    return jsonFetch<ListingGeocodeResponse>(`/listings/geocode/?${query}`, {
+      method: "GET",
+      signal: options?.signal,
     });
   },
 };
