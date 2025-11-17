@@ -10,6 +10,7 @@ def search_listings(
     price_max: float | None,
     category: str | None = None,
     city: str | None = None,
+    owner_id: int | None = None,
 ) -> QuerySet[Listing]:
     if q:
         qs = qs.filter(Q(title__icontains=q) | Q(description__icontains=q) | Q(city__icontains=q))
@@ -21,4 +22,6 @@ def search_listings(
         qs = qs.filter(category__slug=category)
     if city:
         qs = qs.filter(city__iexact=city)
+    if owner_id is not None:
+        qs = qs.filter(owner_id=owner_id)
     return qs.filter(is_active=True, is_available=True).order_by("-created_at")

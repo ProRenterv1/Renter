@@ -29,6 +29,7 @@ from .serializers import (
     PasswordResetRequestSerializer,
     PasswordResetVerifySerializer,
     ProfileSerializer,
+    PublicProfileSerializer,
     SignupSerializer,
     TwoFactorLoginResendSerializer,
     TwoFactorLoginVerifySerializer,
@@ -171,6 +172,18 @@ class MeView(generics.RetrieveUpdateAPIView):
         user = self.request.user
         self.check_object_permissions(self.request, user)
         return user
+
+
+class PublicProfileView(generics.RetrieveAPIView):
+    """Expose limited, read-only profile information for active users."""
+
+    serializer_class = PublicProfileSerializer
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    lookup_field = "pk"
+
+    def get_queryset(self):
+        return User.objects.filter(is_active=True)
 
 
 class LoginEventListView(generics.ListAPIView):

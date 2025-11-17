@@ -253,6 +253,7 @@ class ListingViewSet(viewsets.ModelViewSet):
 
         price_min_raw = params.get("price_min")
         price_max_raw = params.get("price_max")
+        owner_id_raw = params.get("owner_id")
 
         try:
             price_min = float(price_min_raw) if price_min_raw not in (None, "") else None
@@ -262,6 +263,10 @@ class ListingViewSet(viewsets.ModelViewSet):
             price_max = float(price_max_raw) if price_max_raw not in (None, "") else None
         except (TypeError, ValueError):
             price_max = None
+        try:
+            owner_id = int(owner_id_raw) if owner_id_raw not in (None, "") else None
+        except (TypeError, ValueError):
+            owner_id = None
 
         return search_listings(
             qs=base_qs,
@@ -270,6 +275,7 @@ class ListingViewSet(viewsets.ModelViewSet):
             price_max=price_max,
             category=category,
             city=city,
+            owner_id=owner_id,
         )
 
     def perform_create(self, serializer):
