@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import environ
@@ -23,6 +24,7 @@ INSTALLED_APPS = [
     "django_filters",
     "anymail",
     "bookings.apps.BookingsConfig",
+    "payments.apps.PaymentsConfig",
     "users",
     "listings",
     "storage",
@@ -174,3 +176,18 @@ FRONTEND_ORIGIN = env("FRONTEND_ORIGIN", default="http://localhost:5173")
 GOOGLE_MAPS_API_KEY       = env("GOOGLE_MAPS_API_KEY", default=None)
 GEOCODE_CACHE_TTL         = env.int("GEOCODE_CACHE_TTL", default=7 * 24 * 60 * 60)
 GEOCODE_REQUEST_TIMEOUT   = env.float("GEOCODE_REQUEST_TIMEOUT", default=5.0)
+
+# --- Booking fees ---
+# Percentage surcharges expressed as Decimal fractions, e.g. 0.10 == 10%
+BOOKING_RENTER_FEE_RATE = Decimal(
+    env("BOOKING_RENTER_FEE_RATE", default="0.10")
+)  # 10% renter-facing service fee
+
+BOOKING_OWNER_FEE_RATE = Decimal(
+    env("BOOKING_OWNER_FEE_RATE", default="0.05")
+)  # 5% owner payout fee
+
+# --- Stripe ---
+STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY", default="")
+STRIPE_ENV = env("STRIPE_ENV", default="dev")
+STRIPE_PUBLISHABLE_KEY = env("STRIPE_PUBLISHABLE_KEY", default="")

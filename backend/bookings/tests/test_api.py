@@ -276,3 +276,202 @@ def test_my_bookings_endpoint_lists_owner_and_renter(
     renter_view_data = returned[renter_booking.id]
     assert renter_view_data["renter_first_name"] == owner_user.first_name
     assert renter_view_data["renter_last_name"] == owner_user.last_name
+
+
+def test_my_bookings_includes_status_label_for_paid_booking(
+    booking_factory,
+    renter_user,
+):
+    start = date.today() + timedelta(days=5)
+    end = start + timedelta(days=2)
+    booking = booking_factory(
+        start_date=start,
+        end_date=end,
+        status=Booking.Status.PAID,
+        renter=renter_user,
+    )
+    booking.charge_payment_intent_id = "pi_status_label"
+    booking.save(update_fields=["charge_payment_intent_id"])
+
+    client = auth(renter_user)
+    resp = client.get("/api/bookings/my/")
+    assert resp.status_code == 200
+    returned = {item["id"]: item for item in resp.data}
+    assert returned[booking.id]["status_label"] == "Waiting pick up"
+
+
+def test_my_bookings_derives_paid_label_from_charge_id(
+    booking_factory,
+    renter_user,
+):
+    start = date.today() + timedelta(days=8)
+    end = start + timedelta(days=3)
+    booking = booking_factory(
+        start_date=start,
+        end_date=end,
+        status=Booking.Status.REQUESTED,
+        renter=renter_user,
+    )
+    booking.charge_payment_intent_id = "pi_existing_charge"
+    booking.save(update_fields=["charge_payment_intent_id"])
+
+    client = auth(renter_user)
+    resp = client.get("/api/bookings/my/")
+    assert resp.status_code == 200
+    returned = {item["id"]: item for item in resp.data}
+    assert returned[booking.id]["status_label"] == "Waiting pick up"
+
+
+def test_pending_requests_count_returns_owner_requested_bookings(
+    booking_factory,
+    owner_user,
+):
+    start = date.today() + timedelta(days=5)
+    booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.REQUESTED,
+    )
+    booking_factory(
+        start_date=start + timedelta(days=3),
+        end_date=start + timedelta(days=5),
+        status=Booking.Status.REQUESTED,
+    )
+    booking_factory(
+        start_date=start + timedelta(days=6),
+        end_date=start + timedelta(days=7),
+        status=Booking.Status.CONFIRMED,
+    )
+
+    client = auth(owner_user)
+    resp = client.get("/api/bookings/pending-requests-count/")
+    assert resp.status_code == 200
+    assert resp.data["pending_requests"] == 2
+
+
+def test_pending_requests_count_excludes_renter_only_bookings(
+    owner_user,
+    other_user,
+):
+    start = date.today() + timedelta(days=4)
+    other_listing = Listing.objects.create(
+        owner=other_user,
+        title="Trail Bike",
+        description="Great bike",
+        daily_price_cad=Decimal("18.00"),
+        replacement_value_cad=Decimal("500.00"),
+        damage_deposit_cad=Decimal("150.00"),
+        city="Calgary",
+        is_active=True,
+        is_available=True,
+    )
+    Booking.objects.create(
+        listing=other_listing,
+        owner=other_user,
+        renter=owner_user,
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.REQUESTED,
+    )
+    Booking.objects.create(
+        listing=other_listing,
+        owner=other_user,
+        renter=other_user,
+        start_date=start + timedelta(days=3),
+        end_date=start + timedelta(days=5),
+        status=Booking.Status.REQUESTED,
+    )
+
+    client = auth(owner_user)
+    resp = client.get("/api/bookings/pending-requests-count/")
+    assert resp.status_code == 200
+    assert resp.data["pending_requests"] == 0
+
+
+def test_availability_returns_active_bookings_for_listing(
+    booking_factory,
+    listing,
+    other_user,
+):
+    start = date.today() + timedelta(days=3)
+    booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.REQUESTED,
+    )
+    booking_factory(
+        start_date=start + timedelta(days=5),
+        end_date=start + timedelta(days=7),
+        status=Booking.Status.CONFIRMED,
+    )
+    booking_factory(
+        start_date=start + timedelta(days=9),
+        end_date=start + timedelta(days=11),
+        status=Booking.Status.PAID,
+    )
+    other_listing = Listing.objects.create(
+        owner=other_user,
+        title="Other Listing",
+        description="Different listing",
+        daily_price_cad=Decimal("10.00"),
+        replacement_value_cad=Decimal("500.00"),
+        damage_deposit_cad=Decimal("50.00"),
+        city="Calgary",
+        is_active=True,
+        is_available=True,
+    )
+    booking_factory(
+        listing_override=other_listing,
+        start_date=start,
+        end_date=start + timedelta(days=1),
+        status=Booking.Status.REQUESTED,
+    )
+
+    client = APIClient()
+    resp = client.get(f"/api/bookings/availability/?listing={listing.id}")
+    assert resp.status_code == 200
+    assert resp.data == [
+        {"start_date": start.isoformat(), "end_date": (start + timedelta(days=2)).isoformat()},
+        {
+            "start_date": (start + timedelta(days=5)).isoformat(),
+            "end_date": (start + timedelta(days=7)).isoformat(),
+        },
+        {
+            "start_date": (start + timedelta(days=9)).isoformat(),
+            "end_date": (start + timedelta(days=11)).isoformat(),
+        },
+    ]
+
+
+def test_availability_excludes_inactive_bookings(booking_factory, listing):
+    start = date.today() + timedelta(days=4)
+    booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.CANCELED,
+    )
+    booking_factory(
+        start_date=start + timedelta(days=3),
+        end_date=start + timedelta(days=5),
+        status=Booking.Status.COMPLETED,
+    )
+
+    client = APIClient()
+    resp = client.get(f"/api/bookings/availability/?listing={listing.id}")
+    assert resp.status_code == 200
+    assert resp.data == []
+
+
+def test_availability_requires_listing_query_param():
+    client = APIClient()
+    resp = client.get("/api/bookings/availability/")
+    assert resp.status_code == 400
+    assert resp.data["detail"]
+
+
+def test_availability_returns_404_for_inactive_listing(listing):
+    listing.is_active = False
+    listing.save(update_fields=["is_active"])
+    client = APIClient()
+    resp = client.get(f"/api/bookings/availability/?listing={listing.id}")
+    assert resp.status_code == 404

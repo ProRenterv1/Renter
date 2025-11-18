@@ -56,6 +56,7 @@ export default function Booking({
     from: undefined,
     to: undefined,
   });
+  const [unavailableDates, setUnavailableDates] = useState<Date[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState(false);
@@ -93,6 +94,54 @@ export default function Booking({
   useEffect(() => {
     setIsDescriptionExpanded(false);
   }, [listing?.slug]);
+
+  useEffect(() => {
+    if (!listing?.id) {
+      setUnavailableDates([]);
+      return;
+    }
+
+    let active = true;
+
+    bookingsAPI
+      .availability(listing.id)
+      .then((ranges) => {
+        if (!active) return;
+
+        const parseLocalDate = (iso: string) => {
+          const [year, month, day] = iso.split("-").map(Number);
+          return new Date(year, month - 1, day);
+        };
+
+        const allDates: Date[] = [];
+
+        for (const range of ranges) {
+          const start = parseLocalDate(range.start_date);
+          const endExclusive = parseLocalDate(range.end_date);
+
+          for (
+            let cursor = new Date(start.getTime());
+            cursor < endExclusive;
+            cursor.setDate(cursor.getDate() + 1)
+          ) {
+            allDates.push(
+              new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate()),
+            );
+          }
+        }
+
+        setUnavailableDates(allDates);
+      })
+      .catch((error) => {
+        console.error("Failed to load booking availability", error);
+        if (!active) return;
+        setUnavailableDates([]);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [listing?.id]);
 
   if (!listing) {
     return (
@@ -195,8 +244,6 @@ export default function Booking({
       return fallbackJoinedDate;
     }
   })();
-
-  const unavailableDates: Date[] = [];
   const handleViewOwnerProfile = () => {
     navigate(`/users/${listing.owner}`);
   };
@@ -229,12 +276,23 @@ export default function Booking({
   const totalPrice = numberOfDays * pricePerDay;
   const serviceFee = totalPrice * 0.1;
   const totalWithFees = totalPrice + serviceFee;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
   const isDateUnavailable = (date: Date) =>
     unavailableDates.some(
       (unavailableDate) =>
         format(unavailableDate, "yyyy-MM-dd") === format(date, "yyyy-MM-dd"),
     );
+
+  const isBeforeToday = (date: Date) => {
+    const candidate = new Date(
+      date.getFullYear(),
+      date.getMonth(),
+      date.getDate(),
+    );
+    return candidate < today;
+  };
 
   const requireLogin = () => {
     setLoginModalMode("login");
@@ -515,7 +573,7 @@ export default function Booking({
                         })
                       }
                       disabled={(date) =>
-                        isDateUnavailable(date) || date < new Date()
+                        isDateUnavailable(date) || isBeforeToday(date)
                       }
                       className="rounded-md"
                     />

@@ -60,6 +60,12 @@ class User(AbstractUser):
         null=True,
         help_text="Optional profile photo shown to other users.",
     )
+    stripe_customer_id = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Stripe Customer ID for renter payments.",
+    )
 
     def is_owner(self) -> bool:
         return bool(self.can_list)

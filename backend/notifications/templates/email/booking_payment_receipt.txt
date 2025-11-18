@@ -1,0 +1,22 @@
+Hi {{ user.first_name|default:user.username }},
+
+Thanks for your payment for {{ listing.title }}.
+
+Rental summary:
+- Listing: {{ listing.title }}
+- Rental period: {{ booking.start_date }} – {{ booking.end_date }}
+- Renter: {{ renter.get_full_name|default:renter.username }} ({{ renter.email }})
+
+Charges:
+- Rental ({{ rental_days }} days × ${{ daily_price_cad }}): ${{ rental_subtotal }}
+- Service fee: ${{ service_fee }}
+{% if damage_deposit %}- Damage deposit (refundable): ${{ damage_deposit }}
+{% endif %}- Total charged: ${{ total_charge }}
+
+Payment details:
+- Payment ID: {{ charge_payment_intent_id }}
+{% if deposit_hold_id %}- Deposit hold ID: {{ deposit_hold_id }}
+{% endif %}
+Please return the item by the end of {{ booking.end_date }} in the same condition to ensure your damage deposit is released promptly.
+
+Thank you for using Renter.

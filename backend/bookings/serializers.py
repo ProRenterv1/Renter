@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
 from typing import Any
 
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
 from listings.models import Listing
+from listings.services import compute_booking_totals
 from notifications import tasks as notification_tasks
+from payments.stripe_api import (
+    StripePaymentError,
+    StripeTransientError,
+    create_booking_payment_intents,
+)
 
 from .domain import ensure_no_conflict, validate_booking_dates
 from .models import Booking
@@ -31,6 +37,19 @@ class BookingSerializer(serializers.ModelSerializer):
     renter_last_name = serializers.ReadOnlyField(source="renter.last_name")
     renter_username = serializers.ReadOnlyField(source="renter.username")
     renter_avatar_url = serializers.ReadOnlyField(source="renter.avatar_url")
+    status_label = serializers.SerializerMethodField()
+    stripe_payment_method_id = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        help_text="Stripe PaymentMethod ID used to pay for this booking.",
+    )
+    stripe_customer_id = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        help_text="Stripe Customer ID associated with the PaymentIntents.",
+    )
 
     class Meta:
         model = Booking
@@ -48,7 +67,11 @@ class BookingSerializer(serializers.ModelSerializer):
             "renter_username",
             "renter_avatar_url",
             "totals",
+            "charge_payment_intent_id",
             "deposit_hold_id",
+            "status_label",
+            "stripe_payment_method_id",
+            "stripe_customer_id",
             "created_at",
             "updated_at",
         )
@@ -58,7 +81,9 @@ class BookingSerializer(serializers.ModelSerializer):
             "owner",
             "renter",
             "totals",
+            "charge_payment_intent_id",
             "deposit_hold_id",
+            "status_label",
             "created_at",
             "updated_at",
         )
@@ -96,39 +121,74 @@ class BookingSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data: dict[str, Any]) -> Booking:
-        """Create a new booking with computed totals."""
+        """
+        Create a booking, collect payment, and notify the listing owner.
+
+        Steps: compute totals, persist the booking, confirm the rental charge PaymentIntent,
+        place a manual-capture deposit hold, and queue the owner notification. Stripe calls
+        use booking-scoped idempotency keys so transient retries are safe and won't double-charge.
+        """
         request = self.context["request"]
         user = request.user
         listing: Listing = validated_data["listing"]
         start_date = validated_data["start_date"]
         end_date = validated_data["end_date"]
+        payment_method_id = validated_data.pop("stripe_payment_method_id", "") or ""
+        customer_id = validated_data.pop("stripe_customer_id", "") or ""
 
-        days = (end_date - start_date).days
-        price_per_day: Decimal = listing.daily_price_cad
-        rental_subtotal = price_per_day * days
-        service_fee = (rental_subtotal * Decimal("0.10")).quantize(Decimal("0.01"))
-        damage_deposit = listing.damage_deposit_cad
-        total_charge = rental_subtotal + service_fee + damage_deposit
-
-        totals = {
-            "days": str(days),
-            "daily_price_cad": str(price_per_day),
-            "rental_subtotal": str(rental_subtotal),
-            "service_fee": str(service_fee),
-            "damage_deposit": str(damage_deposit),
-            "total_charge": str(total_charge),
-        }
-
-        booking = Booking.objects.create(
+        totals = compute_booking_totals(
             listing=listing,
-            owner=listing.owner,
-            renter=user,
             start_date=start_date,
             end_date=end_date,
-            status=Booking.Status.REQUESTED,
-            totals=totals,
-            deposit_hold_id="",
         )
+
+        with transaction.atomic():
+            booking = Booking.objects.create(
+                listing=listing,
+                owner=listing.owner,
+                renter=user,
+                start_date=start_date,
+                end_date=end_date,
+                status=Booking.Status.REQUESTED,
+                totals=totals,
+                deposit_hold_id="",
+                charge_payment_intent_id="",
+            )
+
+            if payment_method_id:
+                try:
+                    charge_id, deposit_id = create_booking_payment_intents(
+                        booking=booking,
+                        customer_id=customer_id,
+                        payment_method_id=payment_method_id,
+                    )
+                except StripeTransientError:
+                    logger.warning(
+                        "Stripe transient error on booking creation",
+                        exc_info=True,
+                        extra={"booking_id": booking.id, "listing_id": listing.id},
+                    )
+                    raise serializers.ValidationError(
+                        {"non_field_errors": ["Temporary payment issue, please retry."]}
+                    )
+                except StripePaymentError as exc:
+                    message = str(exc) or "Payment could not be completed."
+                    logger.info(
+                        "Stripe payment error on booking creation: %s",
+                        message,
+                        extra={"booking_id": booking.id},
+                    )
+                    raise serializers.ValidationError({"non_field_errors": [message]})
+
+                booking.charge_payment_intent_id = charge_id or ""
+                booking.deposit_hold_id = deposit_id or ""
+                booking.save(
+                    update_fields=[
+                        "charge_payment_intent_id",
+                        "deposit_hold_id",
+                        "updated_at",
+                    ]
+                )
 
         try:
             notification_tasks.send_booking_request_email.delay(listing.owner_id, booking.id)
@@ -139,3 +199,28 @@ class BookingSerializer(serializers.ModelSerializer):
             )
 
         return booking
+
+    @staticmethod
+    def _display_label_for_status(status: str) -> str:
+        mapping = {
+            Booking.Status.REQUESTED: "Requested",
+            Booking.Status.CONFIRMED: "Pending",
+            Booking.Status.PAID: "Waiting pick up",
+            Booking.Status.COMPLETED: "Completed",
+            Booking.Status.CANCELED: "Canceled",
+        }
+        return mapping.get(status, "Requested")
+
+    def get_status_label(self, booking: Booking) -> str:
+        """
+        Return a renter-facing display label for the booking status.
+
+        Bookings that collected a charge (intent ID set) should continue to show
+        their paid state even if the status was later reset to "requested".
+        """
+
+        status_value = booking.status
+        if status_value == Booking.Status.REQUESTED and booking.charge_payment_intent_id:
+            status_value = Booking.Status.PAID
+
+        return self._display_label_for_status(status_value)

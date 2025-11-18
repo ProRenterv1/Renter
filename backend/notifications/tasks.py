@@ -206,6 +206,7 @@ def send_booking_status_email(renter_id: int, booking_id: int, new_status: str):
         Booking.Status.CONFIRMED: "approved",
         Booking.Status.CANCELED: "denied",
         Booking.Status.REQUESTED: "updated",
+        Booking.Status.PAID: "paid",
         Booking.Status.COMPLETED: "completed",
     }
     status_word = status_word_map.get(new_status, "updated")
@@ -227,4 +228,44 @@ def send_booking_status_email(renter_id: int, booking_id: int, new_status: str):
         "booking_status_update.txt",
         context,
         getattr(renter, "email", None),
+    )
+
+
+@shared_task(queue="emails")
+def send_booking_payment_receipt_email(user_id: int, booking_id: int):
+    """Email the renter a receipt after payment succeeds."""
+    user = _get_user(user_id)
+    if not user or not getattr(user, "email", None):
+        return
+
+    try:
+        from bookings.models import Booking
+
+        booking = Booking.objects.select_related("listing", "owner", "renter").get(pk=booking_id)
+    except Booking.DoesNotExist:
+        logger.warning("notifications: booking %s no longer exists", booking_id)
+        return
+
+    totals = booking.totals or {}
+    context = {
+        "user": user,
+        "booking": booking,
+        "listing": booking.listing,
+        "owner": booking.owner,
+        "renter": booking.renter,
+        "totals": totals,
+        "rental_days": totals.get("days"),
+        "daily_price_cad": totals.get("daily_price_cad"),
+        "rental_subtotal": totals.get("rental_subtotal"),
+        "service_fee": totals.get("renter_fee") or totals.get("service_fee"),
+        "damage_deposit": totals.get("damage_deposit"),
+        "total_charge": totals.get("total_charge"),
+        "charge_payment_intent_id": booking.charge_payment_intent_id,
+        "deposit_hold_id": booking.deposit_hold_id,
+    }
+    _send_email(
+        "Your rental payment receipt",
+        "booking_payment_receipt.txt",
+        context,
+        user.email,
     )

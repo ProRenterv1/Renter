@@ -15,6 +15,7 @@ class Booking(models.Model):
     class Status(models.TextChoices):
         REQUESTED = "requested", "requested"
         CONFIRMED = "confirmed", "confirmed"
+        PAID = "paid", "paid"
         CANCELED = "canceled", "canceled"
         COMPLETED = "completed", "completed"
 
@@ -39,6 +40,12 @@ class Booking(models.Model):
         max_length=16,
         choices=Status.choices,
         default=Status.REQUESTED,
+    )
+    charge_payment_intent_id = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Stripe PaymentIntent ID for the rental charge (base + renter fee).",
     )
     deposit_hold_id = models.CharField(max_length=120, blank=True, default="")
     totals = models.JSONField(default=dict, blank=True)
@@ -69,6 +76,7 @@ class Booking(models.Model):
         return self.status in {
             self.Status.REQUESTED,
             self.Status.CONFIRMED,
+            self.Status.PAID,
         }
 
     def is_terminal(self) -> bool:

@@ -1,0 +1,259 @@
+"""Tests covering Stripe payment behavior for booking creation."""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+from decimal import Decimal
+from types import SimpleNamespace
+
+import pytest
+import stripe
+from rest_framework.test import APIClient
+
+from bookings.models import Booking
+from listings.models import Listing
+from payments import stripe_api
+
+pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def configure_stripe(settings):
+    settings.STRIPE_SECRET_KEY = "sk_test_123"
+    settings.STRIPE_ENV = "test"
+
+
+@pytest.fixture(autouse=True)
+def mock_stripe_payment_methods(monkeypatch):
+    state: dict[str, str | None] = {}
+
+    def fake_retrieve(payment_method_id):
+        return SimpleNamespace(id=payment_method_id, customer=state.get(payment_method_id))
+
+    def fake_attach(payment_method_id, *, customer):
+        state[payment_method_id] = customer
+        return SimpleNamespace(id=payment_method_id, customer=customer)
+
+    def fake_detach(payment_method_id):
+        state.pop(payment_method_id, None)
+        return SimpleNamespace(id=payment_method_id, customer=None)
+
+    monkeypatch.setattr(
+        stripe.PaymentMethod,
+        "retrieve",
+        staticmethod(fake_retrieve),
+    )
+    monkeypatch.setattr(
+        stripe.PaymentMethod,
+        "attach",
+        staticmethod(fake_attach),
+    )
+    monkeypatch.setattr(
+        stripe.PaymentMethod,
+        "detach",
+        staticmethod(fake_detach),
+    )
+
+
+def auth(user):
+    client = APIClient()
+    token_resp = client.post(
+        "/api/users/token/",
+        {"username": user.username, "password": "testpass"},
+        format="json",
+    )
+    token = token_resp.data["access"]
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+    return client
+
+
+def booking_payload(listing, start, end, **extra):
+    payload = {
+        "listing": listing.id,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+    }
+    payload.update(extra)
+    return payload
+
+
+def test_booking_create_charges_and_creates_deposit_hold(renter_user, listing, monkeypatch):
+    client = auth(renter_user)
+    start = date.today() + timedelta(days=4)
+    end = start + timedelta(days=3)
+
+    created_calls = []
+
+    def fake_create(**kwargs):
+        created_calls.append(kwargs)
+        kind = kwargs["metadata"]["kind"]
+        if kind == "rental_charge":
+            return SimpleNamespace(id="pi_charge_123")
+        return SimpleNamespace(id="pi_deposit_456")
+
+    monkeypatch.setattr(stripe_api.stripe.PaymentIntent, "create", fake_create)
+    monkeypatch.setattr(stripe_api.stripe.PaymentIntent, "retrieve", lambda *args, **kwargs: None)
+
+    resp = client.post(
+        "/api/bookings/",
+        booking_payload(
+            listing,
+            start,
+            end,
+            stripe_payment_method_id="pm_123",
+            stripe_customer_id="cus_123",
+        ),
+        format="json",
+    )
+
+    assert resp.status_code == 201, resp.data
+
+    booking = Booking.objects.get(pk=resp.data["id"])
+    assert booking.charge_payment_intent_id == "pi_charge_123"
+    assert booking.deposit_hold_id == "pi_deposit_456"
+    assert booking.totals
+
+    assert len(created_calls) == 2
+    charge_call, deposit_call = created_calls
+
+    total_charge = Decimal(booking.totals["total_charge"])
+    deposit = Decimal(booking.totals["damage_deposit"])
+    expected_charge_cents = int((total_charge - deposit) * Decimal("100"))
+    expected_deposit_cents = int(deposit * Decimal("100"))
+
+    assert charge_call["amount"] == expected_charge_cents
+    assert charge_call["currency"] == "cad"
+    assert charge_call["metadata"]["kind"] == "rental_charge"
+    assert "capture_method" not in charge_call
+
+    assert deposit_call["amount"] == expected_deposit_cents
+    assert deposit_call["currency"] == "cad"
+    assert deposit_call["metadata"]["kind"] == "damage_deposit"
+    assert deposit_call["capture_method"] == "manual"
+
+
+def test_booking_create_no_deposit_when_zero_damage_deposit(
+    renter_user,
+    owner_user,
+    monkeypatch,
+):
+    listing = Listing.objects.create(
+        owner=owner_user,
+        title="Tripod Kit",
+        description="Stable tripod",
+        daily_price_cad=Decimal("20.00"),
+        replacement_value_cad=Decimal("500.00"),
+        damage_deposit_cad=Decimal("0.00"),
+        city="Calgary",
+        is_active=True,
+        is_available=True,
+    )
+    client = auth(renter_user)
+    start = date.today() + timedelta(days=3)
+    end = start + timedelta(days=2)
+
+    created_calls = []
+
+    def fake_create(**kwargs):
+        created_calls.append(kwargs)
+        return SimpleNamespace(id="pi_charge_only")
+
+    monkeypatch.setattr(stripe_api.stripe.PaymentIntent, "create", fake_create)
+    monkeypatch.setattr(stripe_api.stripe.PaymentIntent, "retrieve", lambda *args, **kwargs: None)
+
+    resp = client.post(
+        "/api/bookings/",
+        booking_payload(
+            listing,
+            start,
+            end,
+            stripe_payment_method_id="pm_789",
+        ),
+        format="json",
+    )
+
+    assert resp.status_code == 201, resp.data
+    booking = Booking.objects.get(pk=resp.data["id"])
+    assert booking.charge_payment_intent_id == "pi_charge_only"
+    assert booking.deposit_hold_id == ""
+    assert len(created_calls) == 1
+
+
+def test_booking_create_card_error_returns_validation_error(renter_user, listing, monkeypatch):
+    client = auth(renter_user)
+    start = date.today() + timedelta(days=5)
+    end = start + timedelta(days=3)
+
+    def fail_create(**kwargs):
+        raise stripe.error.CardError("Card declined", param=None, code=None)
+
+    monkeypatch.setattr(stripe_api.stripe.PaymentIntent, "create", fail_create)
+    monkeypatch.setattr(stripe_api.stripe.PaymentIntent, "retrieve", lambda *args, **kwargs: None)
+
+    resp = client.post(
+        "/api/bookings/",
+        booking_payload(
+            listing,
+            start,
+            end,
+            stripe_payment_method_id="pm_456",
+        ),
+        format="json",
+    )
+
+    assert resp.status_code == 400
+    assert "non_field_errors" in resp.data
+    assert any("card" in msg.lower() for msg in resp.data["non_field_errors"])
+    assert Booking.objects.count() == 0
+
+
+def test_booking_create_transient_error_is_retry_safe(renter_user, listing, monkeypatch):
+    client = auth(renter_user)
+    start = date.today() + timedelta(days=6)
+    end = start + timedelta(days=3)
+
+    created_calls = []
+    charge_attempts = {"count": 0}
+
+    def flaky_create(**kwargs):
+        created_calls.append(kwargs)
+        kind = kwargs["metadata"]["kind"]
+        if kind == "rental_charge":
+            charge_attempts["count"] += 1
+            if charge_attempts["count"] == 1:
+                raise stripe.error.APIConnectionError("network issue")
+            return SimpleNamespace(id="pi_charge_retry")
+        return SimpleNamespace(id="pi_deposit_retry")
+
+    monkeypatch.setattr(stripe_api.stripe.PaymentIntent, "create", flaky_create)
+    monkeypatch.setattr(stripe_api.stripe.PaymentIntent, "retrieve", lambda *args, **kwargs: None)
+
+    payload = booking_payload(
+        listing,
+        start,
+        end,
+        stripe_payment_method_id="pm_retry",
+        stripe_customer_id="cus_retry",
+    )
+
+    first_resp = client.post("/api/bookings/", payload, format="json")
+    assert first_resp.status_code == 400
+    assert "Temporary payment issue" in first_resp.data["non_field_errors"][0]
+    assert Booking.objects.count() == 0
+
+    second_resp = client.post("/api/bookings/", payload, format="json")
+    assert second_resp.status_code == 201, second_resp.data
+    booking = Booking.objects.get(pk=second_resp.data["id"])
+    assert booking.charge_payment_intent_id == "pi_charge_retry"
+    assert booking.deposit_hold_id == "pi_deposit_retry"
+
+    assert len(created_calls) == 3  # one failed charge, one retried charge, one deposit
+    assert created_calls[0]["metadata"]["kind"] == "rental_charge"
+    assert created_calls[1]["metadata"]["kind"] == "rental_charge"
+    assert created_calls[2]["metadata"]["kind"] == "damage_deposit"
+
+    # Charge attempts reuse the same idempotency key for retries and match booking-scoped keys.
+    assert created_calls[0]["idempotency_key"] == created_calls[1]["idempotency_key"]
+    expected_base = f"booking:{booking.id}:{stripe_api.IDEMPOTENCY_VERSION}"
+    assert created_calls[1]["idempotency_key"] == f"{expected_base}:charge"
+    assert created_calls[2]["idempotency_key"] == f"{expected_base}:deposit"
