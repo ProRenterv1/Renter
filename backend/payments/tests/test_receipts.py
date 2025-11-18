@@ -104,11 +104,11 @@ def test_upload_booking_receipt_pdf_uploads_and_returns_key(
 
     expected_key = f"uploads/private/receipts/{booking.id}_receipt.pdf"
     assert key == expected_key
-    assert (
-        url
-        == f"https://{settings.AWS_STORAGE_BUCKET_NAME}.s3."
-        / "{settings.AWS_S3_REGION_NAME}.amazonaws.com/{expected_key}"
+    expected_url = (
+        f"https://{settings.AWS_STORAGE_BUCKET_NAME}.s3."
+        f"{settings.AWS_S3_REGION_NAME}.amazonaws.com/{expected_key}"
     )
+    assert url == expected_url
     assert isinstance(pdf_bytes, bytes)
     assert pdf_bytes.startswith(b"%PDF")
 
