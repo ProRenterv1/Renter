@@ -1,0 +1,43 @@
+{% extends "email/base_email.html" %}
+{% block content %}
+  <h1 style="font-size:26px;line-height:1.2;color:{{ brand_heading_color }};margin:0 0 16px;font-family:'Manrope','Inter',sans-serif;">
+    New booking request received
+  </h1>
+  <p style="font-size:16px;color:{{ brand_text_color }};margin:0 0 20px;">
+    {% if owner_full_name %}Hi {{ owner_full_name }},{% else %}Hi,{% endif %} you have a new request for <strong>{{ listing_title }}</strong>.
+  </p>
+  <div style="border:1px solid {{ brand_border_color }};border-radius:20px;padding:20px 24px;margin-bottom:28px;background-color:{{ brand_surface_color }};">
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="font-size:15px;color:{{ brand_text_color }};">
+      <tr>
+        <td style="padding:6px 0;width:42%;color:{{ brand_muted_text_color }};">Renter</td>
+        <td style="padding:6px 0;font-weight:600;">{{ renter_full_name }}</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Dates</td>
+        <td style="padding:6px 0;font-weight:600;">{{ start_date|date:"M d, Y" }} &ndash; {{ end_date|date:"M d, Y" }}</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Total charge</td>
+        <td style="padding:6px 0;font-weight:600;">${{ totals.total_charge|default:"0.00" }}</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Damage deposit</td>
+        <td style="padding:6px 0;">${{ totals.damage_deposit|default:"0.00" }}</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Service fee</td>
+        <td style="padding:6px 0;">${{ totals.service_fee|default:"0.00" }}</td>
+      </tr>
+    </table>
+  </div>
+  <p style="font-size:15px;color:{{ brand_text_color }};margin:0 0 26px;">
+    Review the booking details to approve or decline the request.
+  </p>
+  {% if cta_url %}
+    <p style="text-align:center;margin:0;">
+      <a href="{{ cta_url }}" style="display:inline-block;background-color:{{ brand_primary_color }};color:{{ brand_primary_text_color }};padding:15px 34px;border-radius:999px;text-decoration:none;font-weight:600;box-shadow:0 10px 25px rgba(91,140,166,0.35);">
+        Review booking request
+      </a>
+    </p>
+  {% endif %}
+{% endblock %}

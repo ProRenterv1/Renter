@@ -1,9 +1,9 @@
-{% if owner %}Hi {{ owner.get_full_name|default:owner.username }},{% else %}Hi,{% endif %}
+{% if owner_full_name %}Hi {{ owner_full_name }},{% elif owner %}Hi {{ owner.get_full_name|default:owner.username }},{% else %}Hi,{% endif %}
 
 You have a new booking request for "{{ listing_title }}".
 
 Dates: {{ start_date }} to {{ end_date }}
-{% if renter %}Renter: {{ renter.get_full_name|default:renter.username }} (username: {{ renter.username }}){% endif %}
+{% if renter_full_name %}Renter: {{ renter_full_name }}{% elif renter %}Renter: {{ renter.first_name }} {{ renter.last_name }}{% endif %}
 
 Cost summary:
 - Days: {{ totals.days|default:booking.days }}

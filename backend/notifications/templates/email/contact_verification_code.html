@@ -1,0 +1,17 @@
+{% extends "email/base_email.html" %}
+{% block content %}
+  <h1 style="font-size:26px;line-height:1.2;color:{{ brand_heading_color }};margin:0 0 16px;font-family:'Manrope','Inter',sans-serif;">
+    Verify your email
+  </h1>
+  <p style="font-size:16px;color:{{ brand_text_color }};margin:0 0 20px;">
+    {% if user and user.first_name %}Hi {{ user.first_name }},{% else %}Hi there,{% endif %}
+    enter the code below to confirm your contact information with {{ site_name }}.
+  </p>
+  <div style="border:1px solid {{ brand_border_color }};border-radius:24px;padding:24px;margin-bottom:24px;background-color:{{ brand_surface_color }};text-align:center;">
+    <p style="margin:0 0 8px;font-size:15px;color:{{ brand_muted_text_color }};">Your verification code</p>
+    <div style="font-size:36px;letter-spacing:0.28em;font-weight:700;color:{{ brand_primary_color }};">{{ code }}</div>
+  </div>
+  <p style="font-size:15px;color:{{ brand_text_color }};margin:0;">
+    If you didn't request this, you can safely ignore the message.
+  </p>
+{% endblock %}

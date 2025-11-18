@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from datetime import date, timedelta
+from typing import Optional, Sequence, Tuple
 
 from celery import shared_task
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.mail import send_mail
+from django.core.mail import EmailMultiAlternatives
+from django.template import TemplateDoesNotExist
 from django.template.loader import render_to_string
+
+from payments.receipts import upload_booking_receipt_pdf
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -42,12 +46,98 @@ def _render(template: str, context: dict) -> str:
     return render_to_string(template, context).strip()
 
 
-def _send_email(subject: str, template: str, context: dict, to_email: str | None):
+def _build_email_context(extra: Optional[dict]) -> dict:
+    frontend_origin = (getattr(settings, "FRONTEND_ORIGIN", "") or "").rstrip("/")
+    site_name = getattr(settings, "SITE_NAME", "Renter")
+    site_tagline = getattr(
+        settings,
+        "SITE_TAGLINE",
+        "Peer-to-peer rentals in Edmonton",
+    )
+    logo_url = getattr(settings, "SITE_LOGO_URL", "") or (
+        f"{frontend_origin}/logo.png" if frontend_origin else ""
+    )
+    primary_color = getattr(settings, "SITE_PRIMARY_COLOR", "#5B8CA6")
+    primary_text_color = getattr(settings, "SITE_PRIMARY_TEXT_COLOR", "#F4F9FC")
+    heading_color = getattr(settings, "SITE_EMAIL_HEADING_COLOR", "#102030")
+    text_color = getattr(settings, "SITE_EMAIL_TEXT_COLOR", "#1F2933")
+    muted_text_color = getattr(settings, "SITE_EMAIL_MUTED_TEXT_COLOR", "#6B7280")
+    background_color = getattr(settings, "SITE_EMAIL_BACKGROUND_COLOR", "#F2EFEE")
+    card_color = getattr(settings, "SITE_EMAIL_CARD_COLOR", "#FFFFFF")
+    surface_color = getattr(settings, "SITE_EMAIL_SURFACE_COLOR", "#F7F5F4")
+    border_color = getattr(settings, "SITE_EMAIL_BORDER_COLOR", "#E5E7EB")
+    site_initials = "".join(part[0].upper() for part in site_name.split()[:2]) or "R"
+
+    context = {
+        "logo_url": logo_url,
+        "site_name": site_name,
+        "site_tagline": site_tagline,
+        "site_url": frontend_origin,
+        "site_initials": site_initials,
+        "brand_primary_color": primary_color,
+        "brand_primary_text_color": primary_text_color,
+        "brand_heading_color": heading_color,
+        "brand_text_color": text_color,
+        "brand_muted_text_color": muted_text_color,
+        "brand_background_color": background_color,
+        "brand_card_color": card_color,
+        "brand_surface_color": surface_color,
+        "brand_border_color": border_color,
+    }
+    if extra:
+        context.update(extra)
+    return context
+
+
+Attachment = Tuple[str, bytes, str]
+
+
+def _send_email(
+    subject: str,
+    template: str,
+    context: dict,
+    to_email: str | None,
+    *,
+    html_template: str | None = None,
+    attachments: Optional[Sequence[Attachment]] = None,
+) -> None:
     if not to_email:
         logger.warning("notifications: cannot send email without recipient")
         return
-    body = _render(f"email/{template}", context)
-    send_mail(subject, body, settings.DEFAULT_FROM_EMAIL, [to_email], fail_silently=False)
+    context_with_brand = _build_email_context(context)
+    context_with_brand["subject"] = subject
+    text_template_path = f"email/{template}"
+    body = _render(text_template_path, context_with_brand)
+
+    derived_html_template = html_template
+    if not derived_html_template:
+        base_name = template.rsplit(".", 1)[0]
+        derived_html_template = f"{base_name}.html"
+
+    html_body = None
+    if derived_html_template:
+        html_template_path = (
+            derived_html_template
+            if derived_html_template.startswith("email/")
+            else f"email/{derived_html_template}"
+        )
+        try:
+            html_body = _render(html_template_path, context_with_brand)
+        except TemplateDoesNotExist:
+            html_body = None
+
+    message = EmailMultiAlternatives(
+        subject=subject,
+        body=body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[to_email],
+    )
+    if html_body:
+        message.attach_alternative(html_body, "text/html")
+    for attachment in attachments or ():
+        filename, content, mime_type = attachment
+        message.attach(filename, content, mime_type)
+    message.send(fail_silently=False)
 
 
 def _send_sms(template: str, context: dict, to_number: str | None):
@@ -60,6 +150,44 @@ def _send_sms(template: str, context: dict, to_number: str | None):
         return
     body = _render(f"sms/{template}", context)
     client.messages.create(body=body, from_=from_number, to=to_number)
+
+
+def _display_name(user: Optional[User]) -> str:
+    if not user:
+        return "Unknown"
+    full_name = ""
+    if hasattr(user, "get_full_name"):
+        full_name = (user.get_full_name() or "").strip()
+    if not full_name:
+        first = (getattr(user, "first_name", "") or "").strip()
+        last = (getattr(user, "last_name", "") or "").strip()
+        full_name = " ".join(part for part in (first, last) if part)
+    if not full_name:
+        username = getattr(user, "username", "") or ""
+        if username:
+            return username
+        return str(user)
+    return full_name
+
+
+def _format_receipt_date(value: Optional[date]) -> str:
+    if not value:
+        return "N/A"
+    # Use leading-zero-friendly format compatible with Windows/POSIX.
+    return value.strftime("%b %d, %Y")
+
+
+def _format_booking_date_range(start: Optional[date], end_exclusive: Optional[date]):
+    if start:
+        start_display = _format_receipt_date(start)
+    else:
+        start_display = "N/A"
+    if end_exclusive:
+        inclusive_end = end_exclusive - timedelta(days=1)
+    else:
+        inclusive_end = start
+    end_display = _format_receipt_date(inclusive_end) if inclusive_end else "N/A"
+    return start_display, end_display, f"{start_display} - {end_display}"
 
 
 @shared_task(queue="emails")
@@ -168,14 +296,23 @@ def send_booking_request_email(owner_id: int, booking_id: int):
     listing_title = getattr(booking.listing, "title", "your listing")
     renter = booking.renter
     frontend_origin = getattr(settings, "FRONTEND_ORIGIN", "").rstrip("/") or ""
+    renter_first = (getattr(renter, "first_name", "") or "").strip()
+    renter_last = (getattr(renter, "last_name", "") or "").strip()
+    renter_full_name = " ".join(part for part in (renter_first, renter_last) if part).strip()
+    if not renter_full_name:
+        renter_full_name = _display_name(renter)
     context = {
         "owner": owner,
+        "owner_full_name": _display_name(owner),
         "booking": booking,
         "listing_title": listing_title,
         "start_date": booking.start_date,
         "end_date": booking.end_date,
         "totals": booking.totals or {},
         "renter": renter,
+        "renter_first_name": renter_first,
+        "renter_last_name": renter_last,
+        "renter_full_name": renter_full_name,
         "cta_url": f"{frontend_origin}/profile?tab=booking-requests" if frontend_origin else "",
     }
     _send_email(
@@ -247,25 +384,38 @@ def send_booking_payment_receipt_email(user_id: int, booking_id: int):
         return
 
     totals = booking.totals or {}
+    attachments: list[Attachment] = []
+    receipt_s3_key: str | None = None
+    try:
+        receipt_key, _, pdf_bytes = upload_booking_receipt_pdf(booking)
+        receipt_s3_key = receipt_key
+        attachments.append((f"{booking.id}_receipt.pdf", pdf_bytes, "application/pdf"))
+    except Exception:
+        logger.exception(
+            "notifications: failed to generate/upload receipt PDF for booking %s",
+            booking_id,
+        )
+
+    owner_full_name = _display_name(getattr(booking, "owner", None))
+    tool_title = getattr(getattr(booking, "listing", None), "title", "your listing")
+    start_display, end_display, date_range_display = _format_booking_date_range(
+        getattr(booking, "start_date", None),
+        getattr(booking, "end_date", None),
+    )
     context = {
         "user": user,
-        "booking": booking,
-        "listing": booking.listing,
-        "owner": booking.owner,
-        "renter": booking.renter,
-        "totals": totals,
-        "rental_days": totals.get("days"),
-        "daily_price_cad": totals.get("daily_price_cad"),
-        "rental_subtotal": totals.get("rental_subtotal"),
-        "service_fee": totals.get("renter_fee") or totals.get("service_fee"),
-        "damage_deposit": totals.get("damage_deposit"),
-        "total_charge": totals.get("total_charge"),
-        "charge_payment_intent_id": booking.charge_payment_intent_id,
-        "deposit_hold_id": booking.deposit_hold_id,
+        "owner_full_name": owner_full_name,
+        "tool_title": tool_title,
+        "start_date_display": start_display,
+        "end_date_display": end_display,
+        "date_range_display": date_range_display,
+        "total_paid": totals.get("total_charge") or "0.00",
+        "receipt_s3_key": receipt_s3_key,
     }
     _send_email(
         "Your rental payment receipt",
         "booking_payment_receipt.txt",
         context,
         user.email,
+        attachments=attachments or None,
     )
