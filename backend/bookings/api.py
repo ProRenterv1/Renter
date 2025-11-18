@@ -11,9 +11,22 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from listings.models import Listing
 from notifications import tasks as notification_tasks
+from payments.stripe_api import (
+    StripePaymentError,
+    StripeTransientError,
+    create_booking_payment_intents,
+    ensure_stripe_customer,
+)
 
-from .domain import assert_can_cancel, assert_can_complete, assert_can_confirm, ensure_no_conflict
+from .domain import (
+    ACTIVE_BOOKING_STATUSES,
+    assert_can_cancel,
+    assert_can_complete,
+    assert_can_confirm,
+    ensure_no_conflict,
+)
 from .models import Booking
 from .serializers import BookingSerializer
 
@@ -67,6 +80,60 @@ class BookingViewSet(viewsets.ModelViewSet):
     def my_bookings(self, request, *args, **kwargs):
         """Return the authenticated user's bookings."""
         return self.list(request, *args, **kwargs)
+
+    @action(detail=False, methods=["get"], url_path="pending-requests-count")
+    def pending_requests_count(self, request, *args, **kwargs):
+        """Return how many booking requests are awaiting the owner's response."""
+        user = request.user
+        pending_total = Booking.objects.filter(
+            owner=user,
+            status=Booking.Status.REQUESTED,
+        ).count()
+        return Response({"pending_requests": pending_total}, status=status.HTTP_200_OK)
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="availability",
+        permission_classes=[permissions.AllowAny],
+    )
+    def availability(self, request, *args, **kwargs):
+        """Return booked [start, end) ranges for a listing."""
+        listing_param = request.query_params.get("listing")
+        if not listing_param:
+            return Response(
+                {"detail": "listing query parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            listing_id = int(listing_param)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "listing must be a valid integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        listing = get_object_or_404(
+            Listing.objects.filter(is_active=True),
+            pk=listing_id,
+        )
+
+        ranges = (
+            Booking.objects.filter(
+                listing=listing,
+                status__in=ACTIVE_BOOKING_STATUSES,
+            )
+            .order_by("start_date", "end_date")
+            .values("start_date", "end_date")
+        )
+        payload = [
+            {
+                "start_date": item["start_date"].isoformat(),
+                "end_date": item["end_date"].isoformat(),
+            }
+            for item in ranges
+        ]
+        return Response(payload, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="confirm")
     def confirm(self, request, *args, **kwargs):
@@ -146,3 +213,78 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking.status = Booking.Status.COMPLETED
         booking.save(update_fields=["status", "updated_at"])
         return Response(self.get_serializer(booking).data)
+
+    @action(detail=True, methods=["post"], url_path="pay")
+    def pay(self, request, *args, **kwargs):
+        """Collect payment for a confirmed booking (renter-only)."""
+        booking: Booking = self.get_object()
+        if booking.renter_id != request.user.id:
+            return Response(
+                {"detail": "Only the renter can pay for this booking."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if booking.status != Booking.Status.CONFIRMED:
+            return Response(
+                {"detail": "Booking is not in a payable state."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payment_method_id = (request.data.get("stripe_payment_method_id") or "").strip()
+        provided_customer_id = (request.data.get("stripe_customer_id") or "").strip()
+        if not payment_method_id:
+            return Response(
+                {"detail": "stripe_payment_method_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            customer_id = ensure_stripe_customer(
+                request.user,
+                customer_id=provided_customer_id or None,
+            )
+        except StripeTransientError:
+            return Response(
+                {"detail": "Temporary payment issue, please retry."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except StripePaymentError as exc:
+            message = str(exc) or "Payment could not be completed."
+            return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            charge_id, deposit_id = create_booking_payment_intents(
+                booking=booking,
+                customer_id=customer_id,
+                payment_method_id=payment_method_id,
+            )
+        except StripeTransientError:
+            return Response(
+                {"detail": "Temporary payment issue, please retry."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except StripePaymentError as exc:
+            message = str(exc) or "Payment could not be completed."
+            return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+
+        booking.charge_payment_intent_id = charge_id or ""
+        booking.deposit_hold_id = deposit_id or ""
+        booking.status = Booking.Status.PAID
+        booking.save(
+            update_fields=[
+                "status",
+                "charge_payment_intent_id",
+                "deposit_hold_id",
+                "updated_at",
+            ]
+        )
+        try:
+            notification_tasks.send_booking_payment_receipt_email.delay(
+                booking.renter_id,
+                booking.id,
+            )
+        except Exception:
+            logger.info(
+                "notifications: could not queue send_booking_payment_receipt_email",
+                exc_info=True,
+            )
+        return Response(self.get_serializer(booking).data, status=status.HTTP_200_OK)

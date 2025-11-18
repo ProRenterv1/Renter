@@ -28,6 +28,7 @@ export type UserProfile = {
   avatar_url?: string | null;
   avatar_uploaded?: boolean;
   date_joined?: string;
+  stripe_customer_id?: string | null;
 };
 
 const TOKENS_KEY = "renter.auth.tokens";

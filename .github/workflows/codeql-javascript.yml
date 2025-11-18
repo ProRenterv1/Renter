@@ -1,0 +1,53 @@
+name: "CodeQL (JavaScript)"
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+  schedule:
+    - cron: "0 5 * * 1"
+
+jobs:
+  analyze-javascript:
+    name: Analyze (JavaScript)
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend assets
+        working-directory: frontend
+        run: npm run build -- --mode=development
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript
+          queries: security-extended
+          paths: |
+            frontend
+          paths-ignore: |
+            **/node_modules/**
+            **/dist/**
+            **/build/**
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript"

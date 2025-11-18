@@ -104,6 +104,7 @@ class ProfileSerializer(serializers.ModelSerializer):
             "avatar_uploaded",
             "avatar",
             "date_joined",
+            "stripe_customer_id",
         ]
         read_only_fields = (
             "id",
@@ -114,6 +115,7 @@ class ProfileSerializer(serializers.ModelSerializer):
             "avatar_url",
             "avatar_uploaded",
             "date_joined",
+            "stripe_customer_id",
         )
 
     @staticmethod

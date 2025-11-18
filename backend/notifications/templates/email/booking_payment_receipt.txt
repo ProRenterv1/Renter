@@ -1,0 +1,11 @@
+Hi {{ user.first_name|default:user.username }},
+
+Owner: {{ owner_full_name }}
+Tool: {{ tool_title }}
+Dates: {{ date_range_display }}
+Total paid: CAD ${{ total_paid }}
+
+Your PDF receipt is attached for your records.
+
+Thanks,
+The Renter Team

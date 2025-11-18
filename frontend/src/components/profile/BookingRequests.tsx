@@ -36,7 +36,13 @@ import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Star } from "lucide-react";
 import { format } from "date-fns";
 import { AuthStore } from "@/lib/auth";
-import { bookingsAPI, listingsAPI, type Booking, type Listing } from "@/lib/api";
+import {
+  bookingsAPI,
+  listingsAPI,
+  type Booking,
+  type BookingTotals,
+  type Listing,
+} from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
 
 type RequestStatus = "pending" | "approved" | "denied";
@@ -68,6 +74,7 @@ const bookingStatusToRequestStatus = (status: Booking["status"]): RequestStatus 
   switch (status) {
     case "confirmed":
     case "completed":
+    case "paid":
       return "approved";
     case "canceled":
       return "denied";
@@ -76,11 +83,24 @@ const bookingStatusToRequestStatus = (status: Booking["status"]): RequestStatus 
   }
 };
 
+const parseLocalDate = (isoDate: string) => {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  if (!year || !month || !day) {
+    throw new Error("invalid date");
+  }
+  return new Date(year, month - 1, day);
+};
+
 const formatDateRange = (start: string, end: string) => {
   try {
-    const startDate = new Date(start);
-    const endDate = new Date(end);
-    return `${format(startDate, "MMM d")} - ${format(endDate, "MMM d, yyyy")}`;
+    const startDate = parseLocalDate(start);
+    const rawEndDate = parseLocalDate(end);
+    const displayEndDate = new Date(rawEndDate);
+    displayEndDate.setDate(displayEndDate.getDate() - 1);
+    if (displayEndDate.getTime() < startDate.getTime()) {
+      displayEndDate.setTime(startDate.getTime());
+    }
+    return `${format(startDate, "MMM d")} - ${format(displayEndDate, "MMM d, yyyy")}`;
   } catch {
     return `${start} - ${end}`;
   }
@@ -97,6 +117,15 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   const [actionLoading, setActionLoading] = useState(false);
   const currentUserId = AuthStore.getCurrentUser()?.id ?? null;
   const navigate = useNavigate();
+  const selectedTotals = selectedRequest?.booking.totals ?? null;
+  const selectedOwnerAmount = Number(
+    selectedTotals
+      ? selectedTotals.owner_payout ??
+        selectedTotals.rental_subtotal ??
+        selectedTotals.total_charge ??
+        0
+      : 0,
+  );
 
   useEffect(() => {
     let active = true;
@@ -338,7 +367,10 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
               {!loading &&
                 filteredRequests.map((row) => {
                   const status = bookingStatusToRequestStatus(row.booking.status);
-                  const amountRaw = Number(row.booking.totals?.rental_subtotal ?? row.booking.totals?.total_charge ?? 0);
+                  const totals: BookingTotals = row.booking.totals ?? {};
+                  const amountRaw = Number(
+                    totals.owner_payout ?? totals.rental_subtotal ?? totals.total_charge ?? 0,
+                  );
                   const amountLabel = formatCurrency(amountRaw, "CAD");
                   const dateRange = formatDateRange(row.booking.start_date, row.booking.end_date);
 
@@ -457,14 +489,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                       You Receive
                     </span>
                     <span className="text-[20px] text-green-600" style={{ fontFamily: "Manrope" }}>
-                      {formatCurrency(
-                        Number(
-                          selectedRequest.booking.totals?.rental_subtotal ??
-                            selectedRequest.booking.totals?.total_charge ??
-                            0,
-                        ),
-                        "CAD",
-                      )}
+                      {formatCurrency(selectedOwnerAmount, "CAD")}
                     </span>
                   </div>
                 </div>

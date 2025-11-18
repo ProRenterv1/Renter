@@ -106,7 +106,8 @@ def test_send_booking_request_email_includes_details(settings):
     assert message.subject == "New booking request for Adventure Tent"
     body = message.body
     assert "Adventure Tent" in body
-    assert renter.username in body
+    full_name = f"{renter.first_name} {renter.last_name}".strip()
+    assert full_name in body
     assert settings.FRONTEND_ORIGIN in body
     assert date_format(start, use_l10n=True) in body
     assert date_format(end, use_l10n=True) in body

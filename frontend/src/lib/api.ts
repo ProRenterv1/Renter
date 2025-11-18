@@ -251,20 +251,25 @@ export interface ListingGeocodeResponse {
   cache_hit: boolean;
 }
 
-export type BookingStatus = "requested" | "confirmed" | "canceled" | "completed";
+export type BookingStatus = "requested" | "confirmed" | "paid" | "canceled" | "completed";
 
 export interface BookingTotals {
-  days: string;
-  daily_price_cad: string;
-  rental_subtotal: string;
-  service_fee: string;
-  damage_deposit: string;
-  total_charge: string;
+  days?: string;
+  daily_price_cad?: string;
+  rental_subtotal?: string;
+  renter_fee?: string;
+  owner_fee?: string;
+  platform_fee_total?: string;
+  owner_payout?: string;
+  damage_deposit?: string;
+  total_charge?: string;
+  service_fee?: string; // deprecated alias, keep for backwards compatibility
 }
 
 export interface Booking {
   id: number;
   status: BookingStatus;
+  status_label?: string | null;
   start_date: string;
   end_date: string;
   listing: number;
@@ -276,10 +281,80 @@ export interface Booking {
   renter_username?: string;
   renter_avatar_url?: string | null;
   renter_rating?: number | null;
-  totals: BookingTotals;
+  totals: BookingTotals | null;
   deposit_hold_id: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface BookingAvailabilityRange {
+  start_date: string;
+  end_date: string;
+}
+
+export interface PendingRequestsCountResponse {
+  pending_requests: number;
+}
+
+export type RentalDirection = "earned" | "spent";
+
+export function deriveRentalDirection(currentUserId: number, booking: Booking): RentalDirection {
+  return booking.owner === currentUserId ? "earned" : "spent";
+}
+
+export function deriveRentalAmounts(direction: RentalDirection, booking: Booking): number {
+  const totals = booking.totals ?? ({} as BookingTotals);
+  const ownerPayout = Number(totals.owner_payout ?? totals.rental_subtotal ?? 0);
+  const totalCharge = Number(totals.total_charge ?? totals.rental_subtotal ?? 0);
+  return direction === "earned" ? ownerPayout : totalCharge;
+}
+
+export type DisplayRentalStatus =
+  | "Requested"
+  | "Pending"
+  | "In progress"
+  | "Waiting pick up"
+  | "Completed"
+  | "Canceled";
+
+const DISPLAY_STATUS_VALUES: DisplayRentalStatus[] = [
+  "Requested",
+  "Pending",
+  "In progress",
+  "Waiting pick up",
+  "Completed",
+  "Canceled",
+];
+
+function normalizeDisplayStatus(label?: string | null): DisplayRentalStatus | null {
+  if (!label) return null;
+  const trimmed = label.trim();
+  return DISPLAY_STATUS_VALUES.includes(trimmed as DisplayRentalStatus)
+    ? (trimmed as DisplayRentalStatus)
+    : null;
+}
+
+export function deriveDisplayRentalStatus(booking: Booking): DisplayRentalStatus {
+  const labelStatus = normalizeDisplayStatus(booking.status_label);
+  if (labelStatus) {
+    return labelStatus;
+  }
+
+  const normalizedStatus = (booking.status || "").toLowerCase();
+  switch (normalizedStatus) {
+    case "requested":
+      return "Requested";
+    case "confirmed":
+      return "Pending";
+    case "paid":
+      return "Waiting pick up";
+    case "completed":
+      return "Completed";
+    case "canceled":
+      return "Canceled";
+    default:
+      return "Requested";
+  }
 }
 
 export interface CreateBookingPayload {
@@ -615,14 +690,34 @@ export const bookingsAPI = {
       method: "GET",
     });
   },
+  availability(listingId: number) {
+    const search = new URLSearchParams({ listing: String(listingId) }).toString();
+    return jsonFetch<BookingAvailabilityRange[]>(`/bookings/availability/?${search}`, {
+      method: "GET",
+    });
+  },
   confirm(id: number) {
     return jsonFetch<Booking>(`/bookings/${id}/confirm/`, {
       method: "POST",
     });
   },
+  pay(
+    id: number,
+    payload: { stripe_payment_method_id: string; stripe_customer_id?: string },
+  ) {
+    return jsonFetch<Booking>(`/bookings/${id}/pay/`, {
+      method: "POST",
+      body: payload,
+    });
+  },
   cancel(id: number) {
     return jsonFetch<Booking>(`/bookings/${id}/cancel/`, {
       method: "POST",
+    });
+  },
+  pendingRequestsCount() {
+    return jsonFetch<PendingRequestsCountResponse>("/bookings/pending-requests-count/", {
+      method: "GET",
     });
   },
   complete(id: number) {

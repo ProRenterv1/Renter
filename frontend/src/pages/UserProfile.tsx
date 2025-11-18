@@ -25,8 +25,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
 import { Badge } from "../components/ui/badge";
 import { toast } from "sonner";
 import { AuthStore, type Profile } from "@/lib/auth";
-import { authAPI } from "@/lib/api";
-import type { Listing } from "@/lib/api";
+import { authAPI, bookingsAPI, type Listing } from "@/lib/api";
 
 const TAB_KEYS = [
   "personal",
@@ -78,6 +77,39 @@ export default function UserProfile() {
       setActiveTab((current) => (current === DEFAULT_TAB ? current : DEFAULT_TAB));
     }
   }, [location.search]);
+
+  useEffect(() => {
+    if (!profile?.id) {
+      setPendingBookingCount(0);
+      return;
+    }
+
+    let subscribed = true;
+    const POLL_INTERVAL_MS = 15000;
+
+    const fetchPendingCount = async () => {
+      try {
+        const response = await bookingsAPI.pendingRequestsCount();
+        if (!subscribed) {
+          return;
+        }
+        const nextCount = Number(response.pending_requests ?? 0);
+        setPendingBookingCount((current) => (current === nextCount ? current : nextCount));
+      } catch (error) {
+        if (import.meta.env.DEV) {
+          console.warn("Failed to fetch pending booking count", error);
+        }
+      }
+    };
+
+    fetchPendingCount();
+    const intervalId = window.setInterval(fetchPendingCount, POLL_INTERVAL_MS);
+
+    return () => {
+      subscribed = false;
+      window.clearInterval(intervalId);
+    };
+  }, [profile?.id]);
 
   const handleListingSelected = (listing: Listing) => {
     setListingBeingEdited(listing);
