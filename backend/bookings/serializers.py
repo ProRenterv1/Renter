@@ -9,7 +9,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
-from listings.models import Listing
+from listings.models import Listing, ListingPhoto
 from listings.services import compute_booking_totals
 from notifications import tasks as notification_tasks
 from payments.stripe_api import (
@@ -37,6 +37,11 @@ class BookingSerializer(serializers.ModelSerializer):
     renter_last_name = serializers.ReadOnlyField(source="renter.last_name")
     renter_username = serializers.ReadOnlyField(source="renter.username")
     renter_avatar_url = serializers.ReadOnlyField(source="renter.avatar_url")
+    listing_owner_first_name = serializers.ReadOnlyField(source="listing.owner.first_name")
+    listing_owner_last_name = serializers.ReadOnlyField(source="listing.owner.last_name")
+    listing_owner_username = serializers.ReadOnlyField(source="listing.owner.username")
+    listing_slug = serializers.ReadOnlyField(source="listing.slug")
+    listing_primary_photo_url = serializers.SerializerMethodField()
     status_label = serializers.SerializerMethodField()
     stripe_payment_method_id = serializers.CharField(
         write_only=True,
@@ -60,6 +65,11 @@ class BookingSerializer(serializers.ModelSerializer):
             "end_date",
             "listing",
             "listing_title",
+            "listing_owner_first_name",
+            "listing_owner_last_name",
+            "listing_owner_username",
+            "listing_slug",
+            "listing_primary_photo_url",
             "owner",
             "renter",
             "renter_first_name",
@@ -86,6 +96,11 @@ class BookingSerializer(serializers.ModelSerializer):
             "status_label",
             "created_at",
             "updated_at",
+            "listing_owner_first_name",
+            "listing_owner_last_name",
+            "listing_owner_username",
+            "listing_slug",
+            "listing_primary_photo_url",
         )
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
@@ -224,3 +239,18 @@ class BookingSerializer(serializers.ModelSerializer):
             status_value = Booking.Status.PAID
 
         return self._display_label_for_status(status_value)
+
+    def get_listing_primary_photo_url(self, booking: Booking) -> str | None:
+        """Return the first approved photo URL for the related listing."""
+        listing = getattr(booking, "listing", None)
+        if not listing:
+            return None
+        photo = (
+            listing.photos.filter(
+                status=ListingPhoto.Status.ACTIVE,
+                av_status=ListingPhoto.AVStatus.CLEAN,
+            )
+            .order_by("id")
+            .first()
+        )
+        return photo.url if photo else None

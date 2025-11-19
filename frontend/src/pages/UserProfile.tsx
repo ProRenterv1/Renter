@@ -1,21 +1,23 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useLocation } from "react-router-dom";
 import { Header } from "../components/Header";
-import { 
-  User, 
-  Lock, 
-  Package, 
-  PlusCircle, 
-  History, 
-  BarChart3, 
+import {
+  User,
+  Lock,
+  Package,
+  PlusCircle,
+  BarChart3,
   CreditCard,
   Shield,
-  Inbox
+  Inbox,
+  Briefcase,
+  History,
 } from "lucide-react";
 import { PersonalInfo } from "../components/profile/PersonalInfo";
 import { Security } from "../components/profile/Security";
 import { YourListings } from "../components/profile/YourListings";
 import { AddListing } from "../components/profile/AddListing";
+import { YourRentals } from "../components/profile/YourRentals";
 import { RecentRentals } from "../components/profile/RecentRentals";
 import { Statistics } from "../components/profile/Statistics";
 import { Payments } from "../components/profile/Payments";
@@ -33,6 +35,7 @@ const TAB_KEYS = [
   "listings",
   "add-listing",
   "rentals",
+  "rental-history",
   "statistics",
   "payments",
   "booking-requests",
@@ -188,7 +191,8 @@ export default function UserProfile() {
     { id: "listings" as Tab, label: "Your Listings", icon: Package },
     { id: "add-listing" as Tab, label: "Add Listing", icon: PlusCircle },
     { id: "booking-requests" as Tab, label: "Booking Requests", icon: Inbox },
-    { id: "rentals" as Tab, label: "Recent Rentals", icon: History },
+    { id: "rentals" as Tab, label: "Your rentals", icon: Briefcase },
+    { id: "rental-history" as Tab, label: "Recent Rentals", icon: History },
     { id: "statistics" as Tab, label: "Statistics", icon: BarChart3 },
     { id: "payments" as Tab, label: "Payments", icon: CreditCard },
   ];
@@ -303,7 +307,8 @@ export default function UserProfile() {
                 />
               ))}
             {activeTab === "add-listing" && <AddListing />}
-            {activeTab === "rentals" && <RecentRentals />}
+            {activeTab === "rentals" && <YourRentals />}
+            {activeTab === "rental-history" && <RecentRentals />}
             {activeTab === "statistics" && <Statistics />}
             {activeTab === "payments" && <Payments />}
             {activeTab === "booking-requests" && (

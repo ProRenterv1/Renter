@@ -291,7 +291,7 @@ export default function Booking({
       date.getMonth(),
       date.getDate(),
     );
-    return candidate < today;
+    return candidate <= today;
   };
 
   const requireLogin = () => {

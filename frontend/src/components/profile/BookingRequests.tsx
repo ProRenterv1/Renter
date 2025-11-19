@@ -58,16 +58,18 @@ export interface BookingRequestsProps {
   onPendingCountChange?: (count: number) => void;
 }
 
-const statusClasses: Record<RequestStatus, string> = {
-  pending: "bg-warning-bg text-warning-text",
-  approved: "bg-success-bg text-success-text",
-  denied: "bg-destructive-bg text-destructive-text",
+const requestStatusLabel: Record<RequestStatus, string> = {
+  pending: "pending",
+  approved: "approved",
+  denied: "denied",
 };
 
-const statusLabel: Record<RequestStatus, string> = {
-  pending: "Pending",
-  approved: "Approved",
-  denied: "Denied",
+const bookingStatusLabels: Record<Booking["status"], string> = {
+  requested: "Requested",
+  confirmed: "Waiting payment",
+  paid: "Waiting pick up",
+  canceled: "Canceled",
+  completed: "Completed",
 };
 
 const bookingStatusToRequestStatus = (status: Booking["status"]): RequestStatus => {
@@ -126,6 +128,15 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
         0
       : 0,
   );
+  const rentalBaseAmount = Number(
+    selectedTotals ? selectedTotals.rental_subtotal ?? selectedTotals.total_charge ?? 0 : 0,
+  );
+  const ownerServiceFeeRaw = Number(
+    selectedTotals ? selectedTotals.owner_fee ?? selectedTotals.platform_fee_total ?? 0 : 0,
+  );
+  const ownerServiceFeeAmount = Math.abs(ownerServiceFeeRaw);
+  const ownerServiceFeeText =
+    ownerServiceFeeAmount === 0 ? formatCurrency(0, "CAD") : `-${formatCurrency(ownerServiceFeeAmount, "CAD")}`;
 
   useEffect(() => {
     let active = true;
@@ -218,9 +229,19 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     navigate(`/users/${renterId}`);
   };
 
-  const getStatusBadge = (status: RequestStatus) => (
-    <Badge variant="outline" className={statusClasses[status]}>
-      {statusLabel[status]}
+  const getBookingStatusBadge = (status: Booking["status"]) => (
+    <Badge
+      variant={
+        status === "completed"
+          ? "secondary"
+          : status === "canceled"
+          ? "outline"
+          : status === "paid"
+          ? "secondary"
+          : "default"
+      }
+    >
+      {bookingStatusLabels[status] ?? status}
     </Badge>
   );
 
@@ -390,7 +411,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                         </div>
                       </TableCell>
                       <TableCell>{dateRange}</TableCell>
-                      <TableCell>{getStatusBadge(status)}</TableCell>
+                      <TableCell>{getBookingStatusBadge(row.booking.status)}</TableCell>
                       <TableCell className="text-right text-green-600">{amountLabel}</TableCell>
                       <TableCell className="text-right">
                         <Button variant="outline" size="sm" onClick={() => setSelectedRequest(row)}>
@@ -481,7 +502,18 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">Status</span>
-                    {getStatusBadge(bookingStatusToRequestStatus(selectedRequest.booking.status))}
+                    {getBookingStatusBadge(selectedRequest.booking.status)}
+                  </div>
+                  <div className="h-px bg-border" />
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Rental amount (days × rate)</span>
+                      <span className="font-medium">{formatCurrency(rentalBaseAmount, "CAD")}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Owner service fee</span>
+                      <span className="font-medium text-muted-foreground">{ownerServiceFeeText}</span>
+                    </div>
                   </div>
                   <div className="h-px bg-border" />
                   <div className="flex items-center justify-between">
@@ -495,27 +527,52 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                 </div>
               </div>
 
-              {bookingStatusToRequestStatus(selectedRequest.booking.status) === "pending" ? (
-                <DialogFooter className="gap-2 sm:gap-0">
-                  <Button
-                    variant="outline"
-                    onClick={handleDeny}
-                    className="rounded-full"
-                    disabled={actionLoading}
-                  >
-                    {actionLoading ? "Processing..." : "Deny Booking"}
-                  </Button>
-                  <Button onClick={handleApprove} className="rounded-full" disabled={actionLoading}>
-                    {actionLoading ? "Processing..." : "Approve Booking"}
-                  </Button>
-                </DialogFooter>
-              ) : (
-                <div className="text-center py-2">
-                  <p className="text-muted-foreground">
-                    This request has been {bookingStatusToRequestStatus(selectedRequest.booking.status)}.
-                  </p>
-                </div>
-              )}
+              {(() => {
+                const requestStatus = bookingStatusToRequestStatus(selectedRequest.booking.status);
+                const canCancelAfterApproval =
+                  requestStatus === "approved" && selectedRequest.booking.status === "confirmed";
+                if (requestStatus === "pending") {
+                  return (
+                    <DialogFooter className="gap-2 sm:gap-0">
+                      <Button
+                        variant="outline"
+                        onClick={handleDeny}
+                        className="rounded-full"
+                        disabled={actionLoading}
+                      >
+                        {actionLoading ? "Processing..." : "Deny Booking"}
+                      </Button>
+                      <Button onClick={handleApprove} className="rounded-full" disabled={actionLoading}>
+                        {actionLoading ? "Processing..." : "Approve Booking"}
+                      </Button>
+                    </DialogFooter>
+                  );
+                }
+                if (canCancelAfterApproval) {
+                  return (
+                    <DialogFooter className="w-full flex-col sm:flex-row sm:items-center gap-3">
+                      <div className="flex-1 text-sm text-muted-foreground text-center sm:text-left">
+                        Booking approved — awaiting renter payment.
+                      </div>
+                      <Button
+                        variant="outline"
+                        onClick={handleDeny}
+                        className="rounded-full"
+                        disabled={actionLoading}
+                      >
+                        {actionLoading ? "Processing..." : "Cancel Booking"}
+                      </Button>
+                    </DialogFooter>
+                  );
+                }
+                return (
+                  <div className="text-center py-2">
+                    <p className="text-muted-foreground">
+                      This request has been {requestStatusLabel[requestStatus]}.
+                    </p>
+                  </div>
+                );
+              })()}
             </>
           )}
         </DialogContent>
