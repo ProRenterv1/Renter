@@ -15,11 +15,13 @@ from bookings.domain import (
     assert_can_confirm_pickup,
     days_until_start,
     ensure_no_conflict,
+    extra_days_for_late,
     is_overdue,
     is_pre_payment,
+    is_severely_overdue,
     mark_canceled,
 )
-from bookings.models import Booking
+from bookings.models import Booking, BookingPhoto
 
 pytestmark = pytest.mark.django_db
 
@@ -140,6 +142,15 @@ def test_assert_can_confirm_pickup_happy_path(booking_factory):
         status=Booking.Status.PAID,
         before_photos_uploaded_at=timezone.now(),
     )
+    BookingPhoto.objects.create(
+        booking=booking,
+        uploaded_by=booking.renter,
+        role=BookingPhoto.Role.BEFORE,
+        s3_key="uploads/bookings/test-clean.jpg",
+        url="https://cdn.example/before.jpg",
+        status=BookingPhoto.Status.ACTIVE,
+        av_status=BookingPhoto.AVStatus.CLEAN,
+    )
     assert_can_confirm_pickup(booking)
 
 
@@ -150,6 +161,27 @@ def test_assert_can_confirm_pickup_requires_paid_and_photos(booking_factory):
 
     booking.status = Booking.Status.PAID
     booking.before_photos_uploaded_at = None
+    with pytest.raises(ValidationError):
+        assert_can_confirm_pickup(booking)
+
+
+def test_assert_can_confirm_pickup_requires_clean_photo(booking_factory):
+    booking = booking_factory(
+        start_date=future(2),
+        end_date=future(4),
+        status=Booking.Status.PAID,
+        before_photos_uploaded_at=timezone.now(),
+    )
+    BookingPhoto.objects.create(
+        booking=booking,
+        uploaded_by=booking.renter,
+        role=BookingPhoto.Role.BEFORE,
+        s3_key="uploads/bookings/test-pending.jpg",
+        url="https://cdn.example/before-pending.jpg",
+        status=BookingPhoto.Status.PENDING,
+        av_status=BookingPhoto.AVStatus.PENDING,
+    )
+
     with pytest.raises(ValidationError):
         assert_can_confirm_pickup(booking)
 
@@ -173,3 +205,26 @@ def test_mark_canceled_updates_fields(booking_factory):
     assert booking.canceled_by == Booking.CanceledBy.SYSTEM
     assert booking.canceled_reason == "Expired before payment"
     assert booking.auto_canceled is True
+
+
+def test_extra_days_for_late_clamps_between_one_and_max(booking_factory):
+    end_date = date.today() - timedelta(days=3)
+    booking = booking_factory(start_date=end_date - timedelta(days=2), end_date=end_date)
+    booking.status = Booking.Status.PAID
+
+    today = end_date + timedelta(days=3)
+    assert extra_days_for_late(today, booking) == 2
+
+    nearly_on_time = end_date + timedelta(days=1)
+    assert extra_days_for_late(nearly_on_time, booking) == 1
+
+    not_overdue = end_date - timedelta(days=1)
+    assert extra_days_for_late(not_overdue, booking) == 0
+
+
+def test_is_severely_overdue_respects_threshold(booking_factory):
+    end_date = date.today() - timedelta(days=4)
+    booking = booking_factory(start_date=end_date - timedelta(days=3), end_date=end_date)
+
+    assert is_severely_overdue(date.today(), booking, threshold_days=2)
+    assert not is_severely_overdue(end_date + timedelta(days=1), booking, threshold_days=2)

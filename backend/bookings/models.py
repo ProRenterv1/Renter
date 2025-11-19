@@ -128,3 +128,64 @@ class Booking(models.Model):
         if not self.start_date:
             return False
         return self.start_date < timezone.localdate()
+
+
+class BookingPhoto(models.Model):
+    """Photos uploaded against a booking for pickup/return verification."""
+
+    class Role(models.TextChoices):
+        BEFORE = "before", "before"
+        AFTER = "after", "after"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "pending"
+        ACTIVE = "active", "active"
+        BLOCKED = "blocked", "blocked"
+
+    class AVStatus(models.TextChoices):
+        PENDING = "pending", "pending"
+        CLEAN = "clean", "clean"
+        INFECTED = "infected", "infected"
+        ERROR = "error", "error"
+
+    booking = models.ForeignKey(
+        Booking,
+        related_name="photos",
+        on_delete=models.CASCADE,
+    )
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="booking_photos",
+        on_delete=models.CASCADE,
+    )
+    role = models.CharField(
+        max_length=16,
+        choices=Role.choices,
+        default=Role.BEFORE,
+    )
+    s3_key = models.CharField(max_length=512)
+    url = models.URLField(max_length=1024, blank=True)
+    filename = models.CharField(max_length=255, blank=True)
+    content_type = models.CharField(max_length=120, blank=True)
+    size = models.BigIntegerField(null=True, blank=True)
+    etag = models.CharField(max_length=64, blank=True)
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+    av_status = models.CharField(
+        max_length=12,
+        choices=AVStatus.choices,
+        default=AVStatus.PENDING,
+    )
+    width = models.IntegerField(null=True, blank=True)
+    height = models.IntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"BookingPhoto {self.pk} for booking {self.booking_id}"

@@ -35,6 +35,19 @@ def object_key(listing_id: int, owner_id: int, filename: str) -> str:
     return "/".join(part for part in parts if part)
 
 
+def booking_object_key(booking_id: int, user_id: int, filename: str) -> str:
+    prefix = (getattr(settings, "S3_UPLOADS_PREFIX", "") or "").strip("/")
+    name, ext = os.path.splitext(filename or "")
+    safe_name = slugify(name) or "upload"
+    ext = ext.lower().lstrip(".")
+    unique_prefix = str(uuid.uuid4())
+    combined_name = f"{unique_prefix}-{safe_name}"
+    if ext:
+        combined_name = f"{combined_name}.{ext}"
+    parts = [prefix, "bookings", str(booking_id), str(user_id), combined_name]
+    return "/".join(part for part in parts if part)
+
+
 def presign_put(
     key: str,
     *,

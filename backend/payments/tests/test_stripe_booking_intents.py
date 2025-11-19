@@ -75,9 +75,12 @@ def test_create_booking_payment_intents_logs_transactions(monkeypatch, settings)
 
     def fake_create(**kwargs):
         created_calls.append(kwargs)
-        key_suffix = kwargs["idempotency_key"].split(":")[-1]
+        key_parts = kwargs["idempotency_key"].split(":")
+        assert key_parts[-2] in {"charge", "deposit"}
+        assert key_parts[-1].isdigit()
         create_calls["count"] += 1
-        intent_id = f"pi_{key_suffix}_{create_calls['count']}"
+        kind = kwargs["metadata"]["kind"]
+        intent_id = f"pi_{kind}_{create_calls['count']}"
         intent = DummyIntent(intent_id)
         intent_store[intent_id] = intent
         return intent

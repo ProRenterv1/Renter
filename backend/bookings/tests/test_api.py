@@ -9,9 +9,13 @@ import pytest
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from bookings.models import Booking
+from bookings import api as bookings_api
+from bookings.models import Booking, BookingPhoto
 from listings.models import Listing
+from listings.services import compute_booking_totals
 from notifications import tasks as notification_tasks
+from payments.ledger import log_transaction
+from payments.models import Transaction
 
 pytestmark = pytest.mark.django_db
 
@@ -333,6 +337,15 @@ def test_confirm_pickup_sets_timestamp_when_allowed(booking_factory, owner_user)
         status=Booking.Status.PAID,
         before_photos_uploaded_at=timezone.now(),
     )
+    BookingPhoto.objects.create(
+        booking=booking,
+        uploaded_by=booking.renter,
+        role=BookingPhoto.Role.BEFORE,
+        s3_key="uploads/bookings/test-clean.jpg",
+        url="https://cdn.example/before.jpg",
+        status=BookingPhoto.Status.ACTIVE,
+        av_status=BookingPhoto.AVStatus.CLEAN,
+    )
     client = auth(owner_user)
     resp = client.post(f"/api/bookings/{booking.id}/confirm-pickup/")
 
@@ -358,6 +371,119 @@ def test_confirm_pickup_blocked_without_photos(booking_factory, owner_user, rent
     assert owner_resp.status_code == 400
     booking.refresh_from_db()
     assert booking.pickup_confirmed_at is None
+
+    booking.before_photos_uploaded_at = timezone.now()
+    booking.save(update_fields=["before_photos_uploaded_at"])
+    BookingPhoto.objects.create(
+        booking=booking,
+        uploaded_by=booking.renter,
+        role=BookingPhoto.Role.BEFORE,
+        s3_key="uploads/bookings/test-pending.jpg",
+        url="https://cdn.example/pending.jpg",
+        status=BookingPhoto.Status.PENDING,
+        av_status=BookingPhoto.AVStatus.PENDING,
+    )
+    owner_resp = owner_client.post(f"/api/bookings/{booking.id}/confirm-pickup/")
+    assert owner_resp.status_code == 400
+
+
+def test_before_photos_presign_returns_upload_details(
+    booking_factory,
+    renter_user,
+    monkeypatch,
+):
+    start = date.today() + timedelta(days=5)
+    booking = booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.CONFIRMED,
+        renter=renter_user,
+    )
+    client = auth(renter_user)
+
+    def fake_object_key(booking_id, user_id, filename):
+        assert booking_id == booking.id
+        assert user_id == renter_user.id
+        assert filename == "before.png"
+        return "uploads/bookings/test-key.png"
+
+    monkeypatch.setattr(bookings_api, "booking_object_key", fake_object_key)
+
+    captured = {}
+
+    def fake_presign(key, content_type, content_md5=None, size_hint=None):
+        captured["value"] = (key, content_type, content_md5, size_hint)
+        return {"upload_url": "https://s3/upload", "headers": {"Content-Type": content_type}}
+
+    monkeypatch.setattr(bookings_api, "presign_put", fake_presign)
+
+    payload = {
+        "filename": "before.png",
+        "content_type": "image/png",
+        "size": 1024,
+        "content_md5": "abcd==",
+    }
+    resp = client.post(
+        f"/api/bookings/{booking.id}/before-photos/presign/",
+        payload,
+        format="json",
+    )
+
+    assert resp.status_code == 200, resp.data
+    assert resp.data["key"] == "uploads/bookings/test-key.png"
+    assert resp.data["upload_url"] == "https://s3/upload"
+    assert resp.data["tagging"] == "av-status=pending"
+    assert captured["value"][3] == 1024
+
+
+def test_before_photos_complete_creates_photo_and_schedules_scan(
+    booking_factory,
+    renter_user,
+    monkeypatch,
+):
+    start = date.today() + timedelta(days=4)
+    booking = booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.CONFIRMED,
+        renter=renter_user,
+    )
+    client = auth(renter_user)
+
+    monkeypatch.setattr(bookings_api, "public_url", lambda key: f"https://cdn.example/{key}")
+
+    queued = {}
+
+    class _StubTask:
+        def delay(self, **kwargs):
+            queued.update(kwargs)
+
+    monkeypatch.setattr(bookings_api, "scan_and_finalize_booking_photo", _StubTask())
+
+    payload = {
+        "key": "uploads/bookings/manual/before.jpg",
+        "etag": '"etag-1234"',
+        "filename": "before.jpg",
+        "content_type": "image/jpeg",
+        "size": 2048,
+    }
+    resp = client.post(
+        f"/api/bookings/{booking.id}/before-photos/complete/",
+        payload,
+        format="json",
+    )
+
+    assert resp.status_code == 202, resp.data
+    photo = BookingPhoto.objects.get(booking=booking, s3_key=payload["key"])
+    assert photo.url == f"https://cdn.example/{payload['key']}"
+    assert photo.status == BookingPhoto.Status.PENDING
+    assert photo.av_status == BookingPhoto.AVStatus.PENDING
+    assert queued["key"] == payload["key"]
+    assert queued["booking_id"] == booking.id
+    assert queued["uploaded_by_id"] == renter_user.id
+    assert queued["meta"]["role"] == BookingPhoto.Role.BEFORE
+    booking.refresh_from_db()
+    assert booking.before_photos_uploaded_at is not None
 
 
 def test_my_bookings_endpoint_lists_owner_and_renter(
@@ -448,6 +574,25 @@ def test_my_bookings_includes_status_label_for_paid_booking(
     assert resp.status_code == 200
     returned = {item["id"]: item for item in resp.data}
     assert returned[booking.id]["status_label"] == "Waiting pick up"
+
+
+def test_status_label_shows_in_progress_after_pickup(
+    booking_factory,
+    renter_user,
+):
+    start = date.today() + timedelta(days=3)
+    booking = booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.PAID,
+        renter=renter_user,
+        pickup_confirmed_at=timezone.now(),
+    )
+    client = auth(renter_user)
+    resp = client.get("/api/bookings/my/")
+    assert resp.status_code == 200
+    returned = {item["id"]: item for item in resp.data}
+    assert returned[booking.id]["status_label"] == "In progress"
 
 
 def test_my_bookings_derives_paid_label_from_charge_id(
@@ -625,3 +770,120 @@ def test_availability_returns_404_for_inactive_listing(listing):
     client = APIClient()
     resp = client.get(f"/api/bookings/availability/?listing={listing.id}")
     assert resp.status_code == 404
+
+
+def test_mark_late_charges_extra_days_and_logs_ledgers(
+    booking_factory,
+    owner_user,
+    renter_user,
+    other_user,
+    monkeypatch,
+    settings,
+):
+    start = date(2025, 1, 1)
+    end = start + timedelta(days=2)
+    booking = booking_factory(
+        start_date=start,
+        end_date=end,
+        status=Booking.Status.PAID,
+    )
+    booking.totals = compute_booking_totals(
+        listing=booking.listing,
+        start_date=start,
+        end_date=end,
+    )
+    booking.save(update_fields=["totals"])
+    settings.PLATFORM_LEDGER_USER_ID = other_user.id
+
+    fixed_today = end + timedelta(days=3)
+    monkeypatch.setattr(bookings_api.timezone, "localdate", lambda: fixed_today)
+
+    captured_amount = {}
+
+    def fake_create_late_fee_payment_intent(*, booking, amount, description=""):
+        captured_amount["value"] = amount
+        log_transaction(
+            user=booking.renter,
+            booking=booking,
+            kind=Transaction.Kind.BOOKING_CHARGE,
+            amount=amount,
+        )
+        return "pi_late_test"
+
+    monkeypatch.setattr(
+        bookings_api,
+        "create_late_fee_payment_intent",
+        fake_create_late_fee_payment_intent,
+    )
+
+    owner_client = auth(owner_user)
+    resp = owner_client.post(f"/api/bookings/{booking.id}/mark-late/")
+
+    assert resp.status_code == 200, resp.data
+    assert resp.data["late_fee_days"] == 2
+    assert resp.data["late_fee_amount"] == "99.00"
+    assert captured_amount["value"] == Decimal("99.00")
+
+    owner_txn = Transaction.objects.get(kind=Transaction.Kind.OWNER_EARNING)
+    platform_txn = Transaction.objects.get(kind=Transaction.Kind.PLATFORM_FEE)
+    charge_txn = Transaction.objects.get(kind=Transaction.Kind.BOOKING_CHARGE)
+
+    assert owner_txn.user_id == owner_user.id
+    assert owner_txn.amount == Decimal("85.50")
+    assert platform_txn.user_id == other_user.id
+    assert platform_txn.amount == Decimal("13.50")
+    assert charge_txn.amount == Decimal("99.00")
+
+
+def test_mark_not_returned_captures_deposit_amount(
+    booking_factory,
+    owner_user,
+    renter_user,
+    monkeypatch,
+):
+    start = date(2025, 2, 1)
+    end = start + timedelta(days=3)
+    booking = booking_factory(
+        start_date=start,
+        end_date=end,
+        status=Booking.Status.PAID,
+        pickup_confirmed_at=timezone.now() - timedelta(days=5),
+        deposit_hold_id="pi_deposit_existing",
+    )
+    booking.totals = compute_booking_totals(
+        listing=booking.listing,
+        start_date=start,
+        end_date=end,
+    )
+    booking.save(update_fields=["totals"])
+
+    fixed_today = end + timedelta(days=4)
+    monkeypatch.setattr(bookings_api.timezone, "localdate", lambda: fixed_today)
+
+    captured_amount = {}
+
+    def fake_capture_deposit_amount(*, booking, amount):
+        captured_amount["value"] = amount
+        log_transaction(
+            user=booking.renter,
+            booking=booking,
+            kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE,
+            amount=amount,
+        )
+        return booking.deposit_hold_id
+
+    monkeypatch.setattr(bookings_api, "capture_deposit_amount", fake_capture_deposit_amount)
+
+    owner_client = auth(owner_user)
+    resp = owner_client.post(
+        f"/api/bookings/{booking.id}/mark-not-returned/",
+        {"amount": "40.00"},
+        format="json",
+    )
+
+    assert resp.status_code == 200, resp.data
+    assert resp.data["deposit_captured"] == "40.00"
+    assert captured_amount["value"] == Decimal("40.00")
+
+    deposit_txn = Transaction.objects.get(kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE)
+    assert deposit_txn.amount == Decimal("40.00")

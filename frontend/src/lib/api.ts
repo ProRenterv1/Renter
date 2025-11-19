@@ -290,6 +290,9 @@ export interface Booking {
   totals: BookingTotals | null;
   charge_payment_intent_id?: string;
   deposit_hold_id: string;
+  pickup_confirmed_at?: string | null;
+  before_photos_required?: boolean | null;
+  before_photos_uploaded_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -364,19 +367,27 @@ export function deriveRentalAmounts(direction: RentalDirection, booking: Booking
 
 export type DisplayRentalStatus =
   | "Requested"
+  | "Waiting approval"
   | "Pending"
+  | "Awaiting payment"
   | "In progress"
   | "Waiting pick up"
+  | "Awaiting pickup"
   | "Completed"
-  | "Canceled";
+  | "Canceled"
+  | "Cancelled";
 
 const DISPLAY_STATUS_VALUES: DisplayRentalStatus[] = [
   "Requested",
+  "Waiting approval",
   "Pending",
+  "Awaiting payment",
   "In progress",
   "Waiting pick up",
+  "Awaiting pickup",
   "Completed",
   "Canceled",
+  "Cancelled",
 ];
 
 function normalizeDisplayStatus(label?: string | null): DisplayRentalStatus | null {
@@ -396,17 +407,17 @@ export function deriveDisplayRentalStatus(booking: Booking): DisplayRentalStatus
   const normalizedStatus = (booking.status || "").toLowerCase();
   switch (normalizedStatus) {
     case "requested":
-      return "Requested";
+      return "Waiting approval";
     case "confirmed":
-      return "Pending";
+      return "Awaiting payment";
     case "paid":
-      return "Waiting pick up";
+      return booking.pickup_confirmed_at ? "In progress" : "Awaiting pickup";
     case "completed":
       return "Completed";
     case "canceled":
       return "Canceled";
     default:
-      return "Requested";
+      return "Waiting approval";
   }
 }
 
@@ -775,6 +786,29 @@ export const bookingsAPI = {
   },
   complete(id: number) {
     return jsonFetch<Booking>(`/bookings/${id}/complete/`, {
+      method: "POST",
+    });
+  },
+  beforePhotosPresign(id: number, payload: PhotoPresignRequest) {
+    return jsonFetch<PhotoPresignResponse>(
+      `/bookings/${id}/before-photos/presign/`,
+      {
+        method: "POST",
+        body: payload,
+      },
+    );
+  },
+  beforePhotosComplete(id: number, payload: PhotoCompletePayload) {
+    return jsonFetch<PhotoCompleteResponse>(
+      `/bookings/${id}/before-photos/complete/`,
+      {
+        method: "POST",
+        body: payload,
+      },
+    );
+  },
+  confirmPickup(id: number) {
+    return jsonFetch<Booking>(`/bookings/${id}/confirm-pickup/`, {
       method: "POST",
     });
   },

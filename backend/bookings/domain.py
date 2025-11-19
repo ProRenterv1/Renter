@@ -9,7 +9,7 @@ from django.core.exceptions import ValidationError
 
 from listings.models import Listing
 
-from .models import Booking
+from .models import Booking, BookingPhoto
 
 ACTIVE_BOOKING_STATUSES = (
     Booking.Status.REQUESTED,
@@ -106,6 +106,21 @@ def assert_can_confirm_pickup(booking: Booking) -> None:
         raise ValidationError(
             {"non_field_errors": ["Before photos must be uploaded before confirming pickup."]}
         )
+    if booking.before_photos_required:
+        has_clean_before = BookingPhoto.objects.filter(
+            booking=booking,
+            role=BookingPhoto.Role.BEFORE,
+            status=BookingPhoto.Status.ACTIVE,
+            av_status=BookingPhoto.AVStatus.CLEAN,
+        ).exists()
+        if not has_clean_before:
+            raise ValidationError(
+                {
+                    "non_field_errors": [
+                        "At least one clean 'before' photo is required before pickup confirmation."
+                    ]
+                }
+            )
 
 
 def is_pre_payment(booking: Booking) -> bool:
@@ -113,6 +128,32 @@ def is_pre_payment(booking: Booking) -> bool:
     Return True if the booking has no associated charge intent yet.
     """
     return not (getattr(booking, "charge_payment_intent_id", "") or "").strip()
+
+
+def extra_days_for_late(today: date, booking: Booking, *, max_days: int = 2) -> int:
+    """
+    Return clamped extra days to charge for a late return.
+
+    When the booking is overdue, clamp the number of late days to [1, max_days].
+    """
+    if not booking.end_date or max_days <= 0:
+        return 0
+    if not is_overdue(today, booking):
+        return 0
+    days_late = max((today - booking.end_date).days, 0)
+    if days_late <= 0:
+        return 0
+    return max(1, min(days_late, max_days))
+
+
+def is_severely_overdue(today: date, booking: Booking, *, threshold_days: int = 2) -> bool:
+    """Return True when the booking has been overdue for at least threshold_days."""
+    if not booking.end_date:
+        return False
+    if threshold_days <= 0:
+        threshold_days = 0
+    days_late = (today - booking.end_date).days
+    return days_late >= threshold_days
 
 
 def mark_canceled(

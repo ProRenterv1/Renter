@@ -195,6 +195,66 @@ def _finalize_photo_record(
         return photo
 
 
+def _finalize_booking_photo_record(
+    *,
+    booking_id: int,
+    uploaded_by_id: int,
+    key: str,
+    verdict: str,
+    meta: Dict,
+    dimensions: Tuple[Optional[int], Optional[int]],
+):
+    from bookings.models import Booking, BookingPhoto
+
+    etag = (meta.get("etag") or "").strip('"')
+    filename = meta.get("filename") or ""
+    content_type = meta.get("content_type") or ""
+    size = _coerce_int(meta.get("size"))
+    width, height = dimensions
+    role_value = meta.get("role") or BookingPhoto.Role.BEFORE
+
+    status = BookingPhoto.Status.ACTIVE if verdict == "clean" else BookingPhoto.Status.BLOCKED
+    av_status = (
+        BookingPhoto.AVStatus.CLEAN if verdict == "clean" else BookingPhoto.AVStatus.INFECTED
+    )
+
+    public_url = s3util.public_url(key)
+
+    with transaction.atomic():
+        try:
+            booking = Booking.objects.select_for_update().get(id=booking_id)
+        except Booking.DoesNotExist as exc:
+            raise ValueError("Booking not found for provided identifier.") from exc
+
+        photo = (
+            BookingPhoto.objects.select_for_update()
+            .filter(booking_id=booking_id, uploaded_by_id=uploaded_by_id, s3_key=key)
+            .first()
+        )
+        if not photo:
+            photo = BookingPhoto(
+                booking=booking,
+                uploaded_by_id=uploaded_by_id,
+                role=role_value,
+                s3_key=key,
+            )
+
+        photo.booking = booking
+        photo.uploaded_by_id = uploaded_by_id
+        photo.role = role_value
+        photo.url = public_url
+        photo.filename = filename
+        photo.content_type = content_type
+        photo.size = size
+        photo.etag = etag
+        photo.width = width
+        photo.height = height
+        photo.status = status
+        photo.av_status = av_status
+        photo.save()
+        return photo
+
+
 def _run_scan_and_finalize(
     *,
     key: str,
@@ -211,6 +271,30 @@ def _run_scan_and_finalize(
     photo = _finalize_photo_record(
         listing_id=listing_id,
         owner_id=owner_id,
+        key=key,
+        verdict=verdict,
+        meta=meta or {},
+        dimensions=_extract_dimensions(data),
+    )
+    return {"status": verdict, "photo_id": str(photo.id)}
+
+
+def _run_scan_and_finalize_booking_photo(
+    *,
+    key: str,
+    booking_id: int,
+    uploaded_by_id: int,
+    meta: Dict | None,
+):
+    data = _download_bytes(key)
+    verdict = _scan_bytes(data)
+    if verdict not in {"clean", "infected"}:
+        raise AntivirusError("Unknown antivirus verdict.")
+
+    _apply_av_metadata(key, verdict)
+    photo = _finalize_booking_photo_record(
+        booking_id=booking_id,
+        uploaded_by_id=uploaded_by_id,
         key=key,
         verdict=verdict,
         meta=meta or {},
@@ -244,4 +328,29 @@ def scan_and_finalize_photo(
     )
 
 
-__all__ = ["scan_and_finalize_photo"]
+@shared_task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    name="storage.tasks.scan_and_finalize_booking_photo",
+)
+def scan_and_finalize_booking_photo(
+    self,
+    key: str,
+    booking_id: int,
+    uploaded_by_id: int,
+    meta: Dict | None = None,
+):
+    """
+    Download the uploaded booking photo, scan it, and finalize the BookingPhoto row.
+    """
+
+    return _run_scan_and_finalize_booking_photo(
+        key=key,
+        booking_id=booking_id,
+        uploaded_by_id=uploaded_by_id,
+        meta=meta or {},
+    )
+
+
+__all__ = ["scan_and_finalize_photo", "scan_and_finalize_booking_photo"]

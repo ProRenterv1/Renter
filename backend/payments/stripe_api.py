@@ -125,6 +125,7 @@ def create_booking_payment_intents(
     charge_amount = rental_subtotal + service_fee
     if charge_amount <= Decimal("0"):
         raise StripePaymentError("Rental charge must be greater than zero.")
+    charge_amount_cents = _to_cents(charge_amount)
 
     stripe.api_key = _get_stripe_api_key()
     customer_value = (
@@ -150,7 +151,7 @@ def create_booking_payment_intents(
     if charge_intent is None:
         try:
             charge_intent = stripe.PaymentIntent.create(
-                amount=_to_cents(charge_amount),
+                amount=charge_amount_cents,
                 currency=currency,
                 automatic_payment_methods={**AUTOMATIC_PAYMENT_METHODS_CONFIG},
                 customer=customer_value,
@@ -159,7 +160,7 @@ def create_booking_payment_intents(
                 off_session=False,
                 capture_method="automatic",
                 metadata={**common_metadata, "kind": "booking_charge"},
-                idempotency_key=f"{idempotency_base}:charge",
+                idempotency_key=f"{idempotency_base}:charge:{charge_amount_cents}",
             )
         except stripe.error.StripeError as exc:
             _handle_stripe_error(exc)
@@ -183,9 +184,10 @@ def create_booking_payment_intents(
         )
 
         if deposit_intent is None:
+            deposit_amount_cents = _to_cents(damage_deposit)
             try:
                 deposit_intent = stripe.PaymentIntent.create(
-                    amount=_to_cents(damage_deposit),
+                    amount=deposit_amount_cents,
                     currency=currency,
                     automatic_payment_methods={**AUTOMATIC_PAYMENT_METHODS_CONFIG},
                     customer=customer_value,
@@ -194,7 +196,7 @@ def create_booking_payment_intents(
                     off_session=False,
                     capture_method="manual",
                     metadata={**common_metadata, "kind": "damage_deposit"},
-                    idempotency_key=f"{idempotency_base}:deposit",
+                    idempotency_key=f"{idempotency_base}:deposit:{deposit_amount_cents}",
                 )
             except stripe.error.StripeError as exc:
                 _handle_stripe_error(exc)
@@ -244,6 +246,91 @@ def create_booking_payment_intents(
             )
 
     return charge_intent_id, deposit_intent_id
+
+
+def create_late_fee_payment_intent(
+    *,
+    booking: Booking,
+    amount: Decimal,
+    description: str = "Late return fee",
+) -> str:
+    """
+    Create + confirm an additional PaymentIntent charging the renter for a late fee.
+    Returns the PaymentIntent id.
+    """
+    if amount <= Decimal("0"):
+        raise StripePaymentError("Late fee must be greater than zero.")
+
+    stripe.api_key = _get_stripe_api_key()
+    customer_id = (getattr(booking.renter, "stripe_customer_id", "") or "").strip()
+    if not customer_id:
+        raise StripeConfigurationError("Renter is missing a Stripe customer id.")
+
+    cents = _to_cents(amount)
+    idempotency_key = f"booking:{booking.id}:{IDEMPOTENCY_VERSION}:late:{cents}"
+    env_label = getattr(settings, "STRIPE_ENV", "dev") or "dev"
+    metadata = {
+        "booking_id": str(booking.id),
+        "listing_id": str(booking.listing_id),
+        "env": env_label,
+        "kind": "booking_late_fee",
+    }
+
+    try:
+        intent = stripe.PaymentIntent.create(
+            amount=cents,
+            currency="cad",
+            customer=customer_id,
+            description=description,
+            automatic_payment_methods={**AUTOMATIC_PAYMENT_METHODS_CONFIG},
+            capture_method="automatic",
+            confirm=True,
+            off_session=True,
+            metadata=metadata,
+            idempotency_key=idempotency_key,
+        )
+    except stripe.error.StripeError as exc:
+        _handle_stripe_error(exc)
+
+    log_transaction(
+        user=booking.renter,
+        booking=booking,
+        kind=Transaction.Kind.BOOKING_CHARGE,
+        amount=amount,
+        stripe_id=intent.id,
+    )
+    return intent.id
+
+
+def capture_deposit_amount(*, booking: Booking, amount: Decimal) -> str | None:
+    """
+    Capture part or all of the existing deposit PaymentIntent for this booking.
+    Returns the PaymentIntent id (or None if no deposit hold).
+    """
+    deposit_intent_id = (getattr(booking, "deposit_hold_id", "") or "").strip()
+    if not deposit_intent_id:
+        return None
+    if amount <= Decimal("0"):
+        raise StripePaymentError("Deposit capture amount must be greater than zero.")
+
+    stripe.api_key = _get_stripe_api_key()
+    cents = _to_cents(amount)
+    try:
+        intent = stripe.PaymentIntent.capture(
+            deposit_intent_id,
+            amount_to_capture=cents,
+        )
+    except stripe.error.StripeError as exc:
+        _handle_stripe_error(exc)
+
+    log_transaction(
+        user=booking.renter,
+        booking=booking,
+        kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE,
+        amount=amount,
+        stripe_id=deposit_intent_id,
+    )
+    return intent.id
 
 
 def ensure_stripe_customer(user: User, *, customer_id: str | None = None) -> str:

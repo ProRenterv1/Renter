@@ -258,6 +258,8 @@ class BookingSerializer(serializers.ModelSerializer):
         status_value = booking.status
         if status_value == Booking.Status.REQUESTED and booking.charge_payment_intent_id:
             status_value = Booking.Status.PAID
+        if status_value == Booking.Status.PAID and booking.pickup_confirmed_at:
+            return "In progress"
 
         return self._display_label_for_status(status_value)
 

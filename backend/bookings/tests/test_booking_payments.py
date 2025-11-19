@@ -309,5 +309,13 @@ def test_booking_create_transient_error_is_retry_safe(renter_user, listing, monk
     # Charge attempts reuse the same idempotency key for retries and match booking-scoped keys.
     assert created_calls[0]["idempotency_key"] == created_calls[1]["idempotency_key"]
     expected_base = f"booking:{booking.id}:{stripe_api.IDEMPOTENCY_VERSION}"
-    assert created_calls[1]["idempotency_key"] == f"{expected_base}:charge"
-    assert created_calls[2]["idempotency_key"] == f"{expected_base}:deposit"
+    totals = booking.totals or {}
+    rental_subtotal = Decimal(totals["rental_subtotal"])
+    service_fee = Decimal(totals.get("service_fee", totals.get("renter_fee", "0")))
+    damage_deposit = Decimal(totals.get("damage_deposit", "0"))
+    expected_charge_cents = int((rental_subtotal + service_fee) * Decimal("100"))
+    expected_deposit_cents = int(damage_deposit * Decimal("100"))
+    assert created_calls[1]["idempotency_key"] == f"{expected_base}:charge:{expected_charge_cents}"
+    assert (
+        created_calls[2]["idempotency_key"] == f"{expected_base}:deposit:{expected_deposit_cents}"
+    )
