@@ -59,6 +59,18 @@ def render_booking_receipt_pdf(booking: Booking) -> bytes:
         created_display = "N/A"
     booking_id = getattr(booking, "id", None) or getattr(booking, "pk", None) or "N/A"
 
+    payment_dt = booking.updated_at or booking.created_at
+    if payment_dt:
+        if timezone.is_aware(payment_dt):
+            payment_dt_local = timezone.localtime(payment_dt)
+        else:
+            payment_dt_local = payment_dt
+        payment_display = _format_date(payment_dt_local.date())
+    else:
+        payment_display = "N/A"
+
+    duration_days = _extract_duration_days(booking, totals)
+
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=letter)
     pdf.setTitle("Rental Payment Receipt")
@@ -67,48 +79,62 @@ def render_booking_receipt_pdf(booking: Booking) -> bytes:
     margin = 0.9 * inch
     y = height - margin
 
-    def new_section(title: str) -> None:
+    business_name = "Renter"
+    business_email = "asterokamax@gmail.com"
+
+    def new_section(title: str, *, spacing: float = 0.22) -> None:
         nonlocal y
         pdf.setFont("Helvetica-Bold", 13)
         pdf.drawString(margin, y, title)
-        y -= 0.22 * inch
+        y -= spacing * inch
 
-    def draw_row(label: str, value: str) -> None:
+    def draw_row(label: str, value: str, *, label_width: float = 2.0) -> None:
         nonlocal y
         pdf.setFont("Helvetica-Bold", 10)
         pdf.drawString(margin, y, label)
         pdf.setFont("Helvetica", 10)
-        pdf.drawString(margin + 1.9 * inch, y, value)
+        pdf.drawString(margin + label_width * inch, y, value)
         y -= 0.18 * inch
 
-    pdf.setFont("Helvetica-Bold", 20)
-    pdf.drawString(margin, y, "Rental Payment Receipt")
-    y -= 0.35 * inch
+    pdf.setStrokeColorRGB(0.85, 0.85, 0.85)
+    pdf.setFillColorRGB(0, 0, 0)
 
-    new_section("Parties")
-    draw_row("Renter", renter_name)
-    draw_row("Owner", owner_name)
-    draw_row("Listing", listing_title)
-    y -= 0.12 * inch
+    pdf.setFont("Helvetica-Bold", 22)
+    pdf.drawString(margin, y, business_name)
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(margin, y - 0.2 * inch, business_email)
 
-    new_section("Booking Details")
-    draw_row("Booking ID", str(booking_id))
+    header_x = width - margin - 2.6 * inch
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(header_x, y, f"Receipt No: {booking_id}")
+    pdf.drawString(header_x, y - 0.18 * inch, f"Issued on: {created_display}")
+    pdf.drawString(header_x, y - 0.36 * inch, f"Payment date: {payment_display}")
+    y -= 0.65 * inch
+
+    pdf.line(margin, y, width - margin, y)
+    y -= 0.25 * inch
+
+    new_section("Booking", spacing=0.2)
+    draw_row("Tool", listing_title)
     draw_row("Date range", date_range_display)
-    draw_row("Created", created_display)
-    y -= 0.12 * inch
+    draw_row("Total duration", duration_days)
+    draw_row("Owner", owner_name)
+    draw_row("Booking ID", str(booking_id))
+    y -= 0.1 * inch
 
-    new_section("Payment Breakdown")
-    draw_row("Rent", _format_currency(breakdown.rent))
+    new_section("Payment breakdown", spacing=0.2)
+    draw_row("Rent price", _format_currency(breakdown.rent))
     draw_row("Service fee", _format_currency(breakdown.service_fee))
     draw_row("Damage deposit", _format_currency(breakdown.damage_deposit))
-    y -= 0.04 * inch
-    draw_row("Total paid", _format_currency(breakdown.total_charge))
-    y -= 0.12 * inch
+    y -= 0.1 * inch
 
-    new_section("Payment References")
-    draw_row("Charge PaymentIntent", booking.charge_payment_intent_id or "N/A")
-    if booking.deposit_hold_id:
-        draw_row("Deposit PaymentIntent", booking.deposit_hold_id)
+    new_section("Client", spacing=0.2)
+    draw_row("Name", renter_name)
+    renter_email = getattr(getattr(booking, "renter", None), "email", "") or "N/A"
+    renter_phone = getattr(getattr(booking, "renter", None), "phone", "") or "N/A"
+    draw_row("Email", renter_email)
+    draw_row("Phone", renter_phone)
+    y -= 0.1 * inch
 
     pdf.showPage()
     pdf.save()
@@ -213,6 +239,20 @@ def _format_date(value: date | None) -> str:
         return "N/A"
     month = value.strftime("%b")
     return f"{month} {value.day}, {value.year}"
+
+
+def _extract_duration_days(booking: Booking, totals: Mapping[str, object]) -> str:
+    total_days = totals.get("days")
+    if total_days not in (None, ""):
+        return f"{total_days} days"
+    start = booking.start_date
+    end = booking.end_date
+    if start and end:
+        delta = (end - start).days
+        if delta <= 0:
+            delta = 1
+        return f"{delta} days"
+    return "N/A"
 
 
 __all__ = ["render_booking_receipt_pdf", "upload_booking_receipt_pdf"]

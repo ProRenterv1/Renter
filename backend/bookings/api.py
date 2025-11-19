@@ -58,7 +58,8 @@ class BookingViewSet(viewsets.ModelViewSet):
         if not user.is_authenticated:
             return Booking.objects.none()
         return (
-            Booking.objects.select_related("listing", "owner", "renter")
+            Booking.objects.select_related("listing", "listing__owner", "owner", "renter")
+            .prefetch_related("listing__photos")
             .filter(Q(owner=user) | Q(renter=user))
             .order_by("-created_at")
         )
@@ -66,7 +67,9 @@ class BookingViewSet(viewsets.ModelViewSet):
     def get_object(self):
         """Fetch a single booking and enforce participant permissions."""
         obj = get_object_or_404(
-            Booking.objects.select_related("listing", "owner", "renter"),
+            Booking.objects.select_related(
+                "listing", "listing__owner", "owner", "renter"
+            ).prefetch_related("listing__photos"),
             pk=self.kwargs["pk"],
         )
         self.check_object_permissions(self.request, obj)

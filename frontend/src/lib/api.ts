@@ -274,6 +274,11 @@ export interface Booking {
   end_date: string;
   listing: number;
   listing_title: string;
+  listing_slug?: string | null;
+  listing_owner_first_name?: string | null;
+  listing_owner_last_name?: string | null;
+  listing_owner_username?: string | null;
+  listing_primary_photo_url?: string | null;
   owner: number;
   renter: number;
   renter_first_name?: string | null;

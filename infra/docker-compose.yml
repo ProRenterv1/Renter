@@ -13,6 +13,10 @@ services:
     command: >
       gunicorn renter.wsgi:application
       -b 0.0.0.0:8000 -w 2 --threads 2 --timeout 60
+    depends_on:
+      - db
+      - redis
+      - clamav
     expose: ["8000"]
     restart: unless-stopped
     healthcheck:
@@ -28,7 +32,10 @@ services:
       POSTGRES_PASSWORD: postgres
     ports: ["5432:5432"]
     volumes: ["pgdata:/var/lib/postgresql/data"]
-
+  clamav:
+    image: clamav/clamav:stable
+    ports: ["3310:3310"]
+    restart: unless-stopped
   worker:
     build:
       context: ../backend
@@ -38,7 +45,7 @@ services:
       celery -A renter worker -l info
       --queues=critical,emails,sms,celery,default
       --concurrency=2 --max-tasks-per-child=200
-    depends_on: [api]
+    depends_on: [api, clamav]
     restart: unless-stopped
 
   redis:
@@ -56,7 +63,7 @@ services:
       - web_dist:/dist
   nginx:
     image: nginx:1.27-alpine
-    depends_on: [api, web_build]
+    depends_on: [api, web_build, clamav]
     ports: ["8080:80"]
     volumes:
       - ./nginx/app.conf:/etc/nginx/conf.d/default.conf:ro

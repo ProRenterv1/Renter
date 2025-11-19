@@ -165,6 +165,11 @@ AV_ENABLED              = env.bool("AV_ENABLED", default=True)
 AV_ENGINE               = env("AV_ENGINE", default="clamd")
 AV_DUMMY_INFECT_MARKER  = env("AV_DUMMY_INFECT_MARKER", default="EICAR")
 
+# ClamAV daemon connection settings
+CLAMD_UNIX_SOCKET = env("CLAMD_UNIX_SOCKET", default=None)
+CLAMD_HOST        = env("CLAMD_HOST", default="clamav")
+CLAMD_PORT        = env.int("CLAMD_PORT", default=3310)
+
 # --- Celery / Broker (overridable in tests)
 REDIS_URL               = env("REDIS_URL", default="redis://redis:6379/0")
 CELERY_BROKER_URL       = env("CELERY_BROKER_URL", default=REDIS_URL)

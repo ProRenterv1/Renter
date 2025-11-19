@@ -9,6 +9,10 @@
   <div style="border:1px solid {{ brand_border_color }};border-radius:20px;padding:20px 24px;margin-bottom:28px;background-color:{{ brand_surface_color }};">
     <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="font-size:15px;color:{{ brand_text_color }};">
       <tr>
+        <td style="padding:6px 0;width:42%;color:{{ brand_muted_text_color }};">Tool</td>
+        <td style="padding:6px 0;font-weight:600;">{{ listing_title }}</td>
+      </tr>
+      <tr>
         <td style="padding:6px 0;width:42%;color:{{ brand_muted_text_color }};">Renter</td>
         <td style="padding:6px 0;font-weight:600;">{{ renter_full_name }}</td>
       </tr>
@@ -17,16 +21,8 @@
         <td style="padding:6px 0;font-weight:600;">{{ start_date|date:"M d, Y" }} &ndash; {{ end_date|date:"M d, Y" }}</td>
       </tr>
       <tr>
-        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Total charge</td>
-        <td style="padding:6px 0;font-weight:600;">${{ totals.total_charge|default:"0.00" }}</td>
-      </tr>
-      <tr>
-        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Damage deposit</td>
-        <td style="padding:6px 0;">${{ totals.damage_deposit|default:"0.00" }}</td>
-      </tr>
-      <tr>
-        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Service fee</td>
-        <td style="padding:6px 0;">${{ totals.service_fee|default:"0.00" }}</td>
+        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">You earn</td>
+        <td style="padding:6px 0;font-weight:600;">${{ totals.owner_payout|default:totals.rental_subtotal|default:"0.00" }}</td>
       </tr>
     </table>
   </div>
