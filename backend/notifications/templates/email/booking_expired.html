@@ -1,0 +1,21 @@
+{% extends "email/base_email.html" %}
+{% block content %}
+  <h1 style="font-size:26px;line-height:1.2;color:{{ brand_heading_color }};margin:0 0 16px;font-family:'Manrope','Inter',sans-serif;">
+    Booking expired
+  </h1>
+  <p style="font-size:16px;color:{{ brand_text_color }};margin:0 0 20px;">
+    Hi {{ recipient_name|default:"there" }}, {% if recipient_role == "owner" %}a pending booking{% else %}your booking{% endif %} for
+    <strong>{{ listing_title }}</strong> ({{ date_range_display }}) expired before payment was completed.
+  </p>
+  <p style="font-size:15px;color:{{ brand_text_color }};margin:0 0 18px;">
+    The reservation has been canceled automatically so those dates are available again.
+    {% if recipient_role == "renter" %}Submit a new request anytime if you would still like to rent this item.{% else %}Feel free to invite the renter to rebook if they're still interested.{% endif %}
+  </p>
+  {% if cta_url %}
+    <p style="text-align:center;margin:0 0 10px;">
+      <a href="{{ cta_url }}" style="display:inline-block;background-color:{{ brand_primary_color }};color:{{ brand_primary_text_color }};padding:15px 34px;border-radius:999px;text-decoration:none;font-weight:600;box-shadow:0 10px 25px rgba(91,140,166,0.35);">
+        View my rentals
+      </a>
+    </p>
+  {% endif %}
+{% endblock %}

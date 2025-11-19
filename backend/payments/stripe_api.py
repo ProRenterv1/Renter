@@ -18,6 +18,7 @@ from payments.models import Transaction
 
 logger = logging.getLogger(__name__)
 IDEMPOTENCY_VERSION = "v2"
+AUTOMATIC_PAYMENT_METHODS_CONFIG = {"enabled": True, "allow_redirects": "never"}
 User = get_user_model()
 
 
@@ -42,9 +43,9 @@ def _get_stripe_api_key() -> str:
 
 
 def _to_cents(amount: Decimal) -> int:
-    """Convert a Decimal dollar amount into integer cents."""
-    quantized = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    return int(quantized * Decimal("100"))
+    """Convert Decimal dollars to integer cents, rounding to the nearest cent."""
+    cents = (amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return int(cents)
 
 
 def _parse_decimal(value: str | Decimal | None, field_name: str) -> Decimal:
@@ -111,19 +112,25 @@ def create_booking_payment_intents(
         Tuple of (charge_intent_id, deposit_intent_id | None).
     """
     totals = booking.totals or {}
-    total_charge = _parse_decimal(totals.get("total_charge"), "total_charge")
+    rental_subtotal = _parse_decimal(totals.get("rental_subtotal"), "rental_subtotal")
+    service_fee = _parse_decimal(
+        totals.get("service_fee", totals.get("renter_fee", "0")),
+        "service_fee",
+    )
     damage_deposit = _parse_decimal(totals.get("damage_deposit", "0"), "damage_deposit")
 
     if damage_deposit < Decimal("0"):
         raise StripePaymentError("Damage deposit cannot be negative.")
 
-    rental_charge = total_charge - damage_deposit
-    if rental_charge <= Decimal("0"):
+    charge_amount = rental_subtotal + service_fee
+    if charge_amount <= Decimal("0"):
         raise StripePaymentError("Rental charge must be greater than zero.")
 
     stripe.api_key = _get_stripe_api_key()
-    customer_value = customer_id or None
-    if customer_value:
+    customer_value = (
+        customer_id or getattr(booking.renter, "stripe_customer_id", "") or ""
+    ).strip() or None
+    if customer_value and payment_method_id:
         _ensure_payment_method_for_customer(payment_method_id, customer_value)
 
     idempotency_base = f"booking:{booking.id}:{IDEMPOTENCY_VERSION}"
@@ -133,23 +140,25 @@ def create_booking_payment_intents(
         "listing_id": str(booking.listing_id),
         "env": env_label,
     }
+    currency = "cad"
 
     charge_intent = _retrieve_payment_intent(
         getattr(booking, "charge_payment_intent_id", ""),
-        label="rental_charge",
+        label="booking_charge",
     )
 
     if charge_intent is None:
         try:
             charge_intent = stripe.PaymentIntent.create(
-                amount=_to_cents(rental_charge),
-                currency="cad",
-                payment_method_types=["card"],
+                amount=_to_cents(charge_amount),
+                currency=currency,
+                automatic_payment_methods={**AUTOMATIC_PAYMENT_METHODS_CONFIG},
                 customer=customer_value,
-                payment_method=payment_method_id,
-                confirm=True,
+                payment_method=payment_method_id or None,
+                confirm=bool(payment_method_id),
                 off_session=False,
-                metadata={**common_metadata, "kind": "rental_charge"},
+                capture_method="automatic",
+                metadata={**common_metadata, "kind": "booking_charge"},
                 idempotency_key=f"{idempotency_base}:charge",
             )
         except stripe.error.StripeError as exc:
@@ -157,10 +166,19 @@ def create_booking_payment_intents(
 
     charge_intent_id = charge_intent.id
 
+    deposit_field_name = None
+    if hasattr(booking, "deposit_payment_intent_id"):
+        deposit_field_name = "deposit_payment_intent_id"
+    elif hasattr(booking, "deposit_hold_id"):
+        deposit_field_name = "deposit_hold_id"
+
     deposit_intent_id: str | None = None
     if damage_deposit > Decimal("0"):
+        existing_id = ""
+        if deposit_field_name:
+            existing_id = getattr(booking, deposit_field_name, "") or ""
         deposit_intent = _retrieve_payment_intent(
-            getattr(booking, "deposit_hold_id", ""),
+            existing_id,
             label="damage_deposit",
         )
 
@@ -168,13 +186,13 @@ def create_booking_payment_intents(
             try:
                 deposit_intent = stripe.PaymentIntent.create(
                     amount=_to_cents(damage_deposit),
-                    currency="cad",
+                    currency=currency,
+                    automatic_payment_methods={**AUTOMATIC_PAYMENT_METHODS_CONFIG},
                     customer=customer_value,
-                    payment_method=payment_method_id,
-                    payment_method_types=["card"],
-                    capture_method="manual",
-                    confirm=True,
+                    payment_method=payment_method_id or None,
+                    confirm=bool(payment_method_id),
                     off_session=False,
+                    capture_method="manual",
                     metadata={**common_metadata, "kind": "damage_deposit"},
                     idempotency_key=f"{idempotency_base}:deposit",
                 )
@@ -183,44 +201,46 @@ def create_booking_payment_intents(
 
         deposit_intent_id = deposit_intent.id
 
+    booking.charge_payment_intent_id = charge_intent_id
+    update_fields = ["charge_payment_intent_id"]
+    if deposit_field_name:
+        setattr(booking, deposit_field_name, deposit_intent_id or "")
+        update_fields.append(deposit_field_name)
+    booking.save(update_fields=update_fields)
+
     existing_charge_txn = Transaction.objects.filter(
         user=booking.renter,
         booking=booking,
         kind=Transaction.Kind.BOOKING_CHARGE,
-        stripe_payment_intent_id=charge_intent_id,
+        stripe_id=charge_intent_id,
     ).first()
 
     if existing_charge_txn is None:
         log_transaction(
             user=booking.renter,
-            kind=Transaction.Kind.BOOKING_CHARGE,
-            direction=Transaction.Direction.DEBIT,
-            amount=rental_charge,
             booking=booking,
-            listing=booking.listing,
-            description=f"Booking charge for listing {booking.listing_id}",
-            stripe_payment_intent_id=charge_intent_id,
+            kind=Transaction.Kind.BOOKING_CHARGE,
+            amount=charge_amount,
+            currency=currency,
+            stripe_id=charge_intent_id,
         )
 
-    if damage_deposit > Decimal("0"):
-        deposit_intent_identifier = deposit_intent_id or ""
+    if deposit_intent_id is not None:
         existing_deposit_txn = Transaction.objects.filter(
             user=booking.renter,
             booking=booking,
-            kind=Transaction.Kind.DAMAGE_DEPOSIT_HOLD,
-            stripe_payment_intent_id=deposit_intent_identifier,
+            kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE,
+            stripe_id=deposit_intent_id,
         ).first()
 
         if existing_deposit_txn is None:
             log_transaction(
                 user=booking.renter,
-                kind=Transaction.Kind.DAMAGE_DEPOSIT_HOLD,
-                direction=Transaction.Direction.DEBIT,
-                amount=damage_deposit,
                 booking=booking,
-                listing=booking.listing,
-                description=f"Damage deposit hold for listing {booking.listing_id}",
-                stripe_payment_intent_id=deposit_intent_identifier,
+                kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE,
+                amount=damage_deposit,
+                currency=currency,
+                stripe_id=deposit_intent_id,
             )
 
     return charge_intent_id, deposit_intent_id
@@ -310,7 +330,7 @@ def stripe_webhook(request):
     booking_id = metadata.get("booking_id")
     kind = metadata.get("kind")
 
-    if event_type == "payment_intent.succeeded" and booking_id and kind == "rental_charge":
+    if event_type == "payment_intent.succeeded" and booking_id and kind == "booking_charge":
         try:
             booking = Booking.objects.get(pk=int(booking_id))
         except (Booking.DoesNotExist, ValueError):

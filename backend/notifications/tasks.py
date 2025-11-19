@@ -369,6 +369,61 @@ def send_booking_status_email(renter_id: int, booking_id: int, new_status: str):
 
 
 @shared_task(queue="emails")
+def send_booking_expired_email(booking_id: int):
+    """
+    Notify both renter and owner that a booking expired before payment.
+    """
+    from bookings.models import Booking
+
+    try:
+        booking = Booking.objects.select_related("listing", "owner", "renter").get(pk=booking_id)
+    except Booking.DoesNotExist:
+        logger.warning("notifications: booking %s no longer exists", booking_id)
+        return
+
+    listing_title = getattr(booking.listing, "title", "your listing")
+    renter = booking.renter
+    owner = booking.owner
+    frontend_origin = (getattr(settings, "FRONTEND_ORIGIN", "") or "").rstrip("/")
+    start_display, end_display, date_range_display = _format_booking_date_range(
+        getattr(booking, "start_date", None),
+        getattr(booking, "end_date", None),
+    )
+    base_context = {
+        "booking": booking,
+        "listing_title": listing_title,
+        "start_date_display": start_display,
+        "end_date_display": end_display,
+        "date_range_display": date_range_display,
+        "cta_url": f"{frontend_origin}/profile?tab=rentals" if frontend_origin else "",
+    }
+
+    renter_context = {
+        **base_context,
+        "recipient_role": "renter",
+        "recipient_name": _display_name(renter),
+    }
+    _send_email(
+        f"Your booking for {listing_title} expired",
+        "booking_expired.txt",
+        renter_context,
+        getattr(renter, "email", None),
+    )
+
+    owner_context = {
+        **base_context,
+        "recipient_role": "owner",
+        "recipient_name": _display_name(owner),
+    }
+    _send_email(
+        f"A booking for {listing_title} expired",
+        "booking_expired.txt",
+        owner_context,
+        getattr(owner, "email", None),
+    )
+
+
+@shared_task(queue="emails")
 def send_booking_payment_receipt_email(user_id: int, booking_id: int):
     """Email the renter a receipt after payment succeeds."""
     user = _get_user(user_id)

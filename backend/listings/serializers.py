@@ -106,6 +106,14 @@ class ListingSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"detail": "Authentication required."})
         if not getattr(user, "can_list", False):
             raise serializers.ValidationError({"detail": "You are not allowed to create listings."})
+        if not getattr(user, "email_verified", False):
+            raise serializers.ValidationError(
+                {"detail": "Please verify your email before creating listings."}
+            )
+        if not getattr(user, "phone_verified", False):
+            raise serializers.ValidationError(
+                {"detail": "Please verify your phone before creating listings."}
+            )
         validated_data["owner"] = user
         return super().create(validated_data)
 
@@ -116,6 +124,16 @@ class ListingSerializer(serializers.ModelSerializer):
         if not user or instance.owner_id != getattr(user, "id", None):
             raise serializers.ValidationError(
                 {"detail": "You do not have permission to modify this listing."}
+            )
+        if not getattr(user, "can_list", False):
+            raise serializers.ValidationError({"detail": "You are not allowed to create listings."})
+        if not getattr(user, "email_verified", False):
+            raise serializers.ValidationError(
+                {"detail": "Please verify your email before creating listings."}
+            )
+        if not getattr(user, "phone_verified", False):
+            raise serializers.ValidationError(
+                {"detail": "Please verify your phone before creating listings."}
             )
         validated_data.pop("owner", None)
         return super().update(instance, validated_data)

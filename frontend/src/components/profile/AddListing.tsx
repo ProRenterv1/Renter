@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
@@ -29,6 +30,8 @@ type Step = 1 | 2 | 3;
 type UploadImage = { file: File; previewUrl: string };
 
 export function AddListing() {
+  const navigate = useNavigate();
+  const [currentUser, setCurrentUser] = useState(() => AuthStore.getCurrentUser());
   const [currentStep, setCurrentStep] = useState<Step>(1);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -47,6 +50,15 @@ export function AddListing() {
   const [submitting, setSubmitting] = useState(false);
   const [uploadedImages, setUploadedImages] = useState<UploadImage[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = AuthStore.subscribe(() => {
+      setCurrentUser(AuthStore.getCurrentUser());
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -72,15 +84,41 @@ export function AddListing() {
   }, []);
 
   useEffect(() => {
-    const profile = AuthStore.getCurrentUser();
-    if (profile?.postal_code) {
-      setPostalCode((prev) => (prev ? prev : profile.postal_code ?? ""));
+    if (currentUser?.postal_code) {
+      setPostalCode((prev) => (prev ? prev : currentUser.postal_code ?? ""));
     }
-  }, []);
+  }, [currentUser?.postal_code]);
+
+  const isVerified = Boolean(currentUser?.email_verified && currentUser?.phone_verified);
+  const canCreateListing = Boolean(currentUser && currentUser.can_list && isVerified);
+  const showVerificationBanner = Boolean(currentUser && !isVerified);
+
+  const ensureListingPermissions = () => {
+    if (!currentUser) {
+      setError("Please sign in to create a listing.");
+      return false;
+    }
+    if (!currentUser.can_list) {
+      setError("Your account is not allowed to create listings.");
+      return false;
+    }
+    if (!isVerified) {
+      setError("Please verify your email and phone before creating listings.");
+      return false;
+    }
+    return true;
+  };
+
+  const handleVerificationNavigation = () => {
+    navigate("/profile?tab=personal");
+  };
 
   const goToNextStep = () => {
     setError(null);
     setSuccess(null);
+    if (!ensureListingPermissions()) {
+      return;
+    }
     if (currentStep === 1) {
       if (!title.trim()) {
         setError("Title is required.");
@@ -186,6 +224,9 @@ export function AddListing() {
   const handlePublish = async () => {
     setError(null);
     setSuccess(null);
+    if (!ensureListingPermissions()) {
+      return;
+    }
     const price = Number(pricePerDay);
     if (!price || price <= 0) {
       setError("Price per day must be greater than zero.");
@@ -307,6 +348,27 @@ export function AddListing() {
         <Alert className="border-green-200 bg-green-50 text-green-900">
           <AlertTitle>Success</AlertTitle>
           <AlertDescription>{success}</AlertDescription>
+        </Alert>
+      )}
+
+      {showVerificationBanner && (
+        <Alert className="border-amber-200 bg-amber-50 text-amber-900">
+          <AlertTitle>Verify your contact details to continue</AlertTitle>
+          <AlertDescription>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm">
+                Please verify both your email and phone number before publishing new listings.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleVerificationNavigation}
+              >
+                Go to verification
+              </Button>
+            </div>
+          </AlertDescription>
         </Alert>
       )}
 
@@ -525,7 +587,7 @@ export function AddListing() {
                 className="bg-[var(--primary)] hover:bg-[var(--primary-hover)] ml-auto"
                 style={{ color: "var(--primary-foreground)" }}
                 onClick={goToNextStep}
-                disabled={submitting}
+                disabled={submitting || !canCreateListing}
               >
                 Next
               </Button>
@@ -533,13 +595,18 @@ export function AddListing() {
               <Button
                 className="bg-[var(--primary)] hover:bg-[var(--primary-hover)] ml-auto"
                 style={{ color: "var(--primary-foreground)" }}
-                disabled={submitting}
+                disabled={submitting || !canCreateListing}
                 onClick={handlePublish}
               >
                 Publish Listing
               </Button>
             )}
           </div>
+          {showVerificationBanner && (
+            <p className="text-sm text-muted-foreground mt-2">
+              Complete verification in your profile to publish your listing.
+            </p>
+          )}
         </CardContent>
       </Card>
     </div>

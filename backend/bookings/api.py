@@ -12,6 +12,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from listings.models import Listing
+from listings.services import compute_booking_totals
 from notifications import tasks as notification_tasks
 from payments.stripe_api import (
     StripePaymentError,
@@ -25,7 +26,10 @@ from .domain import (
     assert_can_cancel,
     assert_can_complete,
     assert_can_confirm,
+    assert_can_confirm_pickup,
     ensure_no_conflict,
+    is_pre_payment,
+    mark_canceled,
 )
 from .models import Booking
 from .serializers import BookingSerializer
@@ -159,8 +163,15 @@ class BookingViewSet(viewsets.ModelViewSet):
         except ValidationError as exc:
             return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
 
+        if not booking.totals or "total_charge" not in booking.totals:
+            booking.totals = compute_booking_totals(
+                listing=booking.listing,
+                start_date=booking.start_date,
+                end_date=booking.end_date,
+            )
+
         booking.status = Booking.Status.CONFIRMED
-        booking.save(update_fields=["status", "updated_at"])
+        booking.save(update_fields=["status", "totals", "updated_at"])
         try:
             notification_tasks.send_booking_status_email.delay(
                 booking.renter_id,
@@ -178,14 +189,41 @@ class BookingViewSet(viewsets.ModelViewSet):
     def cancel(self, request, *args, **kwargs):
         """Cancel a booking (owner or renter)."""
         booking: Booking = self.get_object()
+        if request.user.id == booking.owner_id:
+            actor = "owner"
+        elif request.user.id == booking.renter_id:
+            actor = "renter"
+        else:
+            return Response(
+                {"detail": "Only the listing owner or renter can cancel this booking."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        reason = (request.data.get("reason") or "").strip()
+
         try:
-            assert_can_cancel(booking)
+            assert_can_cancel(booking, actor=actor)
         except ValidationError as exc:
             return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
 
-        booking.status = Booking.Status.CANCELED
-        booking.save(update_fields=["status", "updated_at"])
-        if booking.owner_id == request.user.id:
+        cancel_reason = reason or booking.canceled_reason
+        update_fields = [
+            "status",
+            "canceled_by",
+            "canceled_reason",
+            "auto_canceled",
+            "updated_at",
+        ]
+
+        if is_pre_payment(booking):
+            mark_canceled(booking, actor=actor, auto=False, reason=cancel_reason)
+            booking.save(update_fields=update_fields)
+        else:
+            # TODO: implement paid/after-deposit cancellation policy with refunds.
+            mark_canceled(booking, actor=actor, auto=False, reason=cancel_reason)
+            booking.save(update_fields=update_fields)
+
+        if actor == "owner":
             try:
                 notification_tasks.send_booking_status_email.delay(
                     booking.renter_id,
@@ -215,6 +253,26 @@ class BookingViewSet(viewsets.ModelViewSet):
 
         booking.status = Booking.Status.COMPLETED
         booking.save(update_fields=["status", "updated_at"])
+        return Response(self.get_serializer(booking).data)
+
+    @action(detail=True, methods=["post"], url_path="confirm-pickup")
+    def confirm_pickup(self, request, *args, **kwargs):
+        """Allow listing owners to confirm pickup once requirements are met."""
+        booking: Booking = self.get_object()
+        if booking.owner_id != request.user.id:
+            return Response(
+                {"detail": "Only the listing owner can confirm pickup."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            assert_can_confirm_pickup(booking)
+        except ValidationError as exc:
+            return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.utils import timezone
+
+        booking.pickup_confirmed_at = timezone.now()
+        booking.save(update_fields=["pickup_confirmed_at", "updated_at"])
         return Response(self.get_serializer(booking).data)
 
     @action(detail=True, methods=["post"], url_path="pay")

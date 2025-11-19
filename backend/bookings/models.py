@@ -19,6 +19,12 @@ class Booking(models.Model):
         CANCELED = "canceled", "canceled"
         COMPLETED = "completed", "completed"
 
+    class CanceledBy(models.TextChoices):
+        RENTER = "renter", "renter"
+        OWNER = "owner", "owner"
+        SYSTEM = "system", "system"
+        NO_SHOW = "no_show", "no_show"
+
     listing = models.ForeignKey(
         Listing,
         related_name="bookings",
@@ -49,6 +55,37 @@ class Booking(models.Model):
     )
     deposit_hold_id = models.CharField(max_length=120, blank=True, default="")
     totals = models.JSONField(default=dict, blank=True)
+    canceled_by = models.CharField(
+        max_length=16,
+        choices=CanceledBy.choices,
+        null=True,
+        blank=True,
+        help_text="Who initiated the cancellation, if any.",
+    )
+    canceled_reason = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text="Optional free-text description of why the booking was canceled.",
+    )
+    auto_canceled = models.BooleanField(
+        default=False,
+        help_text="True if the booking was canceled automatically by the system.",
+    )
+    pickup_confirmed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when owner confirmed pickup.",
+    )
+    before_photos_required = models.BooleanField(
+        default=True,
+        help_text="If True, renter must upload 'before' photos before pickup confirmation.",
+    )
+    before_photos_uploaded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When renter finished uploading 'before' photos for this booking.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

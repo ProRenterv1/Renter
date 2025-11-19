@@ -10,7 +10,8 @@ import {
   authAPI,
   bookingsAPI,
   deriveDisplayRentalStatus,
-  deriveRentalAmounts,
+  getBookingChargeAmount,
+  getBookingDamageDeposit,
   listingsAPI,
   type Booking,
   type BookingTotals,
@@ -19,7 +20,7 @@ import {
   type JsonError,
   type Listing,
 } from "@/lib/api";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, parseMoney } from "@/lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -338,9 +339,15 @@ export function YourRentals() {
       )
       .map((booking) => {
         const totals = booking.totals as BookingTotalsWithBase | null;
-        const rentalSubtotal = Number(totals?.rental_subtotal ?? totals?.base_amount ?? 0);
-        const serviceFee = Number(totals?.service_fee ?? totals?.renter_fee ?? 0);
-        const damageDeposit = Number(totals?.damage_deposit ?? 0);
+        let rentalSubtotal = parseMoney(totals?.rental_subtotal ?? totals?.base_amount ?? 0);
+        const rawServiceFee = parseMoney(totals?.service_fee ?? totals?.renter_fee ?? 0);
+        const amountToPay = getBookingChargeAmount(booking);
+        if (!rentalSubtotal && amountToPay && rawServiceFee && amountToPay >= rawServiceFee) {
+          rentalSubtotal = Math.max(amountToPay - rawServiceFee, 0);
+        }
+        const serviceFee =
+          rawServiceFee || Math.max(amountToPay - rentalSubtotal, 0);
+        const damageDeposit = getBookingDamageDeposit(booking);
         const ownerFirstName = booking.listing_owner_first_name?.trim() || "";
         const ownerLastName = booking.listing_owner_last_name?.trim() || "";
         const ownerUsername = booking.listing_owner_username?.trim() || "";
@@ -354,7 +361,7 @@ export function YourRentals() {
           ownerFirstName,
           ownerLastName,
           ownerUsername,
-          amountToPay: deriveRentalAmounts("spent", booking),
+          amountToPay,
           rentalSubtotal,
           serviceFee,
           damageDeposit,
@@ -461,8 +468,9 @@ export function YourRentals() {
   }
 
   if (payingRental) {
-    const totalAmount =
-      payingRental.rentalSubtotal + payingRental.serviceFee + payingRental.damageDeposit;
+    const chargeAmount = payingRental.rentalSubtotal + payingRental.serviceFee;
+    const depositHold = payingRental.damageDeposit;
+    const estimatedTotal = chargeAmount + depositHold;
     const isPaymentDisabled = paymentLoading || !stripe || !elements;
 
     return (
@@ -610,28 +618,32 @@ export function YourRentals() {
                   <Separator />
 
                   <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Rental Amount</span>
-                    <span>${payingRental.rentalSubtotal.toFixed(2)}</span>
+                    <span className="text-muted-foreground">Rental amount</span>
+                    <span>{formatCurrency(payingRental.rentalSubtotal)}</span>
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Service Fee</span>
-                    <span>${payingRental.serviceFee.toFixed(2)}</span>
+                    <span className="text-muted-foreground">Service fee</span>
+                    <span>{formatCurrency(payingRental.serviceFee)}</span>
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Damage Deposit</span>
-                    <span>${payingRental.damageDeposit.toFixed(2)}</span>
+                    <span className="text-muted-foreground">Damage deposit hold</span>
+                    <span>{formatCurrency(depositHold)}</span>
                   </div>
                   <p className="text-xs text-muted-foreground">Refundable upon return</p>
 
                   <Separator />
 
                   <div className="flex items-center justify-between text-[18px]">
-                    <span style={{ fontFamily: "Manrope" }}>Total Due</span>
+                    <span style={{ fontFamily: "Manrope" }}>Charge today</span>
                     <span className="text-primary" style={{ fontFamily: "Manrope" }}>
-                      ${totalAmount.toFixed(2)}
+                      {formatCurrency(chargeAmount)}
                     </span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>Estimated authorization</span>
+                    <span>{formatCurrency(estimatedTotal)}</span>
                   </div>
                 </div>
 
@@ -707,7 +719,7 @@ export function YourRentals() {
                 <TableHead>Date range</TableHead>
                 <TableHead>Owner</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Amount</TableHead>
+                <TableHead>Charge today</TableHead>
                 <TableHead className="text-right">Action</TableHead>
               </TableRow>
             </TableHeader>
@@ -792,7 +804,16 @@ export function YourRentals() {
                         {row.statusLabel}
                       </Badge>
                     </TableCell>
-                    <TableCell>{formatCurrency(row.amountToPay)}</TableCell>
+                    <TableCell>
+                      <div className="flex flex-col gap-1">
+                        <span>{formatCurrency(row.amountToPay)}</span>
+                        {row.damageDeposit > 0 && (
+                          <span className="text-xs text-muted-foreground">
+                            Hold {formatCurrency(row.damageDeposit)}
+                          </span>
+                        )}
+                      </div>
+                    </TableCell>
                     <TableCell>
                       <div className="flex justify-end gap-2">
                         {row.isPayable && (

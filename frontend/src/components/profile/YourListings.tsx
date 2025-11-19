@@ -10,7 +10,7 @@ import {
   SelectValue,
 } from "../ui/select";
 import { listingsAPI, type Listing, type JsonError } from "../../lib/api";
-import { formatCurrency } from "../../lib/utils";
+import { formatCurrency, parseMoney } from "../../lib/utils";
 
 interface YourListingsProps {
   onAddListingClick?: () => void;
@@ -112,10 +112,8 @@ export function YourListings({ onAddListingClick, onListingSelect, refreshToken 
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {filteredListings.map((listing) => {
-          const priceNumber = Number(listing.daily_price_cad);
-          const priceLabel = Number.isFinite(priceNumber)
-            ? formatCurrency(priceNumber, "CAD")
-            : `$${listing.daily_price_cad}`;
+          const priceNumber = parseMoney(listing.daily_price_cad);
+          const priceLabel = formatCurrency(priceNumber, "CAD");
           const imageUrl =
             listing.photos[0]?.url ??
             "https://placehold.co/600x400?text=Listing";

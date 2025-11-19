@@ -3,6 +3,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import environ
+from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -171,16 +172,25 @@ CLAMD_HOST        = env("CLAMD_HOST", default="clamav")
 CLAMD_PORT        = env.int("CLAMD_PORT", default=3310)
 
 # --- Celery / Broker (overridable in tests)
-REDIS_URL               = env("REDIS_URL", default="redis://redis:6379/0")
-CELERY_BROKER_URL       = env("CELERY_BROKER_URL", default=REDIS_URL)
-CELERY_RESULT_BACKEND   = env("CELERY_RESULT_BACKEND", default=REDIS_URL)
+REDIS_URL= env("REDIS_URL", default="redis://redis:6379/0")
+CELERY_BROKER_URL= env("CELERY_BROKER_URL", default=REDIS_URL)
+CELERY_RESULT_BACKEND= env("CELERY_RESULT_BACKEND", default=REDIS_URL)
+CELERY_BEAT_SCHEDULE = globals().get("CELERY_BEAT_SCHEDULE", {})
+CELERY_BEAT_SCHEDULE.update(
+    {
+        "bookings_auto_expire_stale_daily": {
+            "task": "bookings.auto_expire_stale_bookings",
+            "schedule": crontab(hour=3, minute=0),
+        }
+    }
+)
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 FRONTEND_ORIGIN = env("FRONTEND_ORIGIN", default="http://localhost:5173")
 
 # --- Geocoding ---
-GOOGLE_MAPS_API_KEY       = env("GOOGLE_MAPS_API_KEY", default=None)
-GEOCODE_CACHE_TTL         = env.int("GEOCODE_CACHE_TTL", default=7 * 24 * 60 * 60)
-GEOCODE_REQUEST_TIMEOUT   = env.float("GEOCODE_REQUEST_TIMEOUT", default=5.0)
+GOOGLE_MAPS_API_KEY= env("GOOGLE_MAPS_API_KEY", default=None)
+GEOCODE_CACHE_TTL= env.int("GEOCODE_CACHE_TTL", default=7 * 24 * 60 * 60)
+GEOCODE_REQUEST_TIMEOUT= env.float("GEOCODE_REQUEST_TIMEOUT", default=5.0)
 
 # --- Booking fees ---
 # Percentage surcharges expressed as Decimal fractions, e.g. 0.10 == 10%

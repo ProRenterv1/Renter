@@ -51,45 +51,32 @@ def booking(listing, owner_user, renter_user):
     )
 
 
-def test_log_transaction_creates_row(owner_user, listing, booking):
+def test_log_transaction_creates_row(owner_user, booking):
     txn = log_transaction(
         user=owner_user,
-        kind=Transaction.Kind.BOOKING_CHARGE,
-        direction=Transaction.Direction.DEBIT,
-        amount=Decimal("10.50"),
         booking=booking,
-        listing=listing,
-        description="Booking charge",
+        kind=Transaction.Kind.BOOKING_CHARGE,
+        amount=Decimal("10.50"),
     )
 
     assert Transaction.objects.count() == 1
-    assert txn.amount_cents == 1050
     assert txn.amount == Decimal("10.50")
-    assert txn.direction == Transaction.Direction.DEBIT
+    assert txn.currency == "cad"
     assert txn.kind == Transaction.Kind.BOOKING_CHARGE
     assert txn.booking == booking
-    assert txn.listing == listing
+    assert txn.user == owner_user
+    assert txn.stripe_id is None
 
 
-def test_log_transaction_metadata_default_empty_dict(owner_user):
+def test_log_transaction_allows_custom_currency_and_stripe_id(owner_user, booking):
     txn = log_transaction(
         user=owner_user,
-        kind=Transaction.Kind.OWNER_EARNING,
-        direction=Transaction.Direction.CREDIT,
-        amount=Decimal("5.00"),
-        metadata=None,
-    )
-
-    assert txn.metadata == {}
-
-
-def test_log_transaction_accepts_zero_balance_txn_id(owner_user):
-    txn = log_transaction(
-        user=owner_user,
+        booking=booking,
         kind=Transaction.Kind.PLATFORM_FEE,
-        direction=Transaction.Direction.DEBIT,
-        amount=Decimal("1.00"),
-        stripe_balance_txn_id="",
+        amount=Decimal("5.00"),
+        currency="usd",
+        stripe_id="pi_123",
     )
 
-    assert txn.stripe_balance_txn_id == ""
+    assert txn.currency == "usd"
+    assert txn.stripe_id == "pi_123"

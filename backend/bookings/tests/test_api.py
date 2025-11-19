@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from bookings.models import Booking
@@ -13,6 +14,19 @@ from listings.models import Listing
 from notifications import tasks as notification_tasks
 
 pytestmark = pytest.mark.django_db
+
+EXPECTED_TOTAL_KEYS = {
+    "days",
+    "daily_price_cad",
+    "rental_subtotal",
+    "service_fee",
+    "renter_fee",
+    "owner_fee",
+    "platform_fee_total",
+    "owner_payout",
+    "damage_deposit",
+    "total_charge",
+}
 
 
 def auth(user):
@@ -46,7 +60,32 @@ def test_create_booking_success(renter_user, listing):
     assert resp.data["status"] == Booking.Status.REQUESTED
     assert resp.data["owner"] == listing.owner_id
     assert resp.data["renter"] == renter_user.id
-    assert {"days", "total_charge"} <= set(resp.data["totals"].keys())
+    assert EXPECTED_TOTAL_KEYS <= set(resp.data["totals"].keys())
+
+
+@pytest.mark.parametrize(
+    ("email_verified", "phone_verified"),
+    [
+        (False, True),
+        (True, False),
+    ],
+)
+def test_create_booking_requires_verified_contact(
+    renter_user, listing, email_verified, phone_verified
+):
+    renter_user.email_verified = email_verified
+    renter_user.phone_verified = phone_verified
+    renter_user.save(update_fields=["email_verified", "phone_verified"])
+    client = auth(renter_user)
+    start = date.today() + timedelta(days=2)
+    end = start + timedelta(days=4)
+
+    resp = client.post("/api/bookings/", booking_payload(listing, start, end), format="json")
+
+    assert resp.status_code == 400
+    assert resp.data["non_field_errors"][0] == (
+        "Please verify both your email and phone number before renting tools."
+    )
 
 
 def test_create_booking_queues_owner_notification(renter_user, listing, monkeypatch):
@@ -120,6 +159,82 @@ def test_owner_cancel_booking_notifies_renter(
     assert captured[0][0] == booking.renter_id
     assert captured[0][1] == booking.id
     assert captured[0][2] == Booking.Status.CANCELED
+
+
+def test_cancel_booking_sets_policy_fields(booking_factory, owner_user):
+    booking = booking_factory(
+        start_date=date.today() + timedelta(days=4),
+        end_date=date.today() + timedelta(days=6),
+        status=Booking.Status.CONFIRMED,
+        auto_canceled=True,
+        canceled_reason="previous",
+    )
+    client = auth(owner_user)
+    resp = client.post(
+        f"/api/bookings/{booking.id}/cancel/",
+        {"reason": "Change of plans"},
+        format="json",
+    )
+
+    assert resp.status_code == 200
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.CANCELED
+    assert booking.canceled_by == Booking.CanceledBy.OWNER
+    assert booking.canceled_reason == "Change of plans"
+    assert booking.auto_canceled is False
+
+
+def test_cancel_pre_payment_booking_uses_mark_helper(monkeypatch, booking_factory, owner_user):
+    booking = booking_factory(
+        start_date=date.today() + timedelta(days=5),
+        end_date=date.today() + timedelta(days=7),
+        status=Booking.Status.CONFIRMED,
+    )
+    booking.charge_payment_intent_id = ""
+    booking.save(update_fields=["charge_payment_intent_id", "status"])
+
+    client = auth(owner_user)
+    from bookings import api as bookings_api
+
+    call_state = {"count": 0}
+    original_mark = bookings_api.mark_canceled
+
+    def fake_mark_canceled(booking_obj, *, actor, auto, reason=None):
+        call_state["count"] += 1
+        assert actor == "owner"
+        assert auto is False
+        assert reason == "Need to reschedule"
+        original_mark(booking_obj, actor=actor, auto=auto, reason=reason)
+
+    monkeypatch.setattr(bookings_api, "mark_canceled", fake_mark_canceled)
+
+    resp = client.post(
+        f"/api/bookings/{booking.id}/cancel/",
+        {"reason": "Need to reschedule"},
+        format="json",
+    )
+
+    assert resp.status_code == 200
+    assert call_state["count"] == 1
+
+
+def test_confirm_booking_recomputes_missing_totals(booking_factory, owner_user):
+    start = date.today() + timedelta(days=5)
+    booking = booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.REQUESTED,
+    )
+    booking.totals = {}
+    booking.save(update_fields=["totals"])
+
+    client = auth(owner_user)
+    resp = client.post(f"/api/bookings/{booking.id}/confirm/")
+    assert resp.status_code == 200
+
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.CONFIRMED
+    assert EXPECTED_TOTAL_KEYS <= set(booking.totals.keys())
 
 
 def test_cannot_book_own_listing(owner_user, listing):
@@ -208,6 +323,41 @@ def test_complete_booking_owner_only(booking_factory, owner_user, renter_user):
     owner_resp = owner_client.post(f"/api/bookings/{booking.id}/complete/")
     assert owner_resp.status_code == 200
     assert owner_resp.data["status"] == Booking.Status.COMPLETED
+
+
+def test_confirm_pickup_sets_timestamp_when_allowed(booking_factory, owner_user):
+    start = date.today() + timedelta(days=8)
+    booking = booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.PAID,
+        before_photos_uploaded_at=timezone.now(),
+    )
+    client = auth(owner_user)
+    resp = client.post(f"/api/bookings/{booking.id}/confirm-pickup/")
+
+    assert resp.status_code == 200
+    booking.refresh_from_db()
+    assert booking.pickup_confirmed_at is not None
+
+
+def test_confirm_pickup_blocked_without_photos(booking_factory, owner_user, renter_user):
+    start = date.today() + timedelta(days=8)
+    booking = booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.PAID,
+        before_photos_uploaded_at=None,
+    )
+    renter_client = auth(renter_user)
+    renter_resp = renter_client.post(f"/api/bookings/{booking.id}/confirm-pickup/")
+    assert renter_resp.status_code == 403
+
+    owner_client = auth(owner_user)
+    owner_resp = owner_client.post(f"/api/bookings/{booking.id}/confirm-pickup/")
+    assert owner_resp.status_code == 400
+    booking.refresh_from_db()
+    assert booking.pickup_confirmed_at is None
 
 
 def test_my_bookings_endpoint_lists_owner_and_renter(

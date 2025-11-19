@@ -1,4 +1,5 @@
 import { AuthStore, type AuthTokens, type Profile } from "./auth";
+import { parseMoney } from "./utils";
 
 export const API_BASE = "/api";
 
@@ -287,6 +288,7 @@ export interface Booking {
   renter_avatar_url?: string | null;
   renter_rating?: number | null;
   totals: BookingTotals | null;
+  charge_payment_intent_id?: string;
   deposit_hold_id: string;
   created_at: string;
   updated_at: string;
@@ -307,11 +309,57 @@ export function deriveRentalDirection(currentUserId: number, booking: Booking): 
   return booking.owner === currentUserId ? "earned" : "spent";
 }
 
+type BookingTotalsSource = Pick<Booking, "totals"> | BookingTotals | null | undefined;
+
+function resolveTotals(source: BookingTotalsSource): BookingTotals | null {
+  if (!source) {
+    return null;
+  }
+  if (typeof source === "object" && source !== null && "totals" in source) {
+    return (source as Pick<Booking, "totals">).totals ?? null;
+  }
+  return source as BookingTotals;
+}
+
+const toAmount = (value: unknown): number => parseMoney(value ?? 0);
+
+export function getBookingChargeAmount(source: BookingTotalsSource): number {
+  const totals = resolveTotals(source);
+  if (!totals) {
+    return 0;
+  }
+  const rentalSubtotal = toAmount(totals.rental_subtotal ?? totals.daily_price_cad ?? 0);
+  const serviceFee = toAmount(totals.service_fee ?? totals.renter_fee ?? 0);
+  if (rentalSubtotal || serviceFee) {
+    return rentalSubtotal + serviceFee;
+  }
+  const totalCharge = toAmount(totals.total_charge ?? 0);
+  const damageDeposit = toAmount(totals.damage_deposit ?? 0);
+  if (totalCharge) {
+    return Math.max(totalCharge - damageDeposit, 0);
+  }
+  return 0;
+}
+
+export function getBookingDamageDeposit(source: BookingTotalsSource): number {
+  const totals = resolveTotals(source);
+  return totals ? toAmount(totals.damage_deposit ?? 0) : 0;
+}
+
+export function getOwnerPayoutAmount(source: BookingTotalsSource): number {
+  const totals = resolveTotals(source);
+  if (!totals) {
+    return 0;
+  }
+  const fallback = toAmount(totals.rental_subtotal ?? totals.total_charge ?? 0);
+  const payout = toAmount(totals.owner_payout ?? fallback);
+  return payout || fallback;
+}
+
 export function deriveRentalAmounts(direction: RentalDirection, booking: Booking): number {
-  const totals = booking.totals ?? ({} as BookingTotals);
-  const ownerPayout = Number(totals.owner_payout ?? totals.rental_subtotal ?? 0);
-  const totalCharge = Number(totals.total_charge ?? totals.rental_subtotal ?? 0);
-  return direction === "earned" ? ownerPayout : totalCharge;
+  return direction === "earned"
+    ? getOwnerPayoutAmount(booking)
+    : getBookingChargeAmount(booking);
 }
 
 export type DisplayRentalStatus =

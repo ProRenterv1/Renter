@@ -1,41 +1,32 @@
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Optional
 
+from django.contrib.auth import get_user_model
+
 from .models import Transaction
+
+User = get_user_model()
 
 
 def log_transaction(
     *,
-    user,
+    user: User,
+    booking,
     kind: str,
-    direction: str,
     amount: Decimal,
-    booking=None,
-    listing=None,
-    description: str = "",
-    currency: str = "CAD",
-    stripe_payment_intent_id: str = "",
-    stripe_charge_id: str = "",
-    stripe_balance_txn_id: str = "",
-    metadata: Optional[dict] = None,
+    currency: str = "cad",
+    stripe_id: Optional[str] = None,
 ) -> Transaction:
     """
-    Persist a Transaction row, converting Decimal dollars to integer cents.
-    """
+    Create and return a Transaction row.
 
-    metadata = metadata or {}
-    cents = int((amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    This is a thin helper; no complex business logic here yet.
+    """
     return Transaction.objects.create(
         user=user,
-        kind=kind,
-        direction=direction,
-        amount_cents=cents,
         booking=booking,
-        listing=listing,
-        description=description,
+        kind=kind,
+        amount=amount,
         currency=currency,
-        stripe_payment_intent_id=stripe_payment_intent_id,
-        stripe_charge_id=stripe_charge_id,
-        stripe_balance_txn_id=stripe_balance_txn_id,
-        metadata=metadata,
+        stripe_id=stripe_id,
     )

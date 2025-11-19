@@ -82,6 +82,7 @@ export const AuthStore = {
   },
   setCurrentUser(user: UserProfile | null) {
     write(USER_KEY, user);
+    emitAuthChange();
   },
   getCurrentUser(): UserProfile | null {
     return read<UserProfile>(USER_KEY);
