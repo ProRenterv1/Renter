@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -11,10 +11,20 @@ import {
 import { startEventStream } from "@/lib/events";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { AuthStore } from "@/lib/auth";
 
 type MessagesProps = {
   conversationId: number;
 };
+
+const getInitials = (name: string) =>
+  name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("") || "??";
 
 const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
   const [conversation, setConversation] = useState<ConversationDetail | null>(null);
@@ -23,6 +33,7 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const currentUser = useMemo(() => AuthStore.getCurrentUser(), []);
 
   const chatClosed =
     !conversation ||
@@ -97,6 +108,62 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
       setSending(false);
     }
   };
+
+  const participantMeta = useMemo(() => {
+    if (!conversation) {
+      return null;
+    }
+    const booking = conversation.booking;
+    const renterName =
+      [booking.renter_first_name, booking.renter_last_name].filter(Boolean).join(" ") ||
+      booking.renter_username ||
+      "Renter";
+    const ownerName =
+      [booking.listing_owner_first_name, booking.listing_owner_last_name]
+        .filter(Boolean)
+        .join(" ") ||
+      booking.listing_owner_username ||
+      "Owner";
+    return {
+      renter: {
+        id: booking.renter,
+        name: renterName,
+        avatarUrl: booking.renter_avatar_url ?? null,
+      },
+      owner: {
+        id: booking.owner,
+        name: ownerName,
+        avatarUrl: null,
+      },
+    };
+  }, [conversation]);
+
+  const getParticipantForMessage = useCallback(
+    (isMine: boolean) => {
+      if (isMine) {
+        const name =
+          [currentUser?.first_name, currentUser?.last_name].filter(Boolean).join(" ") ||
+          currentUser?.username ||
+          "You";
+        return {
+          name,
+          avatarUrl: currentUser?.avatar_url ?? null,
+        };
+      }
+      if (participantMeta) {
+        const other =
+          currentUser?.id && participantMeta.owner.id === currentUser.id
+            ? participantMeta.renter
+            : participantMeta.owner;
+        return {
+          name: other.name,
+          avatarUrl: other.avatarUrl,
+        };
+      }
+      return { name: "User", avatarUrl: null };
+    },
+    [currentUser, participantMeta],
+  );
 
   if (loading && !conversation) {
     return (
@@ -215,7 +282,7 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
         </div>
       </div>
 
-      <div ref={listRef} className="flex-1 space-y-2 overflow-y-auto bg-muted/30 px-4 py-3">
+      <div ref={listRef} className="flex-1 space-y-4 overflow-y-auto bg-muted/30 px-4 py-3">
         {conversation.messages.length === 0 && (
           <div className="py-8 text-center text-xs text-muted-foreground">
             No messages yet. Start the conversation below.
@@ -245,28 +312,35 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
             );
           }
 
+          const participant = getParticipantForMessage(isMine);
+          const bubbleClass = isMine
+            ? "bg-emerald-500/90 text-emerald-50 shadow-sm"
+            : "bg-card text-foreground border border-border shadow-sm";
+          const timeClass = isMine ? "text-emerald-50/80" : "text-muted-foreground";
+
           return (
             <div
               key={msg.id}
-              className={`flex w-full items-end gap-2 ${
-                isMine ? "justify-end" : "justify-start"
-              }`}
+              className="flex w-full items-end gap-3"
             >
-              {!isMine && sentAt ? (
-                <span className="text-[10px] text-muted-foreground">{sentAt}</span>
-              ) : null}
-              <div
-                className={`max-w-[70%] rounded-2xl px-3 py-2 text-sm ${
-                  isMine
-                    ? "bg-primary text-primary-foreground"
-                    : "border border-border bg-card text-foreground"
-                }`}
-              >
-                <p>{msg.text}</p>
+              <Avatar className="h-10 w-10">
+                {participant.avatarUrl ? (
+                  <AvatarImage src={participant.avatarUrl} alt={participant.name} />
+                ) : null}
+                <AvatarFallback>{getInitials(participant.name)}</AvatarFallback>
+              </Avatar>
+              <div className={`max-w-[75%] rounded-3xl px-4 py-2 text-sm ${bubbleClass}`}>
+                {sentAt ? (
+                  <p className="flex items-end gap-2 whitespace-pre-wrap break-words max-w-[40ch]">
+                    <span className="flex-1 break-words">{msg.text}</span>
+                    <span className={`shrink-0 text-[10px] leading-tight ${timeClass}`}>
+                      {sentAt}
+                    </span>
+                  </p>
+                ) : (
+                  <p className="whitespace-pre-wrap break-words max-w-[40ch]">{msg.text}</p>
+                )}
               </div>
-              {isMine && sentAt ? (
-                <span className="text-[10px] text-muted-foreground">{sentAt}</span>
-              ) : null}
             </div>
           );
         })}

@@ -5,7 +5,7 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from bookings.serializers import BookingSerializer
-from chat.models import Conversation, Message
+from chat.models import Conversation, Message, get_unread_message_count
 
 
 class ConversationSerializer(serializers.ModelSerializer):
@@ -16,6 +16,7 @@ class ConversationSerializer(serializers.ModelSerializer):
     other_party_name = serializers.SerializerMethodField()
     last_message = serializers.SerializerMethodField()
     last_message_at = serializers.SerializerMethodField()
+    unread_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
@@ -27,6 +28,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             "is_active",
             "last_message",
             "last_message_at",
+            "unread_count",
         ]
 
     def get_other_party_name(self, obj: Conversation) -> str:
@@ -51,23 +53,41 @@ class ConversationSerializer(serializers.ModelSerializer):
         msg = self._get_last_message(obj)
         if not msg:
             return None
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        sender_id = msg.sender_id
+        sender_is_me = bool(user and sender_id is not None and user.id == sender_id)
+        read_state = getattr(obj, "_read_state", None)
+        last_read_id = getattr(read_state, "last_read_message_id", None)
         return {
             "id": msg.id,
+            "sender_id": sender_id,
+            "sender_is_me": sender_is_me,
             "message_type": msg.message_type,
             "system_kind": msg.system_kind,
             "text": msg.text,
             "created_at": msg.created_at,
+            "is_read": bool(sender_is_me or (last_read_id is not None and msg.id <= last_read_id)),
         }
 
     def get_last_message_at(self, obj: Conversation):
         msg = self._get_last_message(obj)
         return msg.created_at if msg else None
 
+    def get_unread_count(self, obj: Conversation) -> int:
+        cached = getattr(obj, "_unread_count", None)
+        if cached is not None:
+            return cached
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        return get_unread_message_count(obj, user)
+
 
 class MessageSerializer(serializers.ModelSerializer):
     """Render chat messages with sender metadata."""
 
     sender_is_me = serializers.SerializerMethodField()
+    is_read = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
@@ -75,6 +95,7 @@ class MessageSerializer(serializers.ModelSerializer):
             "id",
             "sender",
             "sender_is_me",
+            "is_read",
             "message_type",
             "system_kind",
             "text",
@@ -87,16 +108,34 @@ class MessageSerializer(serializers.ModelSerializer):
         user = getattr(request, "user", None)
         return bool(user and obj.sender_id == user.id)
 
+    def get_is_read(self, obj: Message) -> bool:
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user and obj.sender_id == user.id:
+            return True
+        read_state = self.context.get("read_state")
+        last_read_id = getattr(read_state, "last_read_message_id", None)
+        return bool(last_read_id is not None and obj.id <= last_read_id)
+
 
 class ConversationDetailSerializer(serializers.ModelSerializer):
     """Detailed representation of a single conversation."""
 
     booking = BookingSerializer(read_only=True)
-    messages = MessageSerializer(many=True, read_only=True)
+    messages = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
         fields = ["id", "booking", "is_active", "messages"]
+
+    def get_messages(self, obj: Conversation):
+        serializer = MessageSerializer(
+            obj.messages.all(),
+            many=True,
+            read_only=True,
+            context=self.context,
+        )
+        return serializer.data
 
 
 class SendMessageSerializer(serializers.Serializer):

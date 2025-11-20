@@ -10,7 +10,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from bookings.models import Booking
-from chat.models import Conversation, create_user_message
+from chat.models import (
+    Conversation,
+    ConversationReadState,
+    create_user_message,
+    get_unread_message_count,
+    mark_conversation_read,
+)
 from chat.serializers import (
     ConversationDetailSerializer,
     ConversationSerializer,
@@ -38,12 +44,24 @@ def _get_user_conversation_or_404(user, pk: int) -> Conversation:
 def chat_list(request):
     """Return all conversations for the authenticated user."""
     user = request.user
-    qs = Conversation.objects.filter(Q(owner=user) | Q(renter=user)).select_related(
-        "booking",
-        "booking__listing",
-        "owner",
-        "renter",
+    qs = list(
+        Conversation.objects.filter(Q(owner=user) | Q(renter=user)).select_related(
+            "booking",
+            "booking__listing",
+            "owner",
+            "renter",
+        )
     )
+    states = {
+        state.conversation_id: state
+        for state in ConversationReadState.objects.filter(
+            user=user, conversation__in=[conv.id for conv in qs]
+        )
+    }
+    for conv in qs:
+        conv._read_state = states.get(conv.id)
+        conv._unread_count = get_unread_message_count(conv, user)
+
     serializer = ConversationSerializer(qs, many=True, context={"request": request})
     return Response(serializer.data)
 
@@ -53,7 +71,14 @@ def chat_list(request):
 def chat_detail(request, pk: int):
     """Return the full conversation history."""
     conv = _get_user_conversation_or_404(request.user, pk)
-    serializer = ConversationDetailSerializer(conv, context={"request": request})
+    read_state = mark_conversation_read(conv, request.user)
+    serializer = ConversationDetailSerializer(
+        conv,
+        context={
+            "request": request,
+            "read_state": read_state,
+        },
+    )
     return Response(serializer.data)
 
 

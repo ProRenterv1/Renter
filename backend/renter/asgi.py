@@ -8,9 +8,9 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "renter.settings.dev")
 
 from django.core.asgi import get_asgi_application  # noqa: E402
 
-from core.ws_events import events_ws_app  # noqa: E402
-
 django_asgi_app = get_asgi_application()
+
+from core.ws_events import events_ws_app  # noqa: E402
 
 
 async def application(scope: dict[str, Any], receive: ASGIReceive, send: ASGISend) -> None:

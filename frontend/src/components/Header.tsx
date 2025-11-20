@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { AuthStore } from "@/lib/auth";
 import { startEventStream } from "@/lib/events";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { fetchConversations, type ConversationSummary } from "@/lib/chat";
 
 const links = [
   { label: "Browse Tools", type: "route", href: "/feed" as const },
@@ -16,6 +17,39 @@ const links = [
 ] as const;
 
 type NavLink = (typeof links)[number];
+
+type ChatEventMessage = {
+  sender_is_me?: boolean;
+  sender_id?: number | null;
+  sender?: number | null;
+  message_type: "user" | "system";
+  system_kind: string | null;
+  text: string;
+  created_at: string;
+};
+
+const isMessageMine = (
+  message: { sender_is_me?: boolean; sender_id?: number | null; sender?: number | null },
+  currentUserId: number | null,
+) => {
+  if (typeof message.sender_is_me === "boolean") {
+    return message.sender_is_me;
+  }
+  const senderCandidate =
+    typeof message.sender_id === "number"
+      ? message.sender_id
+      : typeof message.sender === "number"
+        ? message.sender
+        : null;
+  return senderCandidate !== null && currentUserId !== null && senderCandidate === currentUserId;
+};
+
+const computeUnreadFromConversations = (conversations: ConversationSummary[]) => {
+  return conversations.reduce(
+    (total, conv) => total + Math.max(conv.unread_count ?? 0, 0),
+    0,
+  );
+};
 
 export function Header() {
   const [loginOpen, setLoginOpen] = useState(false);
@@ -52,15 +86,7 @@ export function Header() {
     const handle = startEventStream<{
       conversation_id: number;
       booking_id: number;
-      message: {
-        sender_is_me?: boolean;
-        sender_id?: number | null;
-        sender?: number | null;
-        message_type: "user" | "system";
-        system_kind: string | null;
-        text: string;
-        created_at: string;
-      };
+      message: ChatEventMessage;
     }>({
       onEvents: (events) => {
         if (location.pathname === "/messages") {
@@ -75,22 +101,7 @@ export function Header() {
           if (!message) {
             continue;
           }
-          const isMine =
-            typeof message.sender_is_me === "boolean"
-              ? message.sender_is_me
-              : (() => {
-                  const senderCandidate =
-                    typeof message.sender_id === "number"
-                      ? message.sender_id
-                      : typeof message.sender === "number"
-                        ? message.sender
-                        : null;
-                  if (senderCandidate === null || currentUserId === null) {
-                    return false;
-                  }
-                  return senderCandidate === currentUserId;
-                })();
-          if (isMine) {
+          if (isMessageMine(message, currentUserId)) {
             continue;
           }
           increment += 1;
@@ -102,6 +113,48 @@ export function Header() {
     });
     return () => handle.stop();
   }, [isAuthenticated, location.pathname, currentUserId]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+    let cancelled = false;
+    const userId = AuthStore.getCurrentUser()?.id ?? null;
+    fetchConversations()
+      .then((conversations) => {
+        if (cancelled) {
+          return;
+        }
+        if (location.pathname === "/messages") {
+          setUnreadCount(0);
+          return;
+        }
+        setUnreadCount(computeUnreadFromConversations(conversations));
+      })
+      .catch((err) => {
+        console.error("header: failed to load conversations for unread count", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated, currentUserId, location.pathname]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+    if (location.pathname === "/messages") {
+      setUnreadCount(0);
+      return;
+    }
+    fetchConversations()
+      .then((conversations) => {
+        setUnreadCount(computeUnreadFromConversations(conversations));
+      })
+      .catch((err) => {
+        console.error("header: failed to refresh unread count after leaving messages", err);
+      });
+  }, [isAuthenticated, currentUserId, location.pathname]);
 
   useEffect(() => {
     if (location.pathname === "/messages") {
