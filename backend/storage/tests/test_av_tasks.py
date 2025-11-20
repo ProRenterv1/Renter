@@ -1,12 +1,15 @@
 import io
 import types
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
 from botocore.exceptions import ClientError
 from celery.exceptions import Retry
+from django.utils import timezone
 from PIL import Image
 
+from bookings.models import Booking, BookingPhoto
 from listings.models import Listing, ListingPhoto
 from storage import tasks
 
@@ -33,6 +36,16 @@ def owner(django_user_model):
 
 
 @pytest.fixture
+def renter(django_user_model):
+    return django_user_model.objects.create_user(
+        username="renter-av",
+        password="x",
+        can_list=False,
+        can_rent=True,
+    )
+
+
+@pytest.fixture
 def listing(owner):
     return Listing.objects.create(
         owner=owner,
@@ -42,6 +55,19 @@ def listing(owner):
         replacement_value_cad=Decimal("60.00"),
         damage_deposit_cad=Decimal("20.00"),
         city="Calgary",
+    )
+
+
+@pytest.fixture
+def booking(listing, owner, renter):
+    today = timezone.localdate()
+    return Booking.objects.create(
+        listing=listing,
+        owner=owner,
+        renter=renter,
+        start_date=today,
+        end_date=today + timedelta(days=2),
+        status=Booking.Status.PAID,
     )
 
 
@@ -139,6 +165,47 @@ def test_scan_task_blocks_infected_files(monkeypatch, listing, owner):
     assert photo.content_type == meta["content_type"]
     assert photo.size == meta["size"]
     assert photo.etag == "etag-bad"
+    assert (photo.width, photo.height) == dims
+
+
+def test_scan_task_updates_booking_photo(monkeypatch, booking, renter):
+    img_bytes, dims = _image_bytes()
+    _stub_s3(monkeypatch, img_bytes)
+    monkeypatch.setattr("storage.tasks._scan_bytes", lambda data: "clean")
+
+    key = "uploads/bookings/clean/test.jpg"
+    photo = BookingPhoto.objects.create(
+        booking=booking,
+        uploaded_by=renter,
+        role=BookingPhoto.Role.BEFORE,
+        s3_key=key,
+        url="https://cdn.example/pending-booking.jpg",
+        status=BookingPhoto.Status.PENDING,
+        av_status=BookingPhoto.AVStatus.PENDING,
+    )
+
+    meta = {
+        "etag": '"etag-booking"',
+        "filename": "booking.jpg",
+        "content_type": "image/jpeg",
+        "size": 512,
+        "role": BookingPhoto.Role.BEFORE,
+    }
+    result = tasks.scan_and_finalize_booking_photo.run(
+        key=key,
+        booking_id=booking.id,
+        uploaded_by_id=renter.id,
+        meta=meta,
+    )
+    photo.refresh_from_db()
+
+    assert result["status"] == "clean"
+    assert photo.status == BookingPhoto.Status.ACTIVE
+    assert photo.av_status == BookingPhoto.AVStatus.CLEAN
+    assert photo.filename == meta["filename"]
+    assert photo.content_type == meta["content_type"]
+    assert photo.size == meta["size"]
+    assert photo.etag == "etag-booking"
     assert (photo.width, photo.height) == dims
 
 

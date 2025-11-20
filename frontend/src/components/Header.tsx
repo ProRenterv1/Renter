@@ -5,6 +5,7 @@ import logo from "@/assets/logo.png";
 import { LoginModal } from "./LoginModal";
 import { useEffect, useState } from "react";
 import { AuthStore } from "@/lib/auth";
+import { startEventStream } from "@/lib/events";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 const links = [
@@ -21,12 +22,17 @@ export function Header() {
   const [modalMode, setModalMode] = useState<"login" | "signup">("login");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [postLoginAction, setPostLoginAction] = useState<null | "add-listing">(null);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [currentUserId, setCurrentUserId] = useState<number | null>(
+    AuthStore.getCurrentUser()?.id ?? null,
+  );
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
     const updateAuthState = () => {
       setIsAuthenticated(Boolean(AuthStore.getTokens()));
+      setCurrentUserId(AuthStore.getCurrentUser()?.id ?? null);
     };
     updateAuthState();
     const unsubscribe = AuthStore.subscribe(updateAuthState);
@@ -34,6 +40,74 @@ export function Header() {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setUnreadCount(0);
+      return;
+    }
+    if (location.pathname === "/messages") {
+      setUnreadCount(0);
+    }
+    const handle = startEventStream<{
+      conversation_id: number;
+      booking_id: number;
+      message: {
+        sender_is_me?: boolean;
+        sender_id?: number | null;
+        sender?: number | null;
+        message_type: "user" | "system";
+        system_kind: string | null;
+        text: string;
+        created_at: string;
+      };
+    }>({
+      onEvents: (events) => {
+        if (location.pathname === "/messages") {
+          return;
+        }
+        let increment = 0;
+        for (const event of events) {
+          if (event.type !== "chat:new_message" || !event.payload) {
+            continue;
+          }
+          const message = event.payload.message;
+          if (!message) {
+            continue;
+          }
+          const isMine =
+            typeof message.sender_is_me === "boolean"
+              ? message.sender_is_me
+              : (() => {
+                  const senderCandidate =
+                    typeof message.sender_id === "number"
+                      ? message.sender_id
+                      : typeof message.sender === "number"
+                        ? message.sender
+                        : null;
+                  if (senderCandidate === null || currentUserId === null) {
+                    return false;
+                  }
+                  return senderCandidate === currentUserId;
+                })();
+          if (isMine) {
+            continue;
+          }
+          increment += 1;
+        }
+        if (increment > 0) {
+          setUnreadCount((prev) => prev + increment);
+        }
+      },
+    });
+    return () => handle.stop();
+  }, [isAuthenticated, location.pathname, currentUserId]);
+
+  useEffect(() => {
+    if (location.pathname === "/messages") {
+      setUnreadCount(0);
+    }
+  }, [location.pathname]);
 
   const openModal = (mode: "login" | "signup", nextAction: "add-listing" | null = null) => {
     setModalMode(mode);
@@ -164,8 +238,14 @@ export function Header() {
                 <Button 
                   variant="ghost" 
                   onClick={handleMessagesClick}
+                  className="relative"
                 >
                   <MessageSquare className="w-4 h-4 mr-2" />
+                  {unreadCount > 0 && (
+                    <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-none text-destructive-foreground">
+                      {unreadCount > 98 ? "99+" : unreadCount}
+                    </span>
+                  )}
                 </Button>
                 <Button 
                   variant="ghost" 

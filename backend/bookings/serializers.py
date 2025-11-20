@@ -61,8 +61,14 @@ class BookingSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "status",
+            "canceled_by",
+            "canceled_reason",
+            "auto_canceled",
             "start_date",
             "end_date",
+            "pickup_confirmed_at",
+            "before_photos_required",
+            "before_photos_uploaded_at",
             "listing",
             "listing_title",
             "listing_owner_first_name",
@@ -88,6 +94,12 @@ class BookingSerializer(serializers.ModelSerializer):
         read_only_fields = (
             "id",
             "status",
+            "canceled_by",
+            "canceled_reason",
+            "auto_canceled",
+            "pickup_confirmed_at",
+            "before_photos_required",
+            "before_photos_uploaded_at",
             "owner",
             "renter",
             "totals",
@@ -123,6 +135,15 @@ class BookingSerializer(serializers.ModelSerializer):
         if not getattr(user, "can_rent", False):
             raise serializers.ValidationError(
                 {"non_field_errors": ["Your account is not allowed to rent items."]}
+            )
+
+        if not getattr(user, "email_verified", False) or not getattr(user, "phone_verified", False):
+            raise serializers.ValidationError(
+                {
+                    "non_field_errors": [
+                        "Please verify both your email and phone number before renting tools."
+                    ]
+                }
             )
 
         if listing and listing.owner_id == user.id:
@@ -237,6 +258,8 @@ class BookingSerializer(serializers.ModelSerializer):
         status_value = booking.status
         if status_value == Booking.Status.REQUESTED and booking.charge_payment_intent_id:
             status_value = Booking.Status.PAID
+        if status_value == Booking.Status.PAID and booking.pickup_confirmed_at:
+            return "In progress"
 
         return self._display_label_for_status(status_value)
 

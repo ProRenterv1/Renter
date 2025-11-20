@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "../components/ui/button";
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Calendar } from "../components/ui/calendar";
 import { Badge } from "../components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
@@ -22,7 +23,7 @@ import { addDays, differenceInDays, format } from "date-fns";
 import { useNavigate } from "react-router-dom";
 import { bookingsAPI, usersAPI, type Listing as ApiListing, type PublicProfile } from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
-import { cn } from "@/lib/utils";
+import { cn, formatCurrency, parseMoney } from "@/lib/utils";
 
 interface BookingPageProps {
   listing: ApiListing | null;
@@ -30,6 +31,8 @@ interface BookingPageProps {
   isLoading?: boolean;
   errorMessage?: string;
 }
+
+const SERVICE_FEE_RATE = 0.1;
 
 interface Review {
   id: number;
@@ -40,6 +43,9 @@ interface Review {
   comment: string;
 }
 
+
+const roundToCents = (value: number) =>
+  Math.round((Number.isFinite(value) ? value : 0) * 100) / 100;
 
 export default function Booking({
   listing,
@@ -68,6 +74,16 @@ export default function Booking({
   );
   const [ownerProfile, setOwnerProfile] = useState<PublicProfile | null>(null);
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
+  const [currentUser, setCurrentUser] = useState(() => AuthStore.getCurrentUser());
+
+  useEffect(() => {
+    const unsubscribe = AuthStore.subscribe(() => {
+      setCurrentUser(AuthStore.getCurrentUser());
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     if (!listing?.owner) {
@@ -169,8 +185,8 @@ export default function Booking({
       ? listing.photos.map((photo) => photo.url)
       : ["https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=1200&q=80"];
 
-  const pricePerDay = Number(listing.daily_price_cad || "0");
-  const damageDeposit = Number(listing.damage_deposit_cad || "0");
+  const pricePerDay = parseMoney(listing?.daily_price_cad ?? 0);
+  const damageDepositAmount = parseMoney(listing?.damage_deposit_cad ?? 0);
   const postalCode = listing.postalCode ?? listing.postal_code ?? "";
   const cityName = listing.city ?? "";
   const cityText = cityName || "City not provided";
@@ -273,9 +289,11 @@ export default function Booking({
     dateRange.from && dateRange.to
       ? differenceInDays(dateRange.to, dateRange.from) + 1
       : 0;
-  const totalPrice = numberOfDays * pricePerDay;
-  const serviceFee = totalPrice * 0.1;
-  const totalWithFees = totalPrice + serviceFee;
+  const safeRentalDays = numberOfDays > 0 ? numberOfDays : 0;
+  const rentalSubtotal = roundToCents(safeRentalDays * pricePerDay);
+  const serviceFee = roundToCents(rentalSubtotal * SERVICE_FEE_RATE);
+  const chargeToday = roundToCents(rentalSubtotal + serviceFee);
+  const damageDepositHold = roundToCents(damageDepositAmount);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -294,9 +312,33 @@ export default function Booking({
     return candidate <= today;
   };
 
+  const isVerified = Boolean(currentUser?.email_verified && currentUser?.phone_verified);
+  const canCreateBooking = Boolean(currentUser && currentUser.can_rent && isVerified);
+  const showVerificationBanner = Boolean(currentUser && !isVerified);
+  const bookingBlocked = Boolean(currentUser && !canCreateBooking);
+
   const requireLogin = () => {
     setLoginModalMode("login");
     setLoginModalOpen(true);
+  };
+
+  const handleVerificationNavigation = () => {
+    navigate("/profile?tab=personal");
+  };
+
+  const ensureBookingPermissions = () => {
+    if (!currentUser) {
+      return true;
+    }
+    if (!currentUser.can_rent) {
+      setSubmitError("Your account is not allowed to rent items.");
+      return false;
+    }
+    if (!isVerified) {
+      setSubmitError("Please verify your email and phone before requesting a booking.");
+      return false;
+    }
+    return true;
   };
 
   async function handleRequestBooking() {
@@ -306,9 +348,12 @@ export default function Booking({
       requireLogin();
       return;
     }
+    setSubmitSuccess(false);
+    if (!ensureBookingPermissions()) {
+      return;
+    }
     setSubmitting(true);
     setSubmitError(null);
-    setSubmitSuccess(false);
 
     try {
       const startDate = format(dateRange.from, "yyyy-MM-dd");
@@ -326,8 +371,15 @@ export default function Booking({
       let message = "Something went wrong. Please try again.";
       if (err && typeof err === "object" && "data" in err) {
         const data = (err as { data?: any }).data;
-        if (data && data.detail) {
-          message = String(data.detail);
+        if (data && typeof data === "object") {
+          if ("detail" in data && data.detail) {
+            message = String(data.detail);
+          } else {
+            const nonFieldErrors = (data as { non_field_errors?: unknown[] }).non_field_errors;
+            if (Array.isArray(nonFieldErrors) && nonFieldErrors[0]) {
+              message = String(nonFieldErrors[0]);
+            }
+          }
         }
       }
       setSubmitError(message);
@@ -352,6 +404,27 @@ export default function Booking({
             Back to Feed
           </Button>
         </div>
+
+        {showVerificationBanner && (
+          <Alert className="mb-6 border-amber-200 bg-amber-50 text-amber-900">
+            <AlertTitle>Verify your contact details to continue</AlertTitle>
+            <AlertDescription>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm">
+                  Verify both your email and phone number before requesting bookings.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleVerificationNavigation}
+                >
+                  Go to verification
+                </Button>
+              </div>
+            </AlertDescription>
+          </Alert>
+        )}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left Column - Listing Details */}
           <div className="lg:col-span-2 space-y-6">
@@ -584,7 +657,7 @@ export default function Booking({
                   <div>
                     <div className="flex items-baseline gap-2 mb-1">
                       <span className="text-[32px] text-primary">
-                        ${pricePerDay}
+                        {formatCurrency(pricePerDay)}
                       </span>
                       <span className="text-muted-foreground">/ day</span>
                     </div>
@@ -618,28 +691,32 @@ export default function Booking({
                       <>
                         <div className="flex items-center justify-between">
                           <span className="text-muted-foreground">
-                            ${pricePerDay} x {numberOfDays}{" "}
+                            {formatCurrency(pricePerDay)} x {numberOfDays}{" "}
                             {numberOfDays === 1 ? "day" : "days"}
                           </span>
-                          <span>${totalPrice}</span>
+                          <span>{formatCurrency(rentalSubtotal)}</span>
                         </div>
                         <div className="flex items-center justify-between">
                           <span className="text-muted-foreground">
                             Service fee
                           </span>
-                          <span>${serviceFee.toFixed(2)}</span>
+                          <span>{formatCurrency(serviceFee)}</span>
                         </div>
                         <Separator />
                         <div className="flex items-center justify-between text-[18px]">
-                          <span style={{ fontFamily: "Manrope" }}>Total</span>
+                          <span style={{ fontFamily: "Manrope" }}>Charge today</span>
                           <span style={{ fontFamily: "Manrope" }}>
-                            ${totalWithFees.toFixed(2)}
+                            {formatCurrency(chargeToday)}
                           </span>
                         </div>
                         <div className="flex items-center justify-between text-muted-foreground">
-                          <span>Damage Deposit</span>
-                          <span>${damageDeposit}</span>
+                          <span>Damage deposit hold</span>
+                          <span>{formatCurrency(damageDepositHold)}</span>
                         </div>
+                        <p className="text-xs text-muted-foreground">
+                          The deposit is a temporary hold released after the rental if no issues are
+                          reported.
+                        </p>
                       </>
                     ) : (
                       <p className="text-muted-foreground text-sm">
@@ -654,7 +731,7 @@ export default function Booking({
                   <Button
                     className="w-full rounded-full"
                     size="lg"
-                    disabled={!dateRange.from || !dateRange.to || submitting}
+                    disabled={!dateRange.from || !dateRange.to || submitting || bookingBlocked}
                     onClick={handleRequestBooking}
                   >
                     {submitting
@@ -663,6 +740,11 @@ export default function Booking({
                         ? "Request to Book"
                         : "Select dates to book"}
                   </Button>
+                  {showVerificationBanner && (
+                    <p className="text-center text-sm text-muted-foreground">
+                      Complete verification in your profile to request a booking.
+                    </p>
+                  )}
                   {submitError && (
                     <p className="text-destructive text-sm">{submitError}</p>
                   )}
@@ -683,9 +765,9 @@ export default function Booking({
                       <p className="text-accent-foreground mb-1">
                         Refundable Damage Deposit
                       </p>
-                      <p className="text-[20px] text-accent-foreground">
-                        ${damageDeposit}
-                      </p>
+                    <p className="text-[20px] text-accent-foreground">
+                      {formatCurrency(damageDepositHold)}
+                    </p>
                       <p className="text-accent-foreground/80 mt-2">
                         This amount will be held and returned after the rental
                         period, provided there is no damage to the item.
@@ -838,12 +920,12 @@ export default function Booking({
                 
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Price per day</span>
-                  <span className="text-primary">${pricePerDay}</span>
+                  <span className="text-primary">{formatCurrency(pricePerDay)}</span>
                 </div>
-                
+
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Damage deposit</span>
-                  <span>${damageDeposit}</span>
+                  <span>{formatCurrency(damageDepositHold)}</span>
                 </div>
                 
                 <Separator />
@@ -878,11 +960,16 @@ export default function Booking({
                       {format(dateRange.from, "MMM d")} - {format(dateRange.to, "MMM d, yyyy")}
                     </p>
                     <p className="text-[24px] text-primary" style={{ fontFamily: "Manrope" }}>
-                      ${totalWithFees.toFixed(2)}
+                      {formatCurrency(chargeToday)}
                     </p>
                     <p className="text-sm text-muted-foreground mt-1">
-                      Total for {numberOfDays} {numberOfDays === 1 ? "day" : "days"}
+                      Charge today for {numberOfDays} {numberOfDays === 1 ? "day" : "days"}
                     </p>
+                    {damageDepositHold > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        Damage deposit hold: {formatCurrency(damageDepositHold)}
+                      </p>
+                    )}
                   </div>
                 </>
               )}

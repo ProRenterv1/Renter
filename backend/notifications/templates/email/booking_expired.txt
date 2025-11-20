@@ -1,0 +1,14 @@
+Hi {{ recipient_name|default:"there" }},
+
+{% if recipient_role == "owner" %}
+A booking for {{ listing_title }} ({{ date_range_display }}) expired before the renter completed payment, so the reservation has been canceled automatically.
+{% else %}
+Your booking for {{ listing_title }} ({{ date_range_display }}) expired before payment could be collected, so the request has been canceled.
+{% endif %}
+
+Those dates are now available again. If you still want to rent this item, simply submit a new request.
+
+{% if cta_url %}View your rentals: {{ cta_url }}{% endif %}
+
+Thanks,
+{{ site_name }} Team

@@ -21,6 +21,8 @@ def owner_user():
         password="testpass",
         can_list=True,
         can_rent=True,
+        email_verified=True,
+        phone_verified=True,
     )
 
 
@@ -31,6 +33,8 @@ def renter_user():
         password="testpass",
         can_list=False,
         can_rent=True,
+        email_verified=True,
+        phone_verified=True,
     )
 
 
@@ -41,6 +45,8 @@ def other_user():
         password="testpass",
         can_list=True,
         can_rent=True,
+        email_verified=True,
+        phone_verified=True,
     )
 
 
@@ -69,6 +75,7 @@ def booking_factory(listing, owner_user, renter_user) -> Callable[..., Booking]:
         start_date,
         end_date,
         status=Booking.Status.REQUESTED,
+        **extra_fields,
     ) -> Booking:
         selected_listing = listing_override or listing
         return Booking.objects.create(
@@ -78,6 +85,7 @@ def booking_factory(listing, owner_user, renter_user) -> Callable[..., Booking]:
             start_date=start_date,
             end_date=end_date,
             status=status,
+            **extra_fields,
         )
 
     return _create_booking

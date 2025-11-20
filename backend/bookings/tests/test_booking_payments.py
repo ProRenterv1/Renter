@@ -12,6 +12,7 @@ from rest_framework.test import APIClient
 
 from bookings.models import Booking
 from listings.models import Listing
+from listings.services import compute_booking_totals
 from payments import stripe_api
 
 pytestmark = pytest.mark.django_db
@@ -87,7 +88,7 @@ def test_booking_create_charges_and_creates_deposit_hold(renter_user, listing, m
     def fake_create(**kwargs):
         created_calls.append(kwargs)
         kind = kwargs["metadata"]["kind"]
-        if kind == "rental_charge":
+        if kind == "booking_charge":
             return SimpleNamespace(id="pi_charge_123")
         return SimpleNamespace(id="pi_deposit_456")
 
@@ -116,20 +117,73 @@ def test_booking_create_charges_and_creates_deposit_hold(renter_user, listing, m
     assert len(created_calls) == 2
     charge_call, deposit_call = created_calls
 
-    total_charge = Decimal(booking.totals["total_charge"])
     deposit = Decimal(booking.totals["damage_deposit"])
-    expected_charge_cents = int((total_charge - deposit) * Decimal("100"))
+    rental_subtotal = Decimal(booking.totals["rental_subtotal"])
+    service_fee = Decimal(booking.totals.get("service_fee", booking.totals.get("renter_fee", "0")))
+    expected_charge_cents = int((rental_subtotal + service_fee) * Decimal("100"))
+    deposit = Decimal(booking.totals.get("damage_deposit", "0"))
     expected_deposit_cents = int(deposit * Decimal("100"))
 
     assert charge_call["amount"] == expected_charge_cents
     assert charge_call["currency"] == "cad"
-    assert charge_call["metadata"]["kind"] == "rental_charge"
-    assert "capture_method" not in charge_call
+    assert charge_call["metadata"]["kind"] == "booking_charge"
+    assert charge_call["capture_method"] == "automatic"
+    assert charge_call["automatic_payment_methods"]["enabled"] is True
+    assert charge_call["automatic_payment_methods"]["allow_redirects"] == "never"
 
     assert deposit_call["amount"] == expected_deposit_cents
     assert deposit_call["currency"] == "cad"
     assert deposit_call["metadata"]["kind"] == "damage_deposit"
     assert deposit_call["capture_method"] == "manual"
+    assert deposit_call["automatic_payment_methods"]["enabled"] is True
+    assert deposit_call["automatic_payment_methods"]["allow_redirects"] == "never"
+
+
+def test_create_booking_payment_intents_uses_booking_totals(
+    booking_factory,
+    monkeypatch,
+):
+    start = date.today() + timedelta(days=3)
+    booking = booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.REQUESTED,
+    )
+    booking.totals = compute_booking_totals(
+        listing=booking.listing,
+        start_date=booking.start_date,
+        end_date=booking.end_date,
+    )
+    booking.save(update_fields=["totals"])
+
+    created_calls = []
+
+    def fake_create(**kwargs):
+        created_calls.append(kwargs)
+        return SimpleNamespace(id=f"pi_{kwargs['metadata']['kind']}")
+
+    monkeypatch.setattr(stripe_api.stripe.PaymentIntent, "create", fake_create)
+    monkeypatch.setattr(stripe_api.stripe.PaymentIntent, "retrieve", lambda *args, **kwargs: None)
+
+    charge_id, deposit_id = stripe_api.create_booking_payment_intents(
+        booking=booking,
+        customer_id="",
+        payment_method_id="pm_test",
+    )
+
+    assert charge_id == "pi_booking_charge"
+    assert deposit_id == "pi_damage_deposit"
+    assert len(created_calls) == 2
+
+    rental_subtotal = Decimal(booking.totals["rental_subtotal"])
+    service_fee = Decimal(booking.totals.get("service_fee", booking.totals.get("renter_fee", "0")))
+    expected_charge_cents = int((rental_subtotal + service_fee) * Decimal("100"))
+    deposit = Decimal(booking.totals.get("damage_deposit", "0"))
+    expected_deposit_cents = int(deposit * Decimal("100"))
+
+    charge_call, deposit_call = created_calls
+    assert charge_call["amount"] == expected_charge_cents
+    assert deposit_call["amount"] == expected_deposit_cents
 
 
 def test_booking_create_no_deposit_when_zero_damage_deposit(
@@ -218,7 +272,7 @@ def test_booking_create_transient_error_is_retry_safe(renter_user, listing, monk
     def flaky_create(**kwargs):
         created_calls.append(kwargs)
         kind = kwargs["metadata"]["kind"]
-        if kind == "rental_charge":
+        if kind == "booking_charge":
             charge_attempts["count"] += 1
             if charge_attempts["count"] == 1:
                 raise stripe.error.APIConnectionError("network issue")
@@ -248,12 +302,20 @@ def test_booking_create_transient_error_is_retry_safe(renter_user, listing, monk
     assert booking.deposit_hold_id == "pi_deposit_retry"
 
     assert len(created_calls) == 3  # one failed charge, one retried charge, one deposit
-    assert created_calls[0]["metadata"]["kind"] == "rental_charge"
-    assert created_calls[1]["metadata"]["kind"] == "rental_charge"
+    assert created_calls[0]["metadata"]["kind"] == "booking_charge"
+    assert created_calls[1]["metadata"]["kind"] == "booking_charge"
     assert created_calls[2]["metadata"]["kind"] == "damage_deposit"
 
     # Charge attempts reuse the same idempotency key for retries and match booking-scoped keys.
     assert created_calls[0]["idempotency_key"] == created_calls[1]["idempotency_key"]
     expected_base = f"booking:{booking.id}:{stripe_api.IDEMPOTENCY_VERSION}"
-    assert created_calls[1]["idempotency_key"] == f"{expected_base}:charge"
-    assert created_calls[2]["idempotency_key"] == f"{expected_base}:deposit"
+    totals = booking.totals or {}
+    rental_subtotal = Decimal(totals["rental_subtotal"])
+    service_fee = Decimal(totals.get("service_fee", totals.get("renter_fee", "0")))
+    damage_deposit = Decimal(totals.get("damage_deposit", "0"))
+    expected_charge_cents = int((rental_subtotal + service_fee) * Decimal("100"))
+    expected_deposit_cents = int(damage_deposit * Decimal("100"))
+    assert created_calls[1]["idempotency_key"] == f"{expected_base}:charge:{expected_charge_cents}"
+    assert (
+        created_calls[2]["idempotency_key"] == f"{expected_base}:deposit:{expected_deposit_cents}"
+    )

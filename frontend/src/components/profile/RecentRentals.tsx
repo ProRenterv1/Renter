@@ -12,12 +12,14 @@ import {
   deriveDisplayRentalStatus,
   deriveRentalAmounts,
   deriveRentalDirection,
+  getBookingDamageDeposit,
   listingsAPI,
   type Booking,
   type Listing,
   type DisplayRentalStatus,
   type RentalDirection,
 } from "@/lib/api";
+import { formatCurrency } from "@/lib/utils";
 
 type StatusFilter = "all" | "active" | "completed";
 type TypeFilter = "all" | "earned" | "spent";
@@ -28,6 +30,7 @@ interface RentalRow {
   rentalPeriod: string;
   status: DisplayRentalStatus | "Denied";
   amount: number;
+  depositHold: number;
   type: RentalDirection;
   statusRaw: Booking["status"];
   listingSlug: string | null;
@@ -118,12 +121,14 @@ export function RecentRentals() {
             ? "Denied"
             : deriveDisplayRentalStatus(booking);
         const amount = deriveRentalAmounts(direction, booking);
+        const depositHold = direction === "spent" ? getBookingDamageDeposit(booking) : 0;
         return {
           id: booking.id,
           toolName: booking.listing_title,
           rentalPeriod: formatDateRange(booking.start_date, booking.end_date),
           status: displayStatus,
           amount,
+          depositHold,
           type: direction,
           statusRaw: booking.status,
           listingSlug: booking.listing_slug ?? null,
@@ -277,10 +282,16 @@ export function RecentRentals() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-3">
+                      <div className="flex flex-col items-end gap-1">
                         <span className={rental.type === "earned" ? "text-green-600" : ""}>
-                          {rental.type === "earned" ? "+" : "-"}${Math.abs(rental.amount).toFixed(2)}
+                          {rental.type === "earned" ? "+" : "-"}
+                          {formatCurrency(Math.abs(rental.amount))}
                         </span>
+                        {rental.type === "spent" && rental.depositHold > 0 && (
+                          <span className="text-xs text-muted-foreground">
+                            Hold {formatCurrency(rental.depositHold)}
+                          </span>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>

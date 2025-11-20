@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import {
   Card,
   CardContent,
@@ -36,14 +37,18 @@ import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Star } from "lucide-react";
 import { format } from "date-fns";
 import { AuthStore } from "@/lib/auth";
+import ChatMessages from "@/components/chat/Messages";
 import {
   bookingsAPI,
+  deriveDisplayRentalStatus,
   listingsAPI,
   type Booking,
   type BookingTotals,
   type Listing,
 } from "@/lib/api";
+import { fetchConversations, type ConversationSummary } from "@/lib/chat";
 import { formatCurrency } from "@/lib/utils";
+import { PolicyConfirmationModal } from "../PolicyConfirmationModal";
 
 type RequestStatus = "pending" | "approved" | "denied";
 type StatusFilter = "all" | RequestStatus;
@@ -64,14 +69,6 @@ const requestStatusLabel: Record<RequestStatus, string> = {
   denied: "denied",
 };
 
-const bookingStatusLabels: Record<Booking["status"], string> = {
-  requested: "Requested",
-  confirmed: "Waiting payment",
-  paid: "Waiting pick up",
-  canceled: "Canceled",
-  completed: "Completed",
-};
-
 const bookingStatusToRequestStatus = (status: Booking["status"]): RequestStatus => {
   switch (status) {
     case "confirmed":
@@ -83,6 +80,17 @@ const bookingStatusToRequestStatus = (status: Booking["status"]): RequestStatus 
     default:
       return "pending";
   }
+};
+
+const canConfirmPickup = (booking: Booking): boolean => {
+  if (booking.status !== "paid" || booking.pickup_confirmed_at) {
+    return false;
+  }
+  const requiresBeforePhotos = booking.before_photos_required !== false;
+  if (!requiresBeforePhotos) {
+    return true;
+  }
+  return Boolean(booking.before_photos_uploaded_at);
 };
 
 const parseLocalDate = (isoDate: string) => {
@@ -110,6 +118,18 @@ const formatDateRange = (start: string, end: string) => {
 
 const placeholderImage = "https://placehold.co/200x200?text=Listing";
 
+const hasChargeIntent = (booking: Booking) =>
+  Boolean((booking.charge_payment_intent_id ?? "").trim());
+
+const isPrePaymentBooking = (booking: Booking) => !hasChargeIntent(booking);
+
+const buildOwnerCancelWarning = (booking: Booking): string => {
+  if (isPrePaymentBooking(booking)) {
+    return "You are about to cancel this booking before any payment was taken. The renter will not be charged and no payout will be made.";
+  }
+  return "You are canceling after the renter has already paid. Our policy issues the renter a full refund of the rent, service fee, and damage deposit, and you will not receive any payout for this booking. Frequent owner cancellations may impact your account standing.";
+};
+
 export function BookingRequests({ onPendingCountChange }: BookingRequestsProps = {}) {
   const [requests, setRequests] = useState<BookingRequestRow[]>([]);
   const [selectedRequest, setSelectedRequest] = useState<BookingRequestRow | null>(null);
@@ -117,6 +137,17 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [policyModalOpen, setPolicyModalOpen] = useState(false);
+  const [pendingApprovalId, setPendingApprovalId] = useState<number | null>(null);
+  const [policyAcknowledged, setPolicyAcknowledged] = useState(false);
+  const [cancelConfirm, setCancelConfirm] = useState<{
+    booking: Booking;
+    warning: string;
+    loading: boolean;
+  } | null>(null);
+  const [confirmingPickupId, setConfirmingPickupId] = useState<number | null>(null);
+  const [chatConversations, setChatConversations] = useState<ConversationSummary[]>([]);
+  const [chatConversationId, setChatConversationId] = useState<number | null>(null);
   const currentUserId = AuthStore.getCurrentUser()?.id ?? null;
   const navigate = useNavigate();
   const selectedTotals = selectedRequest?.booking.totals ?? null;
@@ -137,6 +168,39 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   const ownerServiceFeeAmount = Math.abs(ownerServiceFeeRaw);
   const ownerServiceFeeText =
     ownerServiceFeeAmount === 0 ? formatCurrency(0, "CAD") : `-${formatCurrency(ownerServiceFeeAmount, "CAD")}`;
+
+  const loadChatConversations = useCallback(async () => {
+    try {
+      const data = await fetchConversations();
+      setChatConversations(data);
+      return data;
+    } catch (err) {
+      console.error("chat: failed to load conversations", err);
+      return [];
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadChatConversations();
+  }, [loadChatConversations]);
+
+  const openChatForBooking = useCallback(
+    async (bookingId: number) => {
+      const existing = chatConversations.find((conv) => conv.booking_id === bookingId);
+      if (existing) {
+        setChatConversationId(existing.id);
+        return;
+      }
+      const refreshed = await loadChatConversations();
+      const fallback = refreshed.find((conv) => conv.booking_id === bookingId);
+      if (fallback) {
+        setChatConversationId(fallback.id);
+      } else {
+        toast.error("Chat is not available for this booking yet.");
+      }
+    },
+    [chatConversations, loadChatConversations],
+  );
 
   useEffect(() => {
     let active = true;
@@ -229,21 +293,17 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     navigate(`/users/${renterId}`);
   };
 
-  const getBookingStatusBadge = (status: Booking["status"]) => (
-    <Badge
-      variant={
-        status === "completed"
-          ? "secondary"
-          : status === "canceled"
-          ? "outline"
-          : status === "paid"
-          ? "secondary"
-          : "default"
-      }
-    >
-      {bookingStatusLabels[status] ?? status}
-    </Badge>
-  );
+  const getBookingStatusBadge = (booking: Booking) => {
+    const badgeVariant =
+      booking.status === "completed"
+        ? "secondary"
+        : booking.status === "canceled"
+        ? "outline"
+        : booking.status === "paid"
+        ? "secondary"
+        : "default";
+    return <Badge variant={badgeVariant}>{deriveDisplayRentalStatus(booking)}</Badge>;
+  };
 
   const updateBookingInState = (updated: Booking) => {
     setRequests((prev) =>
@@ -258,29 +318,74 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     );
   };
 
-  const handleApprove = async () => {
-    if (!selectedRequest) return;
+  const handleApprove = async (bookingId: number) => {
     setActionLoading(true);
+    let success = false;
     try {
-      const updated = await bookingsAPI.confirm(selectedRequest.booking.id);
+      const updated = await bookingsAPI.confirm(bookingId);
       updateBookingInState(updated);
+      success = true;
     } catch (err) {
       setError("Could not approve this booking. Please try again.");
     } finally {
       setActionLoading(false);
     }
+    return success;
   };
 
-  const handleDeny = async () => {
-    if (!selectedRequest) return;
-    setActionLoading(true);
+  const openOwnerCancelDialog = (booking: Booking) => {
+    setCancelConfirm({
+      booking,
+      warning: buildOwnerCancelWarning(booking),
+      loading: false,
+    });
+  };
+
+  const handleConfirmOwnerCancel = async () => {
+    if (!cancelConfirm) return;
+    const bookingId = cancelConfirm.booking.id;
+    setCancelConfirm({ ...cancelConfirm, loading: true });
     try {
-      const updated = await bookingsAPI.cancel(selectedRequest.booking.id);
+      const updated = await bookingsAPI.cancel(bookingId);
       updateBookingInState(updated);
+      setCancelConfirm(null);
     } catch (err) {
-      setError("Could not deny this booking. Please try again.");
+      setError("We couldn't cancel this booking right now. Please try again.");
+      setCancelConfirm((prev) => (prev ? { ...prev, loading: false } : prev));
+    }
+  };
+
+  const handleConfirmPickup = async (bookingId: number) => {
+    setConfirmingPickupId(bookingId);
+    try {
+      const updated = await bookingsAPI.confirmPickup(bookingId);
+      updateBookingInState(updated);
+      toast.success("Pickup confirmed. Booking is now in progress.");
+    } catch (err) {
+      console.error("confirm pickup failed", err);
+      toast.error("Could not confirm pickup. Please try again.");
     } finally {
-      setActionLoading(false);
+      setConfirmingPickupId((current) => (current === bookingId ? null : current));
+    }
+  };
+
+  const openPolicyModalForApproval = () => {
+    if (!selectedRequest) return;
+    setPendingApprovalId(selectedRequest.booking.id);
+    setPolicyAcknowledged(false);
+    setPolicyModalOpen(true);
+  };
+
+  const closePolicyModal = () => {
+    setPolicyModalOpen(false);
+    setPendingApprovalId(null);
+  };
+
+  const confirmPolicyAndApprove = async () => {
+    if (!pendingApprovalId) return;
+    const success = await handleApprove(pendingApprovalId);
+    if (success) {
+      closePolicyModal();
     }
   };
 
@@ -294,8 +399,83 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     }
   }, [pendingRequests, onPendingCountChange]);
 
+  const renderDialogActions = (booking: Booking) => {
+    const requestStatus = bookingStatusToRequestStatus(booking.status);
+    const canCancelAfterApproval = booking.status === "confirmed" || booking.status === "paid";
+
+    if (requestStatus === "pending") {
+      return (
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button
+            variant="outline"
+            onClick={() => openOwnerCancelDialog(booking)}
+            className="rounded-full"
+            disabled={actionLoading}
+          >
+            Deny Booking
+          </Button>
+          <Button
+            onClick={openPolicyModalForApproval}
+            className="rounded-full"
+            disabled={actionLoading}
+          >
+            {actionLoading ? "Processing..." : "Approve Booking"}
+          </Button>
+        </DialogFooter>
+      );
+    }
+
+    if (canConfirmPickup(booking)) {
+      return (
+        <DialogFooter className="w-full flex-col sm:flex-row sm:items-center gap-3">
+          <div className="flex-1 text-sm text-muted-foreground text-center sm:text-left">
+            Renter uploaded before photos. Confirm pickup once the tool has been handed over.
+          </div>
+          <Button
+            className="rounded-full"
+            onClick={() => handleConfirmPickup(booking.id)}
+            disabled={confirmingPickupId === booking.id}
+          >
+            {confirmingPickupId === booking.id ? "Confirming..." : "Confirm pickup"}
+          </Button>
+        </DialogFooter>
+      );
+    }
+
+    if (canCancelAfterApproval) {
+      const statusMessage =
+        booking.status === "confirmed"
+          ? "Booking approved - awaiting renter payment."
+          : "Booking has been paid. Coordinate pickup or cancel if needed.";
+
+      return (
+        <DialogFooter className="w-full flex-col sm:flex-row sm:items-center gap-3">
+          <div className="flex-1 text-sm text-muted-foreground text-center sm:text-left">
+            {statusMessage}
+          </div>
+          <Button
+            variant="outline"
+            onClick={() => openOwnerCancelDialog(booking)}
+            className="rounded-full"
+          >
+            Cancel Booking
+          </Button>
+        </DialogFooter>
+      );
+    }
+
+    return (
+      <div className="text-center py-2">
+        <p className="text-muted-foreground">
+          This request has been {requestStatusLabel[requestStatus]}.
+        </p>
+      </div>
+    );
+  };
+
   return (
-    <div className="space-y-6">
+    <>
+      <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl">Booking Requests</h1>
@@ -411,12 +591,45 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                         </div>
                       </TableCell>
                       <TableCell>{dateRange}</TableCell>
-                      <TableCell>{getBookingStatusBadge(row.booking.status)}</TableCell>
+                      <TableCell>{getBookingStatusBadge(row.booking)}</TableCell>
                       <TableCell className="text-right text-green-600">{amountLabel}</TableCell>
                       <TableCell className="text-right">
-                        <Button variant="outline" size="sm" onClick={() => setSelectedRequest(row)}>
-                          Review
-                        </Button>
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void openChatForBooking(row.booking.id);
+                            }}
+                          >
+                            Chat
+                          </Button>
+                          {canConfirmPickup(row.booking) && (
+                            <Button
+                              size="sm"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                handleConfirmPickup(row.booking.id);
+                              }}
+                              disabled={confirmingPickupId === row.booking.id}
+                            >
+                              {confirmingPickupId === row.booking.id
+                                ? "Confirming..."
+                                : "Confirm pickup"}
+                            </Button>
+                          )}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedRequest(row);
+                            }}
+                          >
+                            Review
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   );
@@ -502,7 +715,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">Status</span>
-                    {getBookingStatusBadge(selectedRequest.booking.status)}
+                    {getBookingStatusBadge(selectedRequest.booking)}
                   </div>
                   <div className="h-px bg-border" />
                   <div className="space-y-2">
@@ -527,56 +740,69 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                 </div>
               </div>
 
-              {(() => {
-                const requestStatus = bookingStatusToRequestStatus(selectedRequest.booking.status);
-                const canCancelAfterApproval =
-                  requestStatus === "approved" && selectedRequest.booking.status === "confirmed";
-                if (requestStatus === "pending") {
-                  return (
-                    <DialogFooter className="gap-2 sm:gap-0">
-                      <Button
-                        variant="outline"
-                        onClick={handleDeny}
-                        className="rounded-full"
-                        disabled={actionLoading}
-                      >
-                        {actionLoading ? "Processing..." : "Deny Booking"}
-                      </Button>
-                      <Button onClick={handleApprove} className="rounded-full" disabled={actionLoading}>
-                        {actionLoading ? "Processing..." : "Approve Booking"}
-                      </Button>
-                    </DialogFooter>
-                  );
-                }
-                if (canCancelAfterApproval) {
-                  return (
-                    <DialogFooter className="w-full flex-col sm:flex-row sm:items-center gap-3">
-                      <div className="flex-1 text-sm text-muted-foreground text-center sm:text-left">
-                        Booking approved — awaiting renter payment.
-                      </div>
-                      <Button
-                        variant="outline"
-                        onClick={handleDeny}
-                        className="rounded-full"
-                        disabled={actionLoading}
-                      >
-                        {actionLoading ? "Processing..." : "Cancel Booking"}
-                      </Button>
-                    </DialogFooter>
-                  );
-                }
-                return (
-                  <div className="text-center py-2">
-                    <p className="text-muted-foreground">
-                      This request has been {requestStatusLabel[requestStatus]}.
-                    </p>
-                  </div>
-                );
-              })()}
+              {renderDialogActions(selectedRequest.booking)}
+
             </>
           )}
         </DialogContent>
       </Dialog>
+      <Dialog
+        open={chatConversationId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setChatConversationId(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl w-full gap-0 p-0">
+          {chatConversationId && <ChatMessages conversationId={chatConversationId} />}
+        </DialogContent>
+      </Dialog>
     </div>
+    <PolicyConfirmationModal
+      open={policyModalOpen}
+      roleLabel="owner"
+      checkboxChecked={policyAcknowledged}
+      onCheckboxChange={(checked) => setPolicyAcknowledged(checked)}
+      onConfirm={confirmPolicyAndApprove}
+      onCancel={closePolicyModal}
+      confirmDisabled={actionLoading}
+    />
+      <Dialog
+        open={Boolean(cancelConfirm)}
+        onOpenChange={(open) => {
+          if (!open && !cancelConfirm?.loading) {
+            setCancelConfirm(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cancel booking?</DialogTitle>
+            <DialogDescription>{cancelConfirm?.warning}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                if (!cancelConfirm?.loading) {
+                  setCancelConfirm(null);
+                }
+              }}
+              disabled={cancelConfirm?.loading}
+            >
+              Go back
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmOwnerCancel}
+              disabled={cancelConfirm?.loading}
+            >
+              {cancelConfirm?.loading ? "Canceling..." : "Yes, cancel booking"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

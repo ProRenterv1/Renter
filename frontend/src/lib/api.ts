@@ -1,4 +1,5 @@
 import { AuthStore, type AuthTokens, type Profile } from "./auth";
+import { parseMoney } from "./utils";
 
 export const API_BASE = "/api";
 
@@ -287,7 +288,11 @@ export interface Booking {
   renter_avatar_url?: string | null;
   renter_rating?: number | null;
   totals: BookingTotals | null;
+  charge_payment_intent_id?: string;
   deposit_hold_id: string;
+  pickup_confirmed_at?: string | null;
+  before_photos_required?: boolean | null;
+  before_photos_uploaded_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -307,28 +312,82 @@ export function deriveRentalDirection(currentUserId: number, booking: Booking): 
   return booking.owner === currentUserId ? "earned" : "spent";
 }
 
+type BookingTotalsSource = Pick<Booking, "totals"> | BookingTotals | null | undefined;
+
+function resolveTotals(source: BookingTotalsSource): BookingTotals | null {
+  if (!source) {
+    return null;
+  }
+  if (typeof source === "object" && source !== null && "totals" in source) {
+    return (source as Pick<Booking, "totals">).totals ?? null;
+  }
+  return source as BookingTotals;
+}
+
+const toAmount = (value: unknown): number => parseMoney(value ?? 0);
+
+export function getBookingChargeAmount(source: BookingTotalsSource): number {
+  const totals = resolveTotals(source);
+  if (!totals) {
+    return 0;
+  }
+  const rentalSubtotal = toAmount(totals.rental_subtotal ?? totals.daily_price_cad ?? 0);
+  const serviceFee = toAmount(totals.service_fee ?? totals.renter_fee ?? 0);
+  if (rentalSubtotal || serviceFee) {
+    return rentalSubtotal + serviceFee;
+  }
+  const totalCharge = toAmount(totals.total_charge ?? 0);
+  const damageDeposit = toAmount(totals.damage_deposit ?? 0);
+  if (totalCharge) {
+    return Math.max(totalCharge - damageDeposit, 0);
+  }
+  return 0;
+}
+
+export function getBookingDamageDeposit(source: BookingTotalsSource): number {
+  const totals = resolveTotals(source);
+  return totals ? toAmount(totals.damage_deposit ?? 0) : 0;
+}
+
+export function getOwnerPayoutAmount(source: BookingTotalsSource): number {
+  const totals = resolveTotals(source);
+  if (!totals) {
+    return 0;
+  }
+  const fallback = toAmount(totals.rental_subtotal ?? totals.total_charge ?? 0);
+  const payout = toAmount(totals.owner_payout ?? fallback);
+  return payout || fallback;
+}
+
 export function deriveRentalAmounts(direction: RentalDirection, booking: Booking): number {
-  const totals = booking.totals ?? ({} as BookingTotals);
-  const ownerPayout = Number(totals.owner_payout ?? totals.rental_subtotal ?? 0);
-  const totalCharge = Number(totals.total_charge ?? totals.rental_subtotal ?? 0);
-  return direction === "earned" ? ownerPayout : totalCharge;
+  return direction === "earned"
+    ? getOwnerPayoutAmount(booking)
+    : getBookingChargeAmount(booking);
 }
 
 export type DisplayRentalStatus =
   | "Requested"
+  | "Waiting approval"
   | "Pending"
+  | "Awaiting payment"
   | "In progress"
   | "Waiting pick up"
+  | "Awaiting pickup"
   | "Completed"
-  | "Canceled";
+  | "Canceled"
+  | "Cancelled";
 
 const DISPLAY_STATUS_VALUES: DisplayRentalStatus[] = [
   "Requested",
+  "Waiting approval",
   "Pending",
+  "Awaiting payment",
   "In progress",
   "Waiting pick up",
+  "Awaiting pickup",
   "Completed",
   "Canceled",
+  "Cancelled",
 ];
 
 function normalizeDisplayStatus(label?: string | null): DisplayRentalStatus | null {
@@ -348,17 +407,17 @@ export function deriveDisplayRentalStatus(booking: Booking): DisplayRentalStatus
   const normalizedStatus = (booking.status || "").toLowerCase();
   switch (normalizedStatus) {
     case "requested":
-      return "Requested";
+      return "Waiting approval";
     case "confirmed":
-      return "Pending";
+      return "Awaiting payment";
     case "paid":
-      return "Waiting pick up";
+      return booking.pickup_confirmed_at ? "In progress" : "Awaiting pickup";
     case "completed":
       return "Completed";
     case "canceled":
       return "Canceled";
     default:
-      return "Requested";
+      return "Waiting approval";
   }
 }
 
@@ -727,6 +786,29 @@ export const bookingsAPI = {
   },
   complete(id: number) {
     return jsonFetch<Booking>(`/bookings/${id}/complete/`, {
+      method: "POST",
+    });
+  },
+  beforePhotosPresign(id: number, payload: PhotoPresignRequest) {
+    return jsonFetch<PhotoPresignResponse>(
+      `/bookings/${id}/before-photos/presign/`,
+      {
+        method: "POST",
+        body: payload,
+      },
+    );
+  },
+  beforePhotosComplete(id: number, payload: PhotoCompletePayload) {
+    return jsonFetch<PhotoCompleteResponse>(
+      `/bookings/${id}/before-photos/complete/`,
+      {
+        method: "POST",
+        body: payload,
+      },
+    );
+  },
+  confirmPickup(id: number) {
+    return jsonFetch<Booking>(`/bookings/${id}/confirm-pickup/`, {
       method: "POST",
     });
   },

@@ -46,6 +46,8 @@ def owner_user():
         password="x",
         can_list=True,
         can_rent=True,
+        email_verified=True,
+        phone_verified=True,
     )
 
 
@@ -56,6 +58,8 @@ def renter_only_user():
         password="x",
         can_list=False,
         can_rent=True,
+        email_verified=True,
+        phone_verified=True,
     )
 
 
@@ -66,6 +70,8 @@ def other_user():
         password="x",
         can_list=True,
         can_rent=True,
+        email_verified=True,
+        phone_verified=True,
     )
 
 
@@ -117,6 +123,24 @@ def test_create_listing_success(owner_user, category):
     assert resp.data["is_available"] is True
     assert resp.data["category_name"] == category.name
     assert Listing.objects.filter(slug=resp.data["slug"]).exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("email_verified", "Please verify your email before creating listings."),
+        ("phone_verified", "Please verify your phone before creating listings."),
+    ],
+)
+def test_create_listing_requires_contact_verification(owner_user, field, message):
+    setattr(owner_user, field, False)
+    owner_user.save(update_fields=[field])
+    client = auth(owner_user)
+
+    resp = client.post("/api/listings/", create_listing_payload(), format="json")
+
+    assert resp.status_code == 400
+    assert resp.data["detail"] == message
 
 
 def test_create_listing_requires_positive_price(owner_user):
@@ -182,6 +206,47 @@ def test_owner_can_update_listing(owner_user):
     listing = Listing.objects.get(slug=slug)
     assert listing.daily_price_cad == Decimal("20.00")
     assert listing.is_available is False
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("email_verified", "Please verify your email before creating listings."),
+        ("phone_verified", "Please verify your phone before creating listings."),
+    ],
+)
+def test_owner_cannot_update_listing_without_verification(owner_user, field, message):
+    client = auth(owner_user)
+    create_resp = client.post("/api/listings/", create_listing_payload(), format="json")
+    slug = create_resp.data["slug"]
+
+    setattr(owner_user, field, False)
+    owner_user.save(update_fields=[field])
+
+    patch_resp = client.patch(
+        f"/api/listings/{slug}/",
+        {"daily_price_cad": "18.00"},
+        format="json",
+    )
+    assert patch_resp.status_code == 400
+    assert patch_resp.data["detail"] == message
+
+
+def test_owner_cannot_update_listing_when_can_list_revoked(owner_user):
+    client = auth(owner_user)
+    create_resp = client.post("/api/listings/", create_listing_payload(), format="json")
+    slug = create_resp.data["slug"]
+
+    owner_user.can_list = False
+    owner_user.save(update_fields=["can_list"])
+
+    patch_resp = client.patch(
+        f"/api/listings/{slug}/",
+        {"daily_price_cad": "18.00"},
+        format="json",
+    )
+    assert patch_resp.status_code == 400
+    assert patch_resp.data["detail"] == "You are not allowed to create listings."
 
 
 def test_owner_cannot_change_owner_field(owner_user, renter_only_user):

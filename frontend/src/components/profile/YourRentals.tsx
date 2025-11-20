@@ -1,16 +1,18 @@
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
 import { CardElement, useElements, useStripe } from "@stripe/react-stripe-js";
 import type { StripeCardElementOptions } from "@stripe/stripe-js";
-import { ArrowLeft, CreditCard } from "lucide-react";
+import { ArrowLeft, CreditCard, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { AuthStore } from "@/lib/auth";
+import ChatMessages from "@/components/chat/Messages";
 import {
   authAPI,
   bookingsAPI,
   deriveDisplayRentalStatus,
-  deriveRentalAmounts,
+  getBookingChargeAmount,
+  getBookingDamageDeposit,
   listingsAPI,
   type Booking,
   type BookingTotals,
@@ -19,7 +21,8 @@ import {
   type JsonError,
   type Listing,
 } from "@/lib/api";
-import { formatCurrency } from "@/lib/utils";
+import { fetchConversations, type ConversationSummary } from "@/lib/chat";
+import { formatCurrency, parseMoney } from "@/lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -29,6 +32,15 @@ import { Label } from "../ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Separator } from "../ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../ui/dialog";
+import { PolicyConfirmationModal } from "../PolicyConfirmationModal";
 
 type StatusFilter = "all" | "requested" | "waiting-payment" | "waiting-pickup" | "ongoing";
 
@@ -51,6 +63,9 @@ interface RentalRow {
   primaryPhotoUrl: string;
   startDate: string;
   endDate: string;
+  pickupConfirmedAt: string | null;
+  beforePhotosUploadedAt: string | null;
+  beforePhotosRequired: boolean;
 }
 
 type PayableRental = RentalRow & {
@@ -69,6 +84,11 @@ type PaymentFormState = {
 };
 
 type BookingTotalsWithBase = BookingTotals & { base_amount?: string | number };
+
+type BeforePhotoUpload = {
+  file: File;
+  previewUrl: string;
+};
 
 const createInitialPaymentForm = (): PaymentFormState => ({
   cardholderName: "",
@@ -115,7 +135,7 @@ const extractJsonErrorMessage = (error: JsonError): string | null => {
 };
 
 const placeholderImage = "https://placehold.co/200x200?text=Listing";
-const cancelableStatuses: BookingStatus[] = ["requested", "confirmed"];
+const cancelableStatuses: BookingStatus[] = ["requested", "confirmed", "paid"];
 
 const parseLocalDate = (isoDate: string) => {
   const [year, month, day] = isoDate.split("-").map(Number);
@@ -123,6 +143,38 @@ const parseLocalDate = (isoDate: string) => {
     throw new Error("invalid date");
   }
   return new Date(year, month - 1, day);
+};
+
+const msPerDay = 24 * 60 * 60 * 1000;
+
+const hasChargeIntent = (booking: Booking) =>
+  Boolean((booking.charge_payment_intent_id ?? "").trim());
+
+const isPrePaymentBooking = (booking: Booking) => !hasChargeIntent(booking);
+
+const getDaysUntilStart = (booking: Booking): number | null => {
+  try {
+    const today = startOfToday();
+    const start = parseLocalDate(booking.start_date);
+    return Math.round((start.getTime() - today.getTime()) / msPerDay);
+  } catch {
+    return null;
+  }
+};
+
+const buildRenterCancelWarning = (booking: Booking): string => {
+  if (isPrePaymentBooking(booking)) {
+    return "No payment has been taken yet. Canceling now will simply withdraw your request and notify the owner.";
+  }
+  const daysUntilStart = getDaysUntilStart(booking);
+  const safeDays = daysUntilStart ?? 0;
+  if (safeDays > 1) {
+    return "If you cancel now, you'll receive a full refund of your rental payment, service fee, and damage deposit.";
+  }
+  if (safeDays === 1) {
+    return "If you cancel now, we'll charge you for 1 rental day plus the service fee for that day. The remaining rental days and your full damage deposit will be refunded.";
+  }
+  return "If you cancel now, 50% of the rental subtotal and 50% of the service fee will be kept. Your entire damage deposit will be refunded if the tool was never picked up.";
 };
 
 const formatDateRange = (start: string, end: string) => {
@@ -184,18 +236,33 @@ export function YourRentals() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [cancelingId, setCancelingId] = useState<number | null>(null);
   const [payingRental, setPayingRental] = useState<PayableRental | null>(null);
   const [savePaymentMethod, setSavePaymentMethod] = useState(false);
   const [paymentForm, setPaymentForm] = useState<PaymentFormState>(createInitialPaymentForm());
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [paymentLoading, setPaymentLoading] = useState(false);
+  const [policyModalOpen, setPolicyModalOpen] = useState(false);
+  const [pendingPaymentRow, setPendingPaymentRow] = useState<RentalRow | null>(null);
+  const [policyAcknowledged, setPolicyAcknowledged] = useState(false);
+  const [cancelDialog, setCancelDialog] = useState<{
+    booking: Booking;
+    warning: string;
+    loading: boolean;
+  } | null>(null);
+  const [pickupTarget, setPickupTarget] = useState<RentalRow | null>(null);
+  const [beforePhotos, setBeforePhotos] = useState<BeforePhotoUpload[]>([]);
+  const [beforeUploadLoading, setBeforeUploadLoading] = useState(false);
+  const [beforeUploadError, setBeforeUploadError] = useState<string | null>(null);
+  const [chatConversations, setChatConversations] = useState<ConversationSummary[]>([]);
+  const [chatConversationId, setChatConversationId] = useState<number | null>(null);
   const currentUser = AuthStore.getCurrentUser();
   const currentUserId = currentUser?.id ?? null;
   const stripe = useStripe();
   const elements = useElements();
   const navigate = useNavigate();
   const listingCacheRef = useRef<Map<string, Listing | null>>(new Map());
+  const beforeFileInputRef = useRef<HTMLInputElement | null>(null);
+  const beforePhotosRef = useRef<BeforePhotoUpload[]>([]);
   const cardElementOptions = useMemo<StripeCardElementOptions>(
     () => ({
       hidePostalCode: true,
@@ -214,6 +281,39 @@ export function YourRentals() {
       },
     }),
     []
+  );
+
+  const loadChatConversations = useCallback(async () => {
+    try {
+      const data = await fetchConversations();
+      setChatConversations(data);
+      return data;
+    } catch (err) {
+      console.error("chat: failed to load conversations", err);
+      return [];
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadChatConversations();
+  }, [loadChatConversations]);
+
+  const openChatForBooking = useCallback(
+    async (bookingId: number) => {
+      const existing = chatConversations.find((conv) => conv.booking_id === bookingId);
+      if (existing) {
+        setChatConversationId(existing.id);
+        return;
+      }
+      const refreshed = await loadChatConversations();
+      const fallback = refreshed.find((conv) => conv.booking_id === bookingId);
+      if (fallback) {
+        setChatConversationId(fallback.id);
+      } else {
+        toast.error("Chat is not available for this booking yet.");
+      }
+    },
+    [chatConversations, loadChatConversations],
   );
 
   useEffect(() => {
@@ -251,6 +351,18 @@ export function YourRentals() {
       active = false;
     };
   }, [currentUserId]);
+
+  useEffect(() => {
+    beforePhotosRef.current = beforePhotos;
+  }, [beforePhotos]);
+
+  useEffect(() => {
+    return () => {
+      beforePhotosRef.current.forEach((upload) => {
+        URL.revokeObjectURL(upload.previewUrl);
+      });
+    };
+  }, []);
 
   const handleInputChange = (event: ChangeEvent<HTMLInputElement>) => {
     const { name, value } = event.target;
@@ -338,9 +450,15 @@ export function YourRentals() {
       )
       .map((booking) => {
         const totals = booking.totals as BookingTotalsWithBase | null;
-        const rentalSubtotal = Number(totals?.rental_subtotal ?? totals?.base_amount ?? 0);
-        const serviceFee = Number(totals?.service_fee ?? totals?.renter_fee ?? 0);
-        const damageDeposit = Number(totals?.damage_deposit ?? 0);
+        let rentalSubtotal = parseMoney(totals?.rental_subtotal ?? totals?.base_amount ?? 0);
+        const rawServiceFee = parseMoney(totals?.service_fee ?? totals?.renter_fee ?? 0);
+        const amountToPay = getBookingChargeAmount(booking);
+        if (!rentalSubtotal && amountToPay && rawServiceFee && amountToPay >= rawServiceFee) {
+          rentalSubtotal = Math.max(amountToPay - rawServiceFee, 0);
+        }
+        const serviceFee =
+          rawServiceFee || Math.max(amountToPay - rentalSubtotal, 0);
+        const damageDeposit = getBookingDamageDeposit(booking);
         const ownerFirstName = booking.listing_owner_first_name?.trim() || "";
         const ownerLastName = booking.listing_owner_last_name?.trim() || "";
         const ownerUsername = booking.listing_owner_username?.trim() || "";
@@ -354,7 +472,7 @@ export function YourRentals() {
           ownerFirstName,
           ownerLastName,
           ownerUsername,
-          amountToPay: deriveRentalAmounts("spent", booking),
+          amountToPay,
           rentalSubtotal,
           serviceFee,
           damageDeposit,
@@ -363,6 +481,9 @@ export function YourRentals() {
           primaryPhotoUrl: booking.listing_primary_photo_url || placeholderImage,
           startDate: booking.start_date,
           endDate: booking.end_date,
+          pickupConfirmedAt: booking.pickup_confirmed_at ?? null,
+          beforePhotosUploadedAt: booking.before_photos_uploaded_at ?? null,
+          beforePhotosRequired: booking.before_photos_required !== false,
         };
       });
   }, [bookings]);
@@ -371,40 +492,160 @@ export function YourRentals() {
     return rentalRows.filter((row) => matchesStatusFilter(row, statusFilter));
   }, [rentalRows, statusFilter]);
 
-  const handleCancel = async (bookingId: number) => {
-    if (cancelingId === bookingId) {
+  const openRenterCancelDialog = (booking: Booking) => {
+    setCancelDialog({
+      booking,
+      warning: buildRenterCancelWarning(booking),
+      loading: false,
+    });
+  };
+
+  const handleConfirmRenterCancel = async () => {
+    if (!cancelDialog) {
       return;
     }
-    setCancelingId(bookingId);
+    const bookingId = cancelDialog.booking.id;
+    setCancelDialog({ ...cancelDialog, loading: true });
     try {
-      await bookingsAPI.cancel(bookingId);
-      setBookings((prev) => prev.filter((booking) => booking.id !== bookingId));
-      if (payingRental?.bookingId === bookingId) {
+      const updated = await bookingsAPI.cancel(bookingId);
+      setBookings((prev) =>
+        prev.map((booking) => (booking.id === updated.id ? updated : booking)),
+      );
+      if (payingRental?.bookingId === updated.id) {
         resetPaymentState();
       }
       toast.success("Booking canceled.");
+      setCancelDialog(null);
     } catch {
       toast.error("Unable to cancel this booking right now.");
+      setCancelDialog((prev) => (prev ? { ...prev, loading: false } : prev));
+    }
+  };
+
+  const resetBeforePhotoUploads = () => {
+    setBeforePhotos((prev) => {
+      prev.forEach((upload) => URL.revokeObjectURL(upload.previewUrl));
+      return [];
+    });
+  };
+
+  const closePickupFlow = () => {
+    resetBeforePhotoUploads();
+    setPickupTarget(null);
+    setBeforeUploadError(null);
+    setBeforeUploadLoading(false);
+  };
+
+  const handleBeforePhotoInput = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files) {
+      return;
+    }
+    const uploads = Array.from(files).map((file) => ({
+      file,
+      previewUrl: URL.createObjectURL(file),
+    }));
+    setBeforePhotos((prev) => [...prev, ...uploads]);
+    setBeforeUploadError(null);
+    event.target.value = "";
+  };
+
+  const removeBeforePhoto = (index: number) => {
+    setBeforePhotos((prev) => {
+      const next = [...prev];
+      const [removed] = next.splice(index, 1);
+      if (removed) {
+        URL.revokeObjectURL(removed.previewUrl);
+      }
+      return next;
+    });
+  };
+
+  const handleBeforePhotosSubmit = async () => {
+    if (!pickupTarget) {
+      return;
+    }
+    if (beforePhotos.length === 0) {
+      setBeforeUploadError("Please select at least one photo before continuing.");
+      return;
+    }
+    setBeforeUploadLoading(true);
+    setBeforeUploadError(null);
+    try {
+      for (const upload of beforePhotos) {
+        const presign = await bookingsAPI.beforePhotosPresign(pickupTarget.bookingId, {
+          filename: upload.file.name,
+          content_type: upload.file.type || "application/octet-stream",
+          size: upload.file.size,
+        });
+        const uploadHeaders: Record<string, string> = {
+          ...presign.headers,
+        };
+        if (upload.file.type) {
+          uploadHeaders["Content-Type"] = upload.file.type;
+        }
+        const uploadResponse = await fetch(presign.upload_url, {
+          method: "PUT",
+          headers: uploadHeaders,
+          body: upload.file,
+        });
+        if (!uploadResponse.ok) {
+          throw new Error("Unable to upload one of the files. Please try again.");
+        }
+        const etagHeader =
+          uploadResponse.headers.get("ETag") ?? uploadResponse.headers.get("etag");
+        if (!etagHeader) {
+          throw new Error("Upload completed but verification failed. Please retry.");
+        }
+        const cleanEtag = etagHeader.replace(/"/g, "");
+        await bookingsAPI.beforePhotosComplete(pickupTarget.bookingId, {
+          key: presign.key,
+          etag: cleanEtag,
+          filename: upload.file.name,
+          content_type: upload.file.type || "application/octet-stream",
+          size: upload.file.size,
+        });
+      }
+      const timestamp = new Date().toISOString();
+      setBookings((prev) =>
+        prev.map((booking) =>
+          booking.id === pickupTarget.bookingId
+            ? {
+                ...booking,
+                before_photos_uploaded_at: booking.before_photos_uploaded_at ?? timestamp,
+              }
+            : booking,
+        ),
+      );
+      toast.success("Before photos uploaded. Owner can now confirm pickup.");
+      closePickupFlow();
+    } catch (err) {
+      console.error("before photo upload failed", err);
+      let message = "Could not upload before photos. Please try again.";
+      if (isJsonError(err)) {
+        message = extractJsonErrorMessage(err) ?? message;
+      } else if (err instanceof Error && err.message) {
+        message = err.message;
+      }
+      setBeforeUploadError(message);
+      toast.error(message);
     } finally {
-      setCancelingId(null);
+      setBeforeUploadLoading(false);
     }
   };
 
   const handlePickup = (bookingId: number) => {
-    const booking = bookings.find((entry) => entry.id === bookingId);
-    if (!booking) {
-      return;
-    }
-    toast.info(
-      `Pickup instructions for ${booking.listing_title} will be available soon.`,
-    );
-  };
-
-  const handlePay = (bookingId: number) => {
     const row = rentalRows.find((entry) => entry.bookingId === bookingId);
     if (!row) {
       return;
     }
+    setPickupTarget(row);
+    resetBeforePhotoUploads();
+    setBeforeUploadError(null);
+    setBeforeUploadLoading(false);
+  };
+
+  const startPaymentFlow = (row: RentalRow) => {
     setPaymentForm(createInitialPaymentForm());
     setSavePaymentMethod(false);
     setPaymentError(null);
@@ -416,6 +657,29 @@ export function YourRentals() {
       serviceFee: row.serviceFee,
       damageDeposit: row.damageDeposit,
     });
+  };
+
+  const closePolicyModal = () => {
+    setPolicyModalOpen(false);
+    setPendingPaymentRow(null);
+  };
+
+  const confirmPolicyAndStartPayment = () => {
+    if (!pendingPaymentRow) {
+      return;
+    }
+    startPaymentFlow(pendingPaymentRow);
+    closePolicyModal();
+  };
+
+  const handlePay = (bookingId: number) => {
+    const row = rentalRows.find((entry) => entry.bookingId === bookingId);
+    if (!row) {
+      return;
+    }
+    setPendingPaymentRow(row);
+    setPolicyAcknowledged(false);
+    setPolicyModalOpen(true);
   };
 
   const navigateToListing = async (slug?: string | null) => {
@@ -461,8 +725,9 @@ export function YourRentals() {
   }
 
   if (payingRental) {
-    const totalAmount =
-      payingRental.rentalSubtotal + payingRental.serviceFee + payingRental.damageDeposit;
+    const chargeAmount = payingRental.rentalSubtotal + payingRental.serviceFee;
+    const depositHold = payingRental.damageDeposit;
+    const estimatedTotal = depositHold;
     const isPaymentDisabled = paymentLoading || !stripe || !elements;
 
     return (
@@ -610,28 +875,32 @@ export function YourRentals() {
                   <Separator />
 
                   <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Rental Amount</span>
-                    <span>${payingRental.rentalSubtotal.toFixed(2)}</span>
+                    <span className="text-muted-foreground">Rental amount</span>
+                    <span>{formatCurrency(payingRental.rentalSubtotal)}</span>
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Service Fee</span>
-                    <span>${payingRental.serviceFee.toFixed(2)}</span>
+                    <span className="text-muted-foreground">Service fee</span>
+                    <span>{formatCurrency(payingRental.serviceFee)}</span>
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Damage Deposit</span>
-                    <span>${payingRental.damageDeposit.toFixed(2)}</span>
+                    <span className="text-muted-foreground">Damage deposit hold</span>
+                    <span>{formatCurrency(depositHold)}</span>
                   </div>
                   <p className="text-xs text-muted-foreground">Refundable upon return</p>
 
                   <Separator />
 
                   <div className="flex items-center justify-between text-[18px]">
-                    <span style={{ fontFamily: "Manrope" }}>Total Due</span>
+                    <span style={{ fontFamily: "Manrope" }}>Charge today</span>
                     <span className="text-primary" style={{ fontFamily: "Manrope" }}>
-                      ${totalAmount.toFixed(2)}
+                      {formatCurrency(chargeAmount)}
                     </span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>Estimated authorization (deposit hold)</span>
+                    <span>{formatCurrency(estimatedTotal)}</span>
                   </div>
                 </div>
 
@@ -671,7 +940,8 @@ export function YourRentals() {
 
 
   return (
-    <div className="space-y-6">
+    <>
+      <div className="space-y-6">
       <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Your rentals</h2>
@@ -679,11 +949,11 @@ export function YourRentals() {
             Manage your current and upcoming rentals
           </p>
         </div>
-        <div className="flex gap-3">
-          <Select
-            value={statusFilter}
-            onValueChange={(value) => setStatusFilter(value as StatusFilter)}
-          >
+      <div className="flex gap-3">
+        <Select
+          value={statusFilter}
+          onValueChange={(value) => setStatusFilter(value as StatusFilter)}
+        >
             <SelectTrigger className="w-[200px]">
               <SelectValue placeholder="Filter status" />
             </SelectTrigger>
@@ -698,6 +968,87 @@ export function YourRentals() {
         </div>
       </div>
 
+      {pickupTarget && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Upload before photos</CardTitle>
+            <CardDescription>
+              {pickupTarget.toolName} · {pickupTarget.rentalPeriod}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Add photos of the tool before pickup for your protection. Once uploaded, the owner
+              can confirm pickup.
+            </p>
+            <div
+              className="border-2 border-dashed rounded-lg p-6 text-center cursor-pointer hover:border-primary transition-colors"
+              onClick={() => beforeFileInputRef.current?.click()}
+            >
+              <Upload className="w-10 h-10 mx-auto mb-3 text-muted-foreground" />
+              <p className="font-medium">Click to upload or drag and drop</p>
+              <p className="text-sm text-muted-foreground">
+                PNG, JPG or WEBP (max. 15MB each)
+              </p>
+              <input
+                ref={beforeFileInputRef}
+                type="file"
+                multiple
+                accept="image/*"
+                className="hidden"
+                onChange={handleBeforePhotoInput}
+                disabled={beforeUploadLoading}
+              />
+            </div>
+
+            {beforePhotos.length > 0 && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {beforePhotos.map((upload, index) => (
+                  <div
+                    key={`${upload.file.name}-${index}`}
+                    className="relative aspect-square rounded-lg overflow-hidden bg-muted"
+                  >
+                    <img
+                      src={upload.previewUrl}
+                      alt={`Before photo ${index + 1}`}
+                      className="w-full h-full object-cover"
+                    />
+                    <button
+                      type="button"
+                      className="absolute top-2 right-2 w-6 h-6 rounded-full bg-destructive text-white flex items-center justify-center"
+                      onClick={() => removeBeforePhoto(index)}
+                      disabled={beforeUploadLoading}
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {beforeUploadError && (
+              <p className="text-sm text-destructive">{beforeUploadError}</p>
+            )}
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end sm:gap-3 pt-2">
+              <Button
+                variant="outline"
+                onClick={closePickupFlow}
+                disabled={beforeUploadLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleBeforePhotosSubmit}
+                disabled={beforeUploadLoading || beforePhotos.length === 0}
+              >
+                {beforeUploadLoading ? "Uploading..." : "Upload & continue"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardContent className="pr-2 pl-2">
           <Table>
@@ -707,7 +1058,7 @@ export function YourRentals() {
                 <TableHead>Date range</TableHead>
                 <TableHead>Owner</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Amount</TableHead>
+                <TableHead>Charge today</TableHead>
                 <TableHead className="text-right">Action</TableHead>
               </TableRow>
             </TableHeader>
@@ -744,101 +1095,202 @@ export function YourRentals() {
               )}
               {!loading &&
                 !error &&
-                filteredRows.map((row) => (
-                  <TableRow
-                    key={row.bookingId}
-                    onClick={() => handleRowNavigate(row)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        handleRowNavigate(row);
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    className="cursor-pointer [&>td]:py-4"
-                  >
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        <img
-                          src={row.primaryPhotoUrl}
-                          alt={row.toolName}
-                          className="h-12 w-12 rounded-lg object-cover"
-                        />
-                        <div className="font-normal">{row.toolName}</div>
-                      </div>
-                    </TableCell>
-                    <TableCell>{row.rentalPeriod}</TableCell>
-                    <TableCell>
-                      <div className="flex flex-col leading-tight text-sm">
-                        <span className="font-normal">
-                          {row.ownerFirstName || row.ownerUsername || "Unknown owner"}
-                        </span>
-                        <span className="text-muted-foreground">
-                          {row.ownerLastName || "\u00A0"}
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={
-                          row.statusRaw === "completed"
-                            ? "secondary"
-                            : row.statusRaw === "canceled"
-                            ? "outline"
-                            : "default"
+                filteredRows.map((row) => {
+                  const showPickupButton =
+                    row.statusRaw === "paid" &&
+                    row.beforePhotosRequired &&
+                    !row.beforePhotosUploadedAt &&
+                    !row.pickupConfirmedAt;
+                  const awaitingOwner =
+                    row.statusRaw === "paid" &&
+                    row.beforePhotosRequired &&
+                    Boolean(row.beforePhotosUploadedAt) &&
+                    !row.pickupConfirmedAt;
+
+                  return (
+                    <TableRow
+                      key={row.bookingId}
+                      onClick={() => handleRowNavigate(row)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          handleRowNavigate(row);
                         }
-                      >
-                        {row.statusLabel}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>{formatCurrency(row.amountToPay)}</TableCell>
-                    <TableCell>
-                      <div className="flex justify-end gap-2">
-                        {row.isPayable && (
-                          <Button
-                            size="sm"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              handlePay(row.bookingId);
-                            }}
-                          >
-                            Pay
-                          </Button>
-                        )}
-                        {row.statusRaw === "paid" && (
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              handlePickup(row.bookingId);
-                            }}
-                          >
-                            Pick up
-                          </Button>
-                        )}
-                        {row.isCancelable && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              handleCancel(row.bookingId);
-                            }}
-                            disabled={cancelingId === row.bookingId}
-                          >
-                            {cancelingId === row.bookingId ? "Canceling..." : "Cancel"}
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      className="cursor-pointer [&>td]:py-4"
+                    >
+                      <TableCell>
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={row.primaryPhotoUrl}
+                            alt={row.toolName}
+                            className="h-12 w-12 rounded-lg object-cover"
+                          />
+                          <div className="font-normal">{row.toolName}</div>
+                        </div>
+                      </TableCell>
+                      <TableCell>{row.rentalPeriod}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-col leading-tight text-sm">
+                          <span className="font-normal">
+                            {row.ownerFirstName || row.ownerUsername || "Unknown owner"}
+                          </span>
+                          <span className="text-muted-foreground">
+                            {row.ownerLastName || "\u00A0"}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={
+                            row.statusRaw === "completed"
+                              ? "secondary"
+                              : row.statusRaw === "canceled"
+                              ? "outline"
+                              : "default"
+                          }
+                        >
+                          {row.statusLabel}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-col gap-1">
+                          <span>{formatCurrency(row.amountToPay)}</span>
+                          {row.damageDeposit > 0 && (
+                            <span className="text-xs text-muted-foreground">
+                              Hold {formatCurrency(row.damageDeposit)}
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-col items-end gap-1">
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void openChatForBooking(row.bookingId);
+                              }}
+                            >
+                              Chat
+                            </Button>
+                            {row.isPayable && (
+                              <Button
+                                size="sm"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handlePay(row.bookingId);
+                                }}
+                              >
+                                Pay
+                              </Button>
+                            )}
+                            {showPickupButton && (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handlePickup(row.bookingId);
+                                }}
+                              >
+                                Pick up
+                              </Button>
+                            )}
+                            {row.isCancelable && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  const booking = bookings.find(
+                                    (entry) => entry.id === row.bookingId,
+                                  );
+                                  if (!booking) {
+                                    return;
+                                  }
+                                  openRenterCancelDialog(booking);
+                                }}
+                              >
+                                Cancel
+                              </Button>
+                            )}
+                          </div>
+                          {awaitingOwner && (
+                            <span className="text-xs text-muted-foreground">
+                              Before photos uploaded · Awaiting owner
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
             </TableBody>
           </Table>
         </CardContent>
       </Card>
-    </div>
+      </div>
+      <Dialog
+        open={Boolean(cancelDialog)}
+        onOpenChange={(open) => {
+          if (!open && !cancelDialog?.loading) {
+            setCancelDialog(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cancel this booking?</DialogTitle>
+            <DialogDescription>{cancelDialog?.warning}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                if (!cancelDialog?.loading) {
+                  setCancelDialog(null);
+                }
+              }}
+              disabled={cancelDialog?.loading}
+            >
+              Keep booking
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmRenterCancel}
+              disabled={cancelDialog?.loading}
+            >
+              {cancelDialog?.loading ? "Canceling..." : "Yes, cancel"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={chatConversationId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setChatConversationId(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl w-full gap-0 p-0">
+          {chatConversationId && <ChatMessages conversationId={chatConversationId} />}
+        </DialogContent>
+      </Dialog>
+      <PolicyConfirmationModal
+        open={policyModalOpen}
+        roleLabel="renter"
+        checkboxChecked={policyAcknowledged}
+        onCheckboxChange={(checked) => setPolicyAcknowledged(checked)}
+        onConfirm={confirmPolicyAndStartPayment}
+        onCancel={closePolicyModal}
+        confirmDisabled={paymentLoading}
+      />
+    </>
   );
 }

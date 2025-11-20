@@ -234,3 +234,54 @@ def test_send_booking_status_email_canceled(settings):
     assert listing.title in body
     assert settings.FRONTEND_ORIGIN in body
     assert "$432.00" in body
+
+
+@pytest.mark.django_db
+def test_send_booking_expired_email_notifies_both_parties(settings):
+    settings.EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
+    settings.DEFAULT_FROM_EMAIL = "noreply@test.local"
+    settings.FRONTEND_ORIGIN = "https://frontend.example"
+
+    owner = User.objects.create_user(
+        username="expired-owner",
+        email="owner3@example.com",
+        password="secret123",
+        first_name="Owen",
+        last_name="Owner",
+    )
+    renter = User.objects.create_user(
+        username="expired-renter",
+        email="renter3@example.com",
+        password="secret123",
+        first_name="Ria",
+        last_name="Renter",
+    )
+    listing = Listing.objects.create(
+        owner=owner,
+        title="Projector",
+        description="Bright projector",
+        daily_price_cad=Decimal("35.00"),
+        replacement_value_cad=Decimal("600.00"),
+        damage_deposit_cad=Decimal("150.00"),
+        city="Calgary",
+        is_active=True,
+        is_available=True,
+    )
+    start = date.today()
+    end = start + timedelta(days=2)
+    booking = Booking.objects.create(
+        listing=listing,
+        owner=owner,
+        renter=renter,
+        start_date=start,
+        end_date=end,
+        status=Booking.Status.REQUESTED,
+    )
+
+    tasks.send_booking_expired_email.run(booking.id)
+
+    assert len(mail.outbox) == 2
+    subjects = {message.subject for message in mail.outbox}
+    assert f"Your booking for {listing.title} expired" in subjects
+    assert f"A booking for {listing.title} expired" in subjects
+    assert all(settings.FRONTEND_ORIGIN in message.body for message in mail.outbox)
