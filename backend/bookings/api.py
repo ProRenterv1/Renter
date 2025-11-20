@@ -14,8 +14,8 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from chat_models import Message as ChatMessage
-from chat_models import create_system_message
+from chat.models import Message as ChatMessage
+from chat.models import create_system_message
 from listings.models import Listing
 from listings.services import compute_booking_totals
 from notifications import tasks as notification_tasks

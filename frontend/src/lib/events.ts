@@ -1,4 +1,5 @@
 import { jsonFetch } from "./api";
+import { AuthStore } from "./auth";
 
 export type EventType =
   | "chat:new_message"
@@ -52,7 +53,7 @@ export interface EventStreamHandle {
   stop(): void;
 }
 
-export function startEventStream<T = any>(
+function startLongPollStream<T = any>(
   options: EventStreamOptions<T>,
 ): EventStreamHandle {
   const { onEvents, onError, timeoutSeconds = 25, cursor: initialCursor = null } = options;
@@ -102,6 +103,82 @@ export function startEventStream<T = any>(
       }
       stopped = true;
       controller.abort();
+    },
+  };
+}
+
+export function startEventStream<T = any>(
+  options: EventStreamOptions<T>,
+): EventStreamHandle {
+  const supportsWebSocket =
+    typeof window !== "undefined" && typeof WebSocket !== "undefined";
+  const accessToken = supportsWebSocket ? AuthStore.getAccess() : null;
+
+  if (!supportsWebSocket || !accessToken) {
+    return startLongPollStream(options);
+  }
+
+  const notifyError = (err: unknown) => {
+    if (options.onError) {
+      options.onError(err);
+    } else {
+      // eslint-disable-next-line no-console
+      console.warn("events: stream error", err);
+    }
+  };
+
+  const loc = window.location;
+  const protocol = loc.protocol === "https:" ? "wss:" : "ws:";
+  const wsPath = "/ws/events/";
+  const url = `${protocol}//${loc.host}${wsPath}?token=${encodeURIComponent(accessToken)}`;
+
+  let ws: WebSocket | null;
+  try {
+    ws = new WebSocket(url);
+  } catch (err) {
+    notifyError(err);
+    return startLongPollStream(options);
+  }
+
+  let closedByClient = false;
+
+  ws.onmessage = (event: MessageEvent) => {
+    try {
+      const parsed = JSON.parse(event.data as string) as EventStreamResponse<T>;
+      if (!parsed || !Array.isArray(parsed.events) || parsed.events.length === 0) {
+        return;
+      }
+      const nextCursor = parsed.cursor || "";
+      options.onEvents(parsed.events, nextCursor);
+    } catch (err) {
+      notifyError(err);
+    }
+  };
+
+  ws.onerror = (event) => {
+    notifyError(event);
+  };
+
+  ws.onclose = () => {
+    if (!closedByClient) {
+      notifyError(new Error("events websocket closed"));
+    }
+  };
+
+  return {
+    stop() {
+      if (!ws) {
+        return;
+      }
+      closedByClient = true;
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close(1000, "client stop");
+      } else if (ws.readyState === WebSocket.CONNECTING) {
+        ws.close();
+      } else if (ws.readyState === WebSocket.CLOSING) {
+        // let existing close complete
+      }
+      ws = null;
     },
   };
 }

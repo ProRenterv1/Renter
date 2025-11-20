@@ -8,11 +8,3 @@ class BookingsConfig(AppConfig):
 
     default_auto_field = "django.db.models.BigAutoField"
     name = "bookings"
-
-    def ready(self) -> None:
-        """Load auxiliary models that live outside bookings.models."""
-        try:
-            import chat_models  # noqa: F401
-        except ModuleNotFoundError:
-            # Chat feature not installed in some environments.
-            pass

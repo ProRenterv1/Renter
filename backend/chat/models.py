@@ -38,8 +38,8 @@ class Conversation(models.Model):
     created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        app_label = "bookings"
         ordering = ["-created_at"]
+        db_table = "bookings_conversation"
 
     def __str__(self) -> str:
         return f"Conversation(b={self.booking_id}, active={self.is_active})"
@@ -98,8 +98,8 @@ class Message(models.Model):
     created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        app_label = "bookings"
         ordering = ["created_at"]
+        db_table = "bookings_message"
 
     def __str__(self) -> str:
         return (
