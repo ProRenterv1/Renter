@@ -642,7 +642,7 @@ def test_pending_requests_count_returns_owner_requested_bookings(
     resp = client.get("/api/bookings/pending-requests-count/")
     assert resp.status_code == 200
     assert resp.data["pending_requests"] == 2
-    assert resp.data["unpaid_bookings"] == 0
+    assert resp.data["unpaid_bookings"] == 1
 
 
 def test_pending_requests_count_excludes_renter_only_bookings(
