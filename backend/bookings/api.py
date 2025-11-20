@@ -14,6 +14,8 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from chat_models import Message as ChatMessage
+from chat_models import create_system_message
 from listings.models import Listing
 from listings.services import compute_booking_totals
 from notifications import tasks as notification_tasks
@@ -179,7 +181,12 @@ class BookingViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer: BookingSerializer) -> None:
         """Persist a new booking."""
-        serializer.save()
+        booking = serializer.save()
+        create_system_message(
+            booking,
+            ChatMessage.SYSTEM_REQUEST_SENT,
+            "Booking request sent",
+        )
 
     @action(detail=False, methods=["get"], url_path="my")
     def my_bookings(self, request, *args, **kwargs):
@@ -281,6 +288,11 @@ class BookingViewSet(viewsets.ModelViewSet):
                 "notifications: could not queue send_booking_status_email",
                 exc_info=True,
             )
+        create_system_message(
+            booking,
+            ChatMessage.SYSTEM_REQUEST_APPROVED,
+            "Booking request approved",
+        )
         return Response(self.get_serializer(booking).data)
 
     @action(detail=True, methods=["post"], url_path="cancel")
@@ -316,10 +328,11 @@ class BookingViewSet(viewsets.ModelViewSet):
             "auto_canceled",
             "updated_at",
         ]
-
+        canceled = False
         if is_pre_payment(booking):
             mark_canceled(booking, actor=actor, auto=False, reason=cancel_reason)
             booking.save(update_fields=update_fields)
+            canceled = True
         else:
             try:
                 settlement = compute_refund_amounts(
@@ -346,6 +359,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                 )
             mark_canceled(booking, actor=actor, auto=False, reason=cancel_reason)
             booking.save(update_fields=update_fields)
+            canceled = True
 
         if actor in {"owner", "no_show"}:
             try:
@@ -359,6 +373,13 @@ class BookingViewSet(viewsets.ModelViewSet):
                     "notifications: could not queue send_booking_status_email",
                     exc_info=True,
                 )
+        if canceled:
+            create_system_message(
+                booking,
+                ChatMessage.SYSTEM_BOOKING_CANCELLED,
+                "Booking cancelled",
+                close_chat=True,
+            )
         return Response(self.get_serializer(booking).data)
 
     @action(detail=True, methods=["post"], url_path="mark-late")
@@ -551,6 +572,12 @@ class BookingViewSet(viewsets.ModelViewSet):
 
         booking.status = Booking.Status.COMPLETED
         booking.save(update_fields=["status", "updated_at"])
+        create_system_message(
+            booking,
+            ChatMessage.SYSTEM_BOOKING_COMPLETED,
+            "Booking completed",
+            close_chat=True,
+        )
         return Response(self.get_serializer(booking).data)
 
     @action(detail=True, methods=["post"], url_path="before-photos/presign")
@@ -720,6 +747,11 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking.pickup_confirmed_at = timezone.now()
         booking.save(update_fields=["pickup_confirmed_at", "updated_at"])
         logger.info("chat: Booking %s picked up", booking.id)
+        create_system_message(
+            booking,
+            ChatMessage.SYSTEM_TOOL_PICKED_UP,
+            "Tool picked up",
+        )
         return Response(self.get_serializer(booking).data)
 
     @action(detail=True, methods=["post"], url_path="pay")
@@ -795,4 +827,9 @@ class BookingViewSet(viewsets.ModelViewSet):
                 "notifications: could not queue send_booking_payment_receipt_email",
                 exc_info=True,
             )
+        create_system_message(
+            booking,
+            ChatMessage.SYSTEM_PAYMENT_MADE,
+            "Payment received",
+        )
         return Response(self.get_serializer(booking).data, status=status.HTTP_200_OK)

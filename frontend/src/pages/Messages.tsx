@@ -1,233 +1,282 @@
-import { useState } from "react";
-import { Header } from "../components/Header";
-import { Card, CardContent } from "../components/ui/card";
-import { Input } from "../components/ui/input";
-import { Button } from "../components/ui/button";
-import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
-import { Badge } from "../components/ui/badge";
-import { Search, Send, MoreVertical, ArrowLeft } from "lucide-react";
-import { Separator } from "../components/ui/separator";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Search } from "lucide-react";
 
-interface Message {
-  id: number;
-  senderId: string;
-  text: string;
-  timestamp: string;
-  isOwn: boolean;
-}
+import ChatMessages from "@/components/chat/Messages";
+import { Header } from "@/components/Header";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  fetchConversations,
+  type ConversationSummary,
+} from "@/lib/chat";
+import { startEventStream } from "@/lib/events";
 
-interface Conversation {
-  id: number;
-  userId: string;
-  userName: string;
-  userAvatar: string;
-  lastMessage: string;
-  lastMessageTime: string;
-  unread: number;
-  toolName?: string;
-}
+const getInitials = (name: string) =>
+  name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("") || "??";
 
-export default function Messages() {
-  const [selectedConversation, setSelectedConversation] = useState<number | null>(1);
-  const [messageText, setMessageText] = useState("");
+export default function MessagesPage() {
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [selectedConversationId, setSelectedConversationId] = useState<number | null>(null);
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [unreadConversationIds, setUnreadConversationIds] = useState<Set<number>>(
+    () => new Set(),
+  );
 
-  const conversations: Conversation[] = [
-    {
-      id: 1,
-      userId: "sarah",
-      userName: "Sarah Johnson",
-      userAvatar: "",
-      lastMessage: "Is the drill still available tomorrow?",
-      lastMessageTime: "2m ago",
-      unread: 2,
-      toolName: "DeWalt 20V Cordless Drill"
-    },
-    {
-      id: 2,
-      userId: "mike",
-      userName: "Mike Chen",
-      userAvatar: "",
-      lastMessage: "Thanks for the rental!",
-      lastMessageTime: "1h ago",
-      unread: 0,
-      toolName: "Pressure Washer"
-    },
-    {
-      id: 3,
-      userId: "emma",
-      userName: "Emma Davis",
-      userAvatar: "",
-      lastMessage: "Can I extend the rental period?",
-      lastMessageTime: "3h ago",
-      unread: 1,
-      toolName: "Step Ladder"
-    },
-  ];
-
-  const messages: Record<number, Message[]> = {
-    1: [
-      { id: 1, senderId: "sarah", text: "Hi! I'm interested in renting your drill.", timestamp: "10:30 AM", isOwn: false },
-      { id: 2, senderId: "me", text: "Hello! Yes, it's available. When do you need it?", timestamp: "10:32 AM", isOwn: true },
-      { id: 3, senderId: "sarah", text: "Is the drill still available tomorrow?", timestamp: "10:35 AM", isOwn: false },
-    ],
-    2: [
-      { id: 1, senderId: "mike", text: "The pressure washer worked great!", timestamp: "Yesterday", isOwn: false },
-      { id: 2, senderId: "me", text: "Glad to hear that! Let me know if you need it again.", timestamp: "Yesterday", isOwn: true },
-      { id: 3, senderId: "mike", text: "Thanks for the rental!", timestamp: "2:15 PM", isOwn: false },
-    ],
-    3: [
-      { id: 1, senderId: "emma", text: "Hi! I rented your ladder last week.", timestamp: "9:00 AM", isOwn: false },
-      { id: 2, senderId: "emma", text: "Can I extend the rental period?", timestamp: "9:05 AM", isOwn: false },
-    ],
-  };
-
-  const currentConversation = conversations.find(c => c.id === selectedConversation);
-  const currentMessages = selectedConversation ? messages[selectedConversation] || [] : [];
-
-  const handleSendMessage = () => {
-    if (messageText.trim()) {
-      // In a real app, this would send the message
-      setMessageText("");
+  const loadConversations = useCallback(async () => {
+    try {
+      const data = await fetchConversations();
+      setConversations(data);
+      setError(null);
+      return data;
+    } catch (err) {
+      console.error("chat: failed to load conversations", err);
+      setError("Unable to load conversations right now.");
+      return [];
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    loadConversations()
+      .then((data) => {
+        if (!active) {
+          return;
+        }
+        if (data.length > 0) {
+          setSelectedConversationId((prev) => prev ?? data[0].id);
+        } else {
+          setSelectedConversationId(null);
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [loadConversations]);
+
+  useEffect(() => {
+    const handle = startEventStream({
+      onEvents: (events) => {
+        let shouldRefresh = false;
+        const newlyUnread: number[] = [];
+        setConversations((prev) => {
+          let changed = false;
+          let next = prev;
+          for (const event of events) {
+            if (event.type !== "chat:new_message" || !event.payload) {
+              continue;
+            }
+            const idx = next.findIndex((conv) => conv.id === event.payload.conversation_id);
+            if (idx === -1) {
+              shouldRefresh = true;
+              if (!event.payload.message?.sender_is_me) {
+                newlyUnread.push(event.payload.conversation_id);
+              }
+              continue;
+            }
+            if (!changed) {
+              next = [...next];
+              changed = true;
+            }
+            const message = event.payload.message;
+            next[idx] = {
+              ...next[idx],
+              last_message: {
+                id: message.id,
+                message_type: message.message_type,
+                system_kind: message.system_kind,
+                text: message.text,
+                created_at: message.created_at,
+              },
+              last_message_at: message.created_at,
+            };
+            if (
+              !message.sender_is_me &&
+              event.payload.conversation_id !== selectedConversationId
+            ) {
+              newlyUnread.push(event.payload.conversation_id);
+            }
+          }
+          return changed ? next : prev;
+        });
+        if (newlyUnread.length > 0) {
+          setUnreadConversationIds((prev) => {
+            let changed = false;
+            const next = new Set(prev);
+            for (const id of newlyUnread) {
+              if (!next.has(id)) {
+                next.add(id);
+                changed = true;
+              }
+            }
+            return changed ? next : prev;
+          });
+        }
+        if (shouldRefresh) {
+          void loadConversations();
+        }
+      },
+    });
+    return () => handle.stop();
+  }, [loadConversations, selectedConversationId]);
+
+  useEffect(() => {
+    if (selectedConversationId === null) {
+      return;
+    }
+    const exists = conversations.some((conv) => conv.id === selectedConversationId);
+    if (!exists) {
+      setSelectedConversationId(conversations[0]?.id ?? null);
+    }
+  }, [conversations, selectedConversationId]);
+
+  useEffect(() => {
+    if (selectedConversationId === null) {
+      return;
+    }
+    setUnreadConversationIds((prev) => {
+      if (!prev.has(selectedConversationId)) {
+        return prev;
+      }
+      const next = new Set(prev);
+      next.delete(selectedConversationId);
+      return next;
+    });
+  }, [selectedConversationId]);
+
+  const filteredConversations = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) {
+      return conversations;
+    }
+    return conversations.filter((conv) => {
+      const listingMatch = conv.listing_title.toLowerCase().includes(query);
+      const nameMatch = conv.other_party_name.toLowerCase().includes(query);
+      return listingMatch || nameMatch;
+    });
+  }, [conversations, search]);
+
+  const sortedConversations = useMemo(() => {
+    return [...filteredConversations].sort((a, b) => {
+      const aTime = a.last_message_at ? new Date(a.last_message_at).getTime() : 0;
+      const bTime = b.last_message_at ? new Date(b.last_message_at).getTime() : 0;
+      return bTime - aTime;
+    });
+  }, [filteredConversations]);
 
   return (
     <div className="min-h-screen bg-background">
       <Header />
-      
-      <div className="h-[calc(100vh-64px)] flex">
-        {/* Conversations List */}
-        <aside className="w-80 border-r bg-card flex flex-col">
-          <div className="p-4 border-b">
-            <h2 className="text-xl mb-3">Messages</h2>
+      <div className="flex h-[calc(100vh-64px)]">
+        <aside className="flex w-80 flex-col border-r bg-card">
+          <div className="border-b p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-xl">Messages</h2>
+              <Button variant="ghost" size="sm" onClick={() => void loadConversations()}>
+                Refresh
+              </Button>
+            </div>
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: "var(--text-muted)" }} />
-              <Input 
-                placeholder="Search messages..." 
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Search conversations…"
                 className="pl-9"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
               />
             </div>
           </div>
-
           <div className="flex-1 overflow-y-auto">
-            {conversations.map((conversation) => (
-              <button
-                key={conversation.id}
-                onClick={() => setSelectedConversation(conversation.id)}
-                className={`w-full p-4 flex items-start gap-3 hover:bg-muted/50 transition-colors border-b ${
-                  selectedConversation === conversation.id ? "bg-muted" : ""
-                }`}
-              >
-                <Avatar className="w-12 h-12 flex-shrink-0">
-                  <AvatarImage src={conversation.userAvatar} />
-                  <AvatarFallback className="bg-[var(--primary)]" style={{ color: "var(--primary-foreground)" }}>
-                    {conversation.userName.split(" ").map(n => n[0]).join("")}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="flex-1 text-left min-w-0">
-                  <div className="flex items-center justify-between mb-1">
-                    <p className="truncate">{conversation.userName}</p>
-                    <span className="text-xs flex-shrink-0" style={{ color: "var(--text-muted)" }}>
-                      {conversation.lastMessageTime}
-                    </span>
+            {loading && (
+              <div className="p-4 text-sm text-muted-foreground">Loading chats…</div>
+            )}
+            {error && (
+              <Card className="m-4">
+                <CardContent className="py-3 text-sm text-destructive">{error}</CardContent>
+              </Card>
+            )}
+            {!loading && sortedConversations.length === 0 && !error && (
+              <div className="p-4 text-sm text-muted-foreground">
+                No conversations yet.
+              </div>
+            )}
+            {sortedConversations.map((conversation) => {
+              const isSelected = conversation.id === selectedConversationId;
+              const isUnread = unreadConversationIds.has(conversation.id);
+              const lastMessage = conversation.last_message;
+              const lastMessageText =
+                lastMessage?.text ??
+                (lastMessage ? lastMessage.system_kind : "No messages yet");
+              const lastMessagePrefix = (() => {
+                if (!lastMessage) {
+                  return "";
+                }
+                if (lastMessage.sender_is_me) {
+                  return "You: ";
+                }
+                const firstName = conversation.other_party_name.split(" ").find(Boolean);
+                return firstName ? `${firstName}: ` : "";
+              })();
+              return (
+                <button
+                  key={conversation.id}
+                  type="button"
+                  onClick={() => setSelectedConversationId(conversation.id)}
+                  className={`flex w-full flex-col gap-1 border-b px-4 py-3 text-left transition-colors ${
+                    isSelected ? "bg-muted" : "hover:bg-muted/70"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Avatar className="h-10 w-10">
+                      <AvatarFallback>{getInitials(conversation.other_party_name)}</AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1">
+                      <p
+                        className={`leading-tight ${
+                          isUnread ? "font-semibold text-foreground" : "font-medium"
+                        }`}
+                      >
+                        {conversation.other_party_name}
+                      </p>
+                      <p className="text-xs text-muted-foreground">{conversation.listing_title}</p>
+                      <p
+                        className={`truncate text-sm ${
+                          isUnread ? "font-semibold text-foreground" : "text-muted-foreground"
+                        }`}
+                      >
+                        {lastMessagePrefix}
+                        {lastMessageText}
+                      </p>
+                    </div>
                   </div>
-                  {conversation.toolName && (
-                    <p className="text-xs mb-1" style={{ color: "var(--primary)" }}>
-                      {conversation.toolName}
-                    </p>
-                  )}
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm truncate" style={{ color: "var(--text-muted)" }}>
-                      {conversation.lastMessage}
-                    </p>
-                    {conversation.unread > 0 && (
-                      <Badge className="ml-2 flex-shrink-0 bg-[var(--primary)]" style={{ color: "var(--primary-foreground)" }}>
-                        {conversation.unread}
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
         </aside>
-
-        {/* Chat Area */}
-        {selectedConversation && currentConversation ? (
-          <div className="flex-1 flex flex-col">
-            {/* Chat Header */}
-            <div className="p-4 border-b bg-card flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <Avatar className="w-10 h-10">
-                  <AvatarImage src={currentConversation.userAvatar} />
-                  <AvatarFallback className="bg-[var(--primary)]" style={{ color: "var(--primary-foreground)" }}>
-                    {currentConversation.userName.split(" ").map(n => n[0]).join("")}
-                  </AvatarFallback>
-                </Avatar>
-                <div>
-                  <p>{currentConversation.userName}</p>
-                  {currentConversation.toolName && (
-                    <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-                      {currentConversation.toolName}
-                    </p>
-                  )}
-                </div>
-              </div>
-              <Button variant="ghost" size="icon">
-                <MoreVertical className="w-5 h-5" />
-              </Button>
+        <div className="flex flex-1 flex-col">
+          {selectedConversationId ? (
+            <ChatMessages conversationId={selectedConversationId} />
+          ) : (
+            <div className="flex flex-1 items-center justify-center text-muted-foreground">
+              {loading ? "Loading chats…" : "Select a conversation to start messaging"}
             </div>
-
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {currentMessages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex ${message.isOwn ? "justify-end" : "justify-start"}`}
-                >
-                  <div className={`max-w-[70%] ${message.isOwn ? "order-2" : "order-1"}`}>
-                    <div
-                      className={`px-4 py-2 rounded-2xl ${
-                        message.isOwn
-                          ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
-                          : "bg-muted"
-                      }`}
-                    >
-                      <p>{message.text}</p>
-                    </div>
-                    <p className={`text-xs mt-1 ${message.isOwn ? "text-right" : ""}`} style={{ color: "var(--text-muted)" }}>
-                      {message.timestamp}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Message Input */}
-            <div className="p-4 border-t bg-card">
-              <div className="flex gap-2">
-                <Input
-                  placeholder="Type a message..."
-                  value={messageText}
-                  onChange={(e) => setMessageText(e.target.value)}
-                  onKeyPress={(e) => e.key === "Enter" && handleSendMessage()}
-                  className="flex-1"
-                />
-                <Button
-                  onClick={handleSendMessage}
-                  className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
-                  style={{ color: "var(--primary-foreground)" }}
-                >
-                  <Send className="w-4 h-4" />
-                </Button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="flex-1 flex items-center justify-center" style={{ color: "var(--text-muted)" }}>
-            <p>Select a conversation to start messaging</p>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

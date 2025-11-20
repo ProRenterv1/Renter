@@ -37,3 +37,28 @@ class Transaction(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user} {self.kind} {self.amount} {self.currency}"
+
+
+class OwnerPayoutAccount(models.Model):
+    """Stripe Connect Express account tracking for listing owners."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="payout_account",
+    )
+    stripe_account_id = models.CharField(max_length=255)
+    payouts_enabled = models.BooleanField(default=False)
+    charges_enabled = models.BooleanField(default=False)
+    requirements_due = models.JSONField(default=dict, blank=True)
+    is_fully_onboarded = models.BooleanField(
+        default=False,
+        help_text="Charges and payouts enabled, no disabled_reason.",
+    )
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-last_synced_at", "user_id"]
+
+    def __str__(self) -> str:
+        return f"{self.user} - {self.stripe_account_id}"

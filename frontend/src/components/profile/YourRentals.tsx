@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
 import { CardElement, useElements, useStripe } from "@stripe/react-stripe-js";
 import type { StripeCardElementOptions } from "@stripe/stripe-js";
@@ -6,6 +6,7 @@ import { ArrowLeft, CreditCard, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { AuthStore } from "@/lib/auth";
+import ChatMessages from "@/components/chat/Messages";
 import {
   authAPI,
   bookingsAPI,
@@ -20,6 +21,7 @@ import {
   type JsonError,
   type Listing,
 } from "@/lib/api";
+import { fetchConversations, type ConversationSummary } from "@/lib/chat";
 import { formatCurrency, parseMoney } from "@/lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -251,6 +253,8 @@ export function YourRentals() {
   const [beforePhotos, setBeforePhotos] = useState<BeforePhotoUpload[]>([]);
   const [beforeUploadLoading, setBeforeUploadLoading] = useState(false);
   const [beforeUploadError, setBeforeUploadError] = useState<string | null>(null);
+  const [chatConversations, setChatConversations] = useState<ConversationSummary[]>([]);
+  const [chatConversationId, setChatConversationId] = useState<number | null>(null);
   const currentUser = AuthStore.getCurrentUser();
   const currentUserId = currentUser?.id ?? null;
   const stripe = useStripe();
@@ -277,6 +281,39 @@ export function YourRentals() {
       },
     }),
     []
+  );
+
+  const loadChatConversations = useCallback(async () => {
+    try {
+      const data = await fetchConversations();
+      setChatConversations(data);
+      return data;
+    } catch (err) {
+      console.error("chat: failed to load conversations", err);
+      return [];
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadChatConversations();
+  }, [loadChatConversations]);
+
+  const openChatForBooking = useCallback(
+    async (bookingId: number) => {
+      const existing = chatConversations.find((conv) => conv.booking_id === bookingId);
+      if (existing) {
+        setChatConversationId(existing.id);
+        return;
+      }
+      const refreshed = await loadChatConversations();
+      const fallback = refreshed.find((conv) => conv.booking_id === bookingId);
+      if (fallback) {
+        setChatConversationId(fallback.id);
+      } else {
+        toast.error("Chat is not available for this booking yet.");
+      }
+    },
+    [chatConversations, loadChatConversations],
   );
 
   useEffect(() => {
@@ -1131,6 +1168,16 @@ export function YourRentals() {
                       <TableCell>
                         <div className="flex flex-col items-end gap-1">
                           <div className="flex justify-end gap-2">
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void openChatForBooking(row.bookingId);
+                              }}
+                            >
+                              Chat
+                            </Button>
                             {row.isPayable && (
                               <Button
                                 size="sm"
@@ -1221,6 +1268,18 @@ export function YourRentals() {
               {cancelDialog?.loading ? "Canceling..." : "Yes, cancel"}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={chatConversationId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setChatConversationId(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl w-full gap-0 p-0">
+          {chatConversationId && <ChatMessages conversationId={chatConversationId} />}
         </DialogContent>
       </Dialog>
       <PolicyConfirmationModal

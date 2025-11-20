@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import logging
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Any
 
 import stripe
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.response import Response
 
 from bookings.models import Booking
 from payments.ledger import log_transaction
-from payments.models import Transaction
+from payments.models import OwnerPayoutAccount, Transaction
 
 logger = logging.getLogger(__name__)
 IDEMPOTENCY_VERSION = "v2"
@@ -77,6 +79,186 @@ def _handle_stripe_error(exc: stripe.error.StripeError) -> None:
     if isinstance(exc, stripe.error.InvalidRequestError):
         raise StripePaymentError(exc.user_message or "Invalid payment request.") from exc
     raise StripePaymentError(exc.user_message or "Stripe payment failure.") from exc
+
+
+def _account_object_value(account_data: Any, field: str, default: Any = None) -> Any:
+    """Safely fetch a field from a Stripe account object or dict payload."""
+    if isinstance(account_data, dict):
+        return account_data.get(field, default)
+    return getattr(account_data, field, default)
+
+
+def _listify(value: Any) -> list[Any]:
+    """Convert requirement entries into a JSON-serializable list."""
+    if value in (None, "", ()):
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, (tuple, set)):
+        return list(value)
+    if isinstance(value, (str, bytes)):
+        return [value]
+    try:
+        return list(value)
+    except TypeError:
+        return [value]
+
+
+def _serialize_account_requirements(account_data: Any) -> dict[str, Any]:
+    """Extract the requirements sub-structure from a Stripe account payload."""
+    requirements = _account_object_value(account_data, "requirements", {}) or {}
+
+    def _req_value(field: str, default: Any) -> Any:
+        if isinstance(requirements, dict):
+            return requirements.get(field, default) or default
+        return getattr(requirements, field, default) or default
+
+    return {
+        "currently_due": _listify(_req_value("currently_due", [])),
+        "eventually_due": _listify(_req_value("eventually_due", [])),
+        "past_due": _listify(_req_value("past_due", [])),
+        "disabled_reason": _req_value("disabled_reason", ""),
+    }
+
+
+def _sync_payout_account_from_stripe(
+    payout_account: OwnerPayoutAccount,
+    account_data: Any,
+) -> OwnerPayoutAccount:
+    """Update persisted payout account fields from a Stripe account payload."""
+    account_id = _account_object_value(account_data, "id", payout_account.stripe_account_id)
+    if account_id:
+        payout_account.stripe_account_id = account_id
+    charges_enabled = bool(_account_object_value(account_data, "charges_enabled", False))
+    payouts_enabled = bool(_account_object_value(account_data, "payouts_enabled", False))
+    requirements_due = _serialize_account_requirements(account_data)
+    disabled_reason = requirements_due.get("disabled_reason")
+
+    payout_account.charges_enabled = charges_enabled
+    payout_account.payouts_enabled = payouts_enabled
+    payout_account.requirements_due = requirements_due
+    payout_account.is_fully_onboarded = bool(
+        charges_enabled and payouts_enabled and not disabled_reason
+    )
+    payout_account.last_synced_at = timezone.now()
+    payout_account.save()
+    return payout_account
+
+
+def ensure_connect_account(user: User) -> OwnerPayoutAccount:
+    """Ensure the owner has a Stripe Connect Express account and sync it locally."""
+    stripe.api_key = _get_stripe_api_key()
+
+    try:
+        payout_account = user.payout_account
+        existing_account_id = payout_account.stripe_account_id or ""
+    except OwnerPayoutAccount.DoesNotExist:
+        payout_account = None
+        existing_account_id = ""
+
+    account_data: Any | None = None
+    if existing_account_id:
+        try:
+            account_data = stripe.Account.retrieve(existing_account_id)
+        except stripe.error.InvalidRequestError as exc:
+            if getattr(exc, "code", "") == "resource_missing":
+                logger.info(
+                    "Stripe Connect account %s missing for user %s; recreating.",
+                    existing_account_id,
+                    user.id,
+                )
+            else:
+                _handle_stripe_error(exc)
+        except stripe.error.StripeError as exc:
+            _handle_stripe_error(exc)
+
+    if account_data is None:
+        try:
+            account_data = stripe.Account.create(
+                type="express",
+                country="CA",
+                capabilities={
+                    "card_payments": {"requested": True},
+                    "transfers": {"requested": True},
+                },
+                business_type="individual",
+                metadata={"user_id": str(user.id)},
+            )
+        except stripe.error.StripeError as exc:
+            _handle_stripe_error(exc)
+
+    if payout_account is None:
+        payout_account = OwnerPayoutAccount(
+            user=user,
+            stripe_account_id=_account_object_value(account_data, "id", ""),
+        )
+
+    return _sync_payout_account_from_stripe(payout_account, account_data)
+
+
+def _get_frontend_origin() -> str:
+    """Return the configured frontend origin or a local fallback."""
+    configured = (getattr(settings, "FRONTEND_ORIGIN", "") or "").strip()
+    base = configured or "http://localhost:5173"
+    return base.rstrip("/") or base
+
+
+def create_connect_onboarding_link(user: User) -> str:
+    """Create a Stripe Connect onboarding link for the owner."""
+    payout_account = ensure_connect_account(user)
+    stripe.api_key = _get_stripe_api_key()
+
+    base_origin = _get_frontend_origin()
+    refresh_url = f"{base_origin}/owner/payouts?onboarding=refresh"
+    return_url = f"{base_origin}/owner/payouts?onboarding=return"
+
+    try:
+        link = stripe.AccountLink.create(
+            account=payout_account.stripe_account_id,
+            type="account_onboarding",
+            refresh_url=refresh_url,
+            return_url=return_url,
+        )
+    except stripe.error.StripeError as exc:
+        _handle_stripe_error(exc)
+
+    link_url = getattr(link, "url", None) or link.get("url")  # type: ignore[arg-type]
+    if not link_url:
+        raise StripeConfigurationError("Stripe did not return an onboarding link.")
+    return link_url
+
+
+def _handle_connect_account_updated_event(account_payload: Any) -> None:
+    """Sync OwnerPayoutAccount rows based on Stripe account.updated data."""
+    stripe_account_id = _account_object_value(account_payload, "id", "")
+    if not stripe_account_id:
+        return
+
+    payout_account = OwnerPayoutAccount.objects.filter(
+        stripe_account_id=stripe_account_id,
+    ).first()
+
+    if payout_account is None:
+        metadata = _account_object_value(account_payload, "metadata", {}) or {}
+        if isinstance(metadata, dict):
+            metadata_dict = metadata
+        elif hasattr(metadata, "items"):
+            metadata_dict = dict(metadata.items())
+        else:
+            metadata_dict = {}
+        user_id = metadata_dict.get("user_id")
+        if not user_id:
+            return
+        try:
+            user = User.objects.get(pk=int(user_id))
+        except (User.DoesNotExist, ValueError, TypeError):
+            return
+        payout_account, _ = OwnerPayoutAccount.objects.get_or_create(
+            user=user,
+            defaults={"stripe_account_id": stripe_account_id},
+        )
+
+    _sync_payout_account_from_stripe(payout_account, account_payload)
 
 
 def _retrieve_payment_intent(intent_id: str, *, label: str) -> stripe.PaymentIntent | None:
@@ -416,6 +598,10 @@ def stripe_webhook(request):
     metadata = data_object.get("metadata") or {}
     booking_id = metadata.get("booking_id")
     kind = metadata.get("kind")
+
+    if event_type == "account.updated":
+        _handle_connect_account_updated_event(data_object)
+        return Response(status=status.HTTP_200_OK)
 
     if event_type == "payment_intent.succeeded" and booking_id and kind == "booking_charge":
         try:

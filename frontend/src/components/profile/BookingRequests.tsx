@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
@@ -37,6 +37,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Star } from "lucide-react";
 import { format } from "date-fns";
 import { AuthStore } from "@/lib/auth";
+import ChatMessages from "@/components/chat/Messages";
 import {
   bookingsAPI,
   deriveDisplayRentalStatus,
@@ -45,6 +46,7 @@ import {
   type BookingTotals,
   type Listing,
 } from "@/lib/api";
+import { fetchConversations, type ConversationSummary } from "@/lib/chat";
 import { formatCurrency } from "@/lib/utils";
 import { PolicyConfirmationModal } from "../PolicyConfirmationModal";
 
@@ -144,6 +146,8 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     loading: boolean;
   } | null>(null);
   const [confirmingPickupId, setConfirmingPickupId] = useState<number | null>(null);
+  const [chatConversations, setChatConversations] = useState<ConversationSummary[]>([]);
+  const [chatConversationId, setChatConversationId] = useState<number | null>(null);
   const currentUserId = AuthStore.getCurrentUser()?.id ?? null;
   const navigate = useNavigate();
   const selectedTotals = selectedRequest?.booking.totals ?? null;
@@ -164,6 +168,39 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   const ownerServiceFeeAmount = Math.abs(ownerServiceFeeRaw);
   const ownerServiceFeeText =
     ownerServiceFeeAmount === 0 ? formatCurrency(0, "CAD") : `-${formatCurrency(ownerServiceFeeAmount, "CAD")}`;
+
+  const loadChatConversations = useCallback(async () => {
+    try {
+      const data = await fetchConversations();
+      setChatConversations(data);
+      return data;
+    } catch (err) {
+      console.error("chat: failed to load conversations", err);
+      return [];
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadChatConversations();
+  }, [loadChatConversations]);
+
+  const openChatForBooking = useCallback(
+    async (bookingId: number) => {
+      const existing = chatConversations.find((conv) => conv.booking_id === bookingId);
+      if (existing) {
+        setChatConversationId(existing.id);
+        return;
+      }
+      const refreshed = await loadChatConversations();
+      const fallback = refreshed.find((conv) => conv.booking_id === bookingId);
+      if (fallback) {
+        setChatConversationId(fallback.id);
+      } else {
+        toast.error("Chat is not available for this booking yet.");
+      }
+    },
+    [chatConversations, loadChatConversations],
+  );
 
   useEffect(() => {
     let active = true;
@@ -558,6 +595,16 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                       <TableCell className="text-right text-green-600">{amountLabel}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void openChatForBooking(row.booking.id);
+                            }}
+                          >
+                            Chat
+                          </Button>
                           {canConfirmPickup(row.booking) && (
                             <Button
                               size="sm"
@@ -697,6 +744,18 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
 
             </>
           )}
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={chatConversationId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setChatConversationId(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl w-full gap-0 p-0">
+          {chatConversationId && <ChatMessages conversationId={chatConversationId} />}
         </DialogContent>
       </Dialog>
     </div>
