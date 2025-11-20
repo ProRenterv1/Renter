@@ -44,11 +44,13 @@ const isMessageMine = (
   return senderCandidate !== null && currentUserId !== null && senderCandidate === currentUserId;
 };
 
-const computeUnreadFromConversations = (conversations: ConversationSummary[]) => {
-  return conversations.reduce(
-    (total, conv) => total + Math.max(conv.unread_count ?? 0, 0),
-    0,
-  );
+const deriveUnreadConversationIds = (conversations: ConversationSummary[]) => {
+  return conversations.reduce((set, conv) => {
+    if ((conv.unread_count ?? 0) > 0) {
+      set.add(conv.id);
+    }
+    return set;
+  }, new Set<number>());
 };
 
 export function Header() {
@@ -56,10 +58,13 @@ export function Header() {
   const [modalMode, setModalMode] = useState<"login" | "signup">("login");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [postLoginAction, setPostLoginAction] = useState<null | "add-listing">(null);
-  const [unreadCount, setUnreadCount] = useState(0);
+  const [unreadConversationIds, setUnreadConversationIds] = useState<Set<number>>(
+    () => new Set(),
+  );
   const [currentUserId, setCurrentUserId] = useState<number | null>(
     AuthStore.getCurrentUser()?.id ?? null,
   );
+  const unreadCount = unreadConversationIds.size;
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -77,11 +82,11 @@ export function Header() {
 
   useEffect(() => {
     if (!isAuthenticated) {
-      setUnreadCount(0);
+      setUnreadConversationIds(new Set());
       return;
     }
     if (location.pathname === "/messages") {
-      setUnreadCount(0);
+      setUnreadConversationIds(new Set());
     }
     const handle = startEventStream<{
       conversation_id: number;
@@ -92,7 +97,7 @@ export function Header() {
         if (location.pathname === "/messages") {
           return;
         }
-        let increment = 0;
+        const newUnreadIds: number[] = [];
         for (const event of events) {
           if (event.type !== "chat:new_message" || !event.payload) {
             continue;
@@ -104,10 +109,23 @@ export function Header() {
           if (isMessageMine(message, currentUserId)) {
             continue;
           }
-          increment += 1;
+          const conversationId = event.payload.conversation_id;
+          if (!newUnreadIds.includes(conversationId)) {
+            newUnreadIds.push(conversationId);
+          }
         }
-        if (increment > 0) {
-          setUnreadCount((prev) => prev + increment);
+        if (newUnreadIds.length > 0) {
+          setUnreadConversationIds((prev) => {
+            let changed = false;
+            const next = new Set(prev);
+            for (const id of newUnreadIds) {
+              if (!next.has(id)) {
+                next.add(id);
+                changed = true;
+              }
+            }
+            return changed ? next : prev;
+          });
         }
       },
     });
@@ -126,10 +144,10 @@ export function Header() {
           return;
         }
         if (location.pathname === "/messages") {
-          setUnreadCount(0);
+          setUnreadConversationIds(new Set());
           return;
         }
-        setUnreadCount(computeUnreadFromConversations(conversations));
+        setUnreadConversationIds(deriveUnreadConversationIds(conversations));
       })
       .catch((err) => {
         console.error("header: failed to load conversations for unread count", err);
@@ -144,12 +162,12 @@ export function Header() {
       return;
     }
     if (location.pathname === "/messages") {
-      setUnreadCount(0);
+      setUnreadConversationIds(new Set());
       return;
     }
     fetchConversations()
       .then((conversations) => {
-        setUnreadCount(computeUnreadFromConversations(conversations));
+        setUnreadConversationIds(deriveUnreadConversationIds(conversations));
       })
       .catch((err) => {
         console.error("header: failed to refresh unread count after leaving messages", err);
@@ -158,7 +176,7 @@ export function Header() {
 
   useEffect(() => {
     if (location.pathname === "/messages") {
-      setUnreadCount(0);
+      setUnreadConversationIds(new Set());
     }
   }, [location.pathname]);
 
@@ -295,7 +313,10 @@ export function Header() {
                 >
                   <MessageSquare className="w-4 h-4 mr-2" />
                   {unreadCount > 0 && (
-                    <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-none text-destructive-foreground">
+                    <span
+                      className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none text-white"
+                      style={{ backgroundColor: "#5B8CA6" }}
+                    >
                       {unreadCount > 98 ? "99+" : unreadCount}
                     </span>
                   )}

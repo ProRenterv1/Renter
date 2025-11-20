@@ -90,6 +90,10 @@ type BeforePhotoUpload = {
   previewUrl: string;
 };
 
+interface YourRentalsProps {
+  onUnpaidRentalsChange?: (count: number) => void;
+}
+
 const createInitialPaymentForm = (): PaymentFormState => ({
   cardholderName: "",
   postalCode: "",
@@ -231,7 +235,7 @@ const matchesStatusFilter = (row: RentalRow, filter: StatusFilter) => {
   return true;
 };
 
-export function YourRentals() {
+export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -491,6 +495,17 @@ export function YourRentals() {
   const filteredRows = useMemo(() => {
     return rentalRows.filter((row) => matchesStatusFilter(row, statusFilter));
   }, [rentalRows, statusFilter]);
+
+  const unpaidRentalsCount = useMemo(
+    () => rentalRows.filter((row) => row.isPayable).length,
+    [rentalRows],
+  );
+
+  useEffect(() => {
+    if (onUnpaidRentalsChange) {
+      onUnpaidRentalsChange(unpaidRentalsCount);
+    }
+  }, [onUnpaidRentalsChange, unpaidRentalsCount]);
 
   const openRenterCancelDialog = (booking: Booking) => {
     setCancelDialog({

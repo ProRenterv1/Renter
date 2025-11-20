@@ -304,6 +304,7 @@ export interface BookingAvailabilityRange {
 
 export interface PendingRequestsCountResponse {
   pending_requests: number;
+  unpaid_bookings: number;
 }
 
 export type RentalDirection = "earned" | "spent";

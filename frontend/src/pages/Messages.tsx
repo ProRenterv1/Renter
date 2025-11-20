@@ -281,7 +281,10 @@ export default function MessagesPage() {
                           {lastMessageText}
                         </span>
                         {unreadCount > 0 && (
-                          <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-primary/80 px-1 text-[11px] font-semibold text-primary-foreground">
+                          <span
+                            className="inline-flex min-w-5 items-center justify-center rounded-full px-1 text-[11px] font-semibold text-white"
+                            style={{ backgroundColor: "#5B8CA6" }}
+                          >
                             {unreadCount > 99 ? "99+" : unreadCount}
                           </span>
                         )}

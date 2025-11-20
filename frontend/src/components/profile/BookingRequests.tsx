@@ -324,6 +324,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     try {
       const updated = await bookingsAPI.confirm(bookingId);
       updateBookingInState(updated);
+      await refreshCountsFromServer();
       success = true;
     } catch (err) {
       setError("Could not approve this booking. Please try again.");
@@ -349,6 +350,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
       const updated = await bookingsAPI.cancel(bookingId);
       updateBookingInState(updated);
       setCancelConfirm(null);
+      await refreshCountsFromServer();
     } catch (err) {
       setError("We couldn't cancel this booking right now. Please try again.");
       setCancelConfirm((prev) => (prev ? { ...prev, loading: false } : prev));
@@ -389,9 +391,27 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     }
   };
 
-  const pendingRequests = requests.filter(
-    (row) => bookingStatusToRequestStatus(row.booking.status) === "pending",
-  ).length;
+  const refreshCountsFromServer = useCallback(async () => {
+    if (!onPendingCountChange) {
+      return;
+    }
+    try {
+      const response = await bookingsAPI.pendingRequestsCount();
+      onPendingCountChange(Number(response.pending_requests ?? 0));
+    } catch (error) {
+      if (import.meta.env.DEV) {
+        console.warn("Failed to refresh booking counters", error);
+      }
+    }
+  }, [onPendingCountChange]);
+
+  const pendingRequests = useMemo(
+    () =>
+      requests.filter(
+        (row) => bookingStatusToRequestStatus(row.booking.status) === "pending",
+      ).length,
+    [requests],
+  );
 
   useEffect(() => {
     if (onPendingCountChange) {
