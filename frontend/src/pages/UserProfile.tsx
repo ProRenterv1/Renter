@@ -61,6 +61,7 @@ export default function UserProfile() {
   const [listingsRefreshToken, setListingsRefreshToken] = useState(0);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [pendingBookingCount, setPendingBookingCount] = useState(0);
+  const [unpaidRentalsCount, setUnpaidRentalsCount] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -112,6 +113,12 @@ export default function UserProfile() {
       subscribed = false;
       window.clearInterval(intervalId);
     };
+  }, [profile?.id]);
+
+  useEffect(() => {
+    if (!profile?.id) {
+      setUnpaidRentalsCount(0);
+    }
   }, [profile?.id]);
 
   const handleListingSelected = (listing: Listing) => {
@@ -271,8 +278,19 @@ export default function UserProfile() {
                       <Icon className="w-4 h-4" />
                       <span className="flex-1 text-left">{tab.label}</span>
                       {tab.id === "booking-requests" && pendingBookingCount > 0 && (
-                        <span className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-[var(--error-solid)] text-[10px] font-semibold leading-none text-white">
+                        <span
+                          className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold leading-none text-white"
+                          style={{ backgroundColor: "#5B8CA6" }}
+                        >
                           {pendingBookingCount > 99 ? "99+" : pendingBookingCount}
+                        </span>
+                      )}
+                      {tab.id === "rentals" && unpaidRentalsCount > 0 && (
+                        <span
+                          className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold leading-none text-white"
+                          style={{ backgroundColor: "#5B8CA6" }}
+                        >
+                          {unpaidRentalsCount > 99 ? "99+" : unpaidRentalsCount}
                         </span>
                       )}
                     </button>
@@ -307,7 +325,9 @@ export default function UserProfile() {
                 />
               ))}
             {activeTab === "add-listing" && <AddListing />}
-            {activeTab === "rentals" && <YourRentals />}
+            {activeTab === "rentals" && (
+              <YourRentals onUnpaidRentalsChange={setUnpaidRentalsCount} />
+            )}
             {activeTab === "rental-history" && <RecentRentals />}
             {activeTab === "statistics" && <Statistics />}
             {activeTab === "payments" && <Payments />}

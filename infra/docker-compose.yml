@@ -11,8 +11,11 @@ services:
       dockerfile: Dockerfile
     <<: *default-env
     command: >
-      gunicorn renter.wsgi:application
-      -b 0.0.0.0:8000 -w 2 --threads 2 --timeout 60
+      gunicorn renter.asgi:application
+      -k uvicorn.workers.UvicornWorker
+      -b 0.0.0.0:8000
+      -w 2
+      --timeout 60
     depends_on:
       - db
       - redis

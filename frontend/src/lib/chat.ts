@@ -6,6 +6,7 @@ export interface ChatMessage {
   id: number;
   sender: number | null;
   sender_is_me: boolean;
+  is_read?: boolean;
   message_type: "user" | "system";
   system_kind: string | null;
   text: string;
@@ -17,6 +18,8 @@ export interface ChatBookingSummary {
   status: string;
   start_date: string;
   end_date: string;
+  owner: number;
+  renter: number;
   listing:
     | number
     | {
@@ -26,8 +29,15 @@ export interface ChatBookingSummary {
         slug?: string | null;
       };
   listing_title?: string | null;
+  listing_owner_first_name?: string | null;
+  listing_owner_last_name?: string | null;
+  listing_owner_username?: string | null;
   listing_slug?: string | null;
   listing_primary_photo_url?: string | null;
+  renter_first_name?: string | null;
+  renter_last_name?: string | null;
+  renter_username?: string | null;
+  renter_avatar_url?: string | null;
 }
 
 export interface ConversationSummary {
@@ -38,13 +48,16 @@ export interface ConversationSummary {
   is_active: boolean;
   last_message: {
     id: number;
+    sender_id?: number | null;
     sender_is_me?: boolean;
+    is_read?: boolean;
     message_type: "user" | "system";
     system_kind: string | null;
     text: string;
     created_at: string;
   } | null;
   last_message_at: string | null;
+  unread_count?: number;
 }
 
 export interface ConversationDetail {

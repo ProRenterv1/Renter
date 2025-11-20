@@ -38,8 +38,8 @@ class Conversation(models.Model):
     created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        app_label = "bookings"
         ordering = ["-created_at"]
+        db_table = "bookings_conversation"
 
     def __str__(self) -> str:
         return f"Conversation(b={self.booking_id}, active={self.is_active})"
@@ -98,8 +98,8 @@ class Message(models.Model):
     created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        app_label = "bookings"
         ordering = ["created_at"]
+        db_table = "bookings_message"
 
     def __str__(self) -> str:
         return (
@@ -109,6 +109,35 @@ class Message(models.Model):
             f"system={self.system_kind}"
             ")"
         )
+
+
+class ConversationReadState(models.Model):
+    """Track the last read message per user in a conversation."""
+
+    conversation = models.ForeignKey(
+        Conversation,
+        on_delete=models.CASCADE,
+        related_name="read_states",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="conversation_read_states",
+    )
+    last_read_message = models.ForeignKey(
+        "chat.Message",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    last_read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ("conversation", "user")
+
+    def __str__(self) -> str:  # pragma: no cover - simple repr
+        return f"ReadState(conv={self.conversation_id}, user={self.user_id})"
 
 
 def get_or_create_booking_conversation(booking: "Booking") -> Conversation:
@@ -178,3 +207,47 @@ def create_user_message(
     )
     _push_chat_event_for_conversation(conversation, msg)
     return msg
+
+
+def mark_conversation_read(
+    conversation: Conversation, user: "User"
+) -> ConversationReadState | None:
+    """Mark the conversation as read for the given user."""
+    if not user or user.id not in {conversation.owner_id, conversation.renter_id}:
+        return None
+
+    last_message = conversation.messages.order_by("-id").first()
+    state, _ = ConversationReadState.objects.get_or_create(
+        conversation=conversation,
+        user=user,
+        defaults={"last_read_at": timezone.now(), "last_read_message": last_message},
+    )
+    if last_message and state.last_read_message_id == last_message.id:
+        return state
+
+    if last_message:
+        state.last_read_message = last_message
+        state.last_read_at = timezone.now()
+        state.save(update_fields=["last_read_message", "last_read_at"])
+    elif not state.last_read_at:
+        state.last_read_at = timezone.now()
+        state.save(update_fields=["last_read_at"])
+    return state
+
+
+def get_unread_message_count(conversation: Conversation, user: "User") -> int:
+    """Return unread message count for the user in the conversation."""
+    if not user or user.id not in {conversation.owner_id, conversation.renter_id}:
+        return 0
+    state = getattr(conversation, "_read_state", None)
+    if state is None:
+        try:
+            state = conversation.read_states.get(user=user)
+        except ConversationReadState.DoesNotExist:
+            state = None
+    last_read_id = state.last_read_message_id if state else None
+
+    qs = conversation.messages.exclude(sender=user)
+    if last_read_id:
+        qs = qs.filter(id__gt=last_read_id)
+    return qs.count()

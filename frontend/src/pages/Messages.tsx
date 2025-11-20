@@ -12,6 +12,7 @@ import {
   type ConversationSummary,
 } from "@/lib/chat";
 import { startEventStream } from "@/lib/events";
+import { AuthStore } from "@/lib/auth";
 
 const getInitials = (name: string) =>
   name
@@ -27,9 +28,7 @@ export default function MessagesPage() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [unreadConversationIds, setUnreadConversationIds] = useState<Set<number>>(
-    () => new Set(),
-  );
+  const currentUserId = useMemo(() => AuthStore.getCurrentUser()?.id ?? null, []);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -69,10 +68,26 @@ export default function MessagesPage() {
   }, [loadConversations]);
 
   useEffect(() => {
+    const resolveSenderIsMe = (message: {
+      sender_is_me?: boolean;
+      sender_id?: number | null;
+      sender?: number | null;
+    }) => {
+      if (typeof message.sender_is_me === "boolean") {
+        return message.sender_is_me;
+      }
+      const senderCandidate =
+        typeof message.sender_id === "number"
+          ? message.sender_id
+          : typeof message.sender === "number"
+            ? message.sender
+            : null;
+      return currentUserId !== null && senderCandidate === currentUserId;
+    };
+
     const handle = startEventStream({
       onEvents: (events) => {
         let shouldRefresh = false;
-        const newlyUnread: number[] = [];
         setConversations((prev) => {
           let changed = false;
           let next = prev;
@@ -80,59 +95,52 @@ export default function MessagesPage() {
             if (event.type !== "chat:new_message" || !event.payload) {
               continue;
             }
-            const idx = next.findIndex((conv) => conv.id === event.payload.conversation_id);
+            const message = event.payload.message;
+            const senderIsMe = resolveSenderIsMe(message);
+            const conversationId = event.payload.conversation_id;
+            const idx = next.findIndex((conv) => conv.id === conversationId);
             if (idx === -1) {
               shouldRefresh = true;
-              if (!event.payload.message?.sender_is_me) {
-                newlyUnread.push(event.payload.conversation_id);
-              }
               continue;
             }
             if (!changed) {
               next = [...next];
               changed = true;
             }
-            const message = event.payload.message;
+            const isViewing = conversationId === selectedConversationId;
+            const senderId =
+              typeof message.sender_id === "number"
+                ? message.sender_id
+                : typeof message.sender === "number"
+                  ? message.sender
+                  : null;
+            const unreadCount =
+              senderIsMe || isViewing ? 0 : (next[idx].unread_count ?? 0) + 1;
             next[idx] = {
               ...next[idx],
               last_message: {
                 id: message.id,
+                sender_id: senderId,
+                sender_is_me: senderIsMe,
+                is_read: senderIsMe || isViewing,
                 message_type: message.message_type,
                 system_kind: message.system_kind,
                 text: message.text,
                 created_at: message.created_at,
               },
               last_message_at: message.created_at,
+              unread_count: unreadCount,
             };
-            if (
-              !message.sender_is_me &&
-              event.payload.conversation_id !== selectedConversationId
-            ) {
-              newlyUnread.push(event.payload.conversation_id);
-            }
           }
           return changed ? next : prev;
         });
-        if (newlyUnread.length > 0) {
-          setUnreadConversationIds((prev) => {
-            let changed = false;
-            const next = new Set(prev);
-            for (const id of newlyUnread) {
-              if (!next.has(id)) {
-                next.add(id);
-                changed = true;
-              }
-            }
-            return changed ? next : prev;
-          });
-        }
         if (shouldRefresh) {
           void loadConversations();
         }
       },
     });
     return () => handle.stop();
-  }, [loadConversations, selectedConversationId]);
+  }, [currentUserId, loadConversations, selectedConversationId]);
 
   useEffect(() => {
     if (selectedConversationId === null) {
@@ -148,14 +156,19 @@ export default function MessagesPage() {
     if (selectedConversationId === null) {
       return;
     }
-    setUnreadConversationIds((prev) => {
-      if (!prev.has(selectedConversationId)) {
-        return prev;
-      }
-      const next = new Set(prev);
-      next.delete(selectedConversationId);
-      return next;
-    });
+    setConversations((prev) =>
+      prev.map((conv) =>
+        conv.id === selectedConversationId
+          ? {
+              ...conv,
+              unread_count: 0,
+              last_message: conv.last_message
+                ? { ...conv.last_message, is_read: true }
+                : conv.last_message,
+            }
+          : conv,
+      ),
+    );
   }, [selectedConversationId]);
 
   const filteredConversations = useMemo(() => {
@@ -216,11 +229,16 @@ export default function MessagesPage() {
             )}
             {sortedConversations.map((conversation) => {
               const isSelected = conversation.id === selectedConversationId;
-              const isUnread = unreadConversationIds.has(conversation.id);
+              const unreadCount = conversation.unread_count ?? 0;
+              const isUnread = unreadCount > 0;
               const lastMessage = conversation.last_message;
-              const lastMessageText =
+              const rawMessageText =
                 lastMessage?.text ??
                 (lastMessage ? lastMessage.system_kind : "No messages yet");
+              const lastMessageText =
+                rawMessageText && rawMessageText.length > 18
+                  ? `${rawMessageText.slice(0, 18)}...`
+                  : rawMessageText;
               const lastMessagePrefix = (() => {
                 if (!lastMessage) {
                   return "";
@@ -247,7 +265,7 @@ export default function MessagesPage() {
                     <div className="flex-1">
                       <p
                         className={`leading-tight ${
-                          isUnread ? "font-semibold text-foreground" : "font-medium"
+                          unreadCount > 0 ? "font-semibold text-foreground" : "font-medium"
                         }`}
                       >
                         {conversation.other_party_name}
@@ -255,11 +273,21 @@ export default function MessagesPage() {
                       <p className="text-xs text-muted-foreground">{conversation.listing_title}</p>
                       <p
                         className={`truncate text-sm ${
-                          isUnread ? "font-semibold text-foreground" : "text-muted-foreground"
-                        }`}
+                          unreadCount > 0 ? "font-semibold text-foreground" : "text-muted-foreground"
+                        } flex items-center gap-2`}
                       >
-                        {lastMessagePrefix}
-                        {lastMessageText}
+                        <span className="flex-1 truncate">
+                          {lastMessagePrefix}
+                          {lastMessageText}
+                        </span>
+                        {unreadCount > 0 && (
+                          <span
+                            className="inline-flex min-w-5 items-center justify-center rounded-full px-1 text-[11px] font-semibold text-white"
+                            style={{ backgroundColor: "#5B8CA6" }}
+                          >
+                            {unreadCount > 99 ? "99+" : unreadCount}
+                          </span>
+                        )}
                       </p>
                     </div>
                   </div>

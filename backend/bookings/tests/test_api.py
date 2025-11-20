@@ -642,6 +642,7 @@ def test_pending_requests_count_returns_owner_requested_bookings(
     resp = client.get("/api/bookings/pending-requests-count/")
     assert resp.status_code == 200
     assert resp.data["pending_requests"] == 2
+    assert resp.data["unpaid_bookings"] == 1
 
 
 def test_pending_requests_count_excludes_renter_only_bookings(
@@ -681,6 +682,68 @@ def test_pending_requests_count_excludes_renter_only_bookings(
     resp = client.get("/api/bookings/pending-requests-count/")
     assert resp.status_code == 200
     assert resp.data["pending_requests"] == 0
+    assert resp.data["unpaid_bookings"] == 0
+
+
+def test_pending_requests_count_reports_unpaid_confirmed_bookings(
+    booking_factory,
+    owner_user,
+):
+    start = date.today() + timedelta(days=2)
+    booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=3),
+        status=Booking.Status.CONFIRMED,
+    )
+    booking_factory(
+        start_date=start + timedelta(days=4),
+        end_date=start + timedelta(days=6),
+        status=Booking.Status.CONFIRMED,
+    )
+    paid_booking = booking_factory(
+        start_date=start + timedelta(days=7),
+        end_date=start + timedelta(days=9),
+        status=Booking.Status.CONFIRMED,
+    )
+    paid_booking.charge_payment_intent_id = "pi_paid"
+    paid_booking.save(update_fields=["charge_payment_intent_id"])
+
+    client = auth(owner_user)
+    resp = client.get("/api/bookings/pending-requests-count/")
+    assert resp.status_code == 200
+    assert resp.data["pending_requests"] == 0
+    assert resp.data["unpaid_bookings"] == 2
+
+
+def test_pending_requests_count_ignores_unpaid_bookings_for_other_owners(
+    owner_user,
+    other_user,
+):
+    start = date.today() + timedelta(days=10)
+    other_listing = Listing.objects.create(
+        owner=other_user,
+        title="Other Tool",
+        description="Useful tool",
+        daily_price_cad=Decimal("15.00"),
+        replacement_value_cad=Decimal("200.00"),
+        damage_deposit_cad=Decimal("75.00"),
+        city="Calgary",
+        is_active=True,
+        is_available=True,
+    )
+    Booking.objects.create(
+        listing=other_listing,
+        owner=other_user,
+        renter=owner_user,
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.CONFIRMED,
+    )
+
+    client = auth(owner_user)
+    resp = client.get("/api/bookings/pending-requests-count/")
+    assert resp.status_code == 200
+    assert resp.data["unpaid_bookings"] == 0
 
 
 def test_availability_returns_active_bookings_for_listing(

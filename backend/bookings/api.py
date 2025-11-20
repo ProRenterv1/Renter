@@ -14,8 +14,8 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from chat_models import Message as ChatMessage
-from chat_models import create_system_message
+from chat.models import Message as ChatMessage
+from chat.models import create_system_message
 from listings.models import Listing
 from listings.services import compute_booking_totals
 from notifications import tasks as notification_tasks
@@ -201,7 +201,18 @@ class BookingViewSet(viewsets.ModelViewSet):
             owner=user,
             status=Booking.Status.REQUESTED,
         ).count()
-        return Response({"pending_requests": pending_total}, status=status.HTTP_200_OK)
+        unpaid_confirmed = Booking.objects.filter(
+            owner=user,
+            status=Booking.Status.CONFIRMED,
+        ).only("id", "charge_payment_intent_id")
+        unpaid_total = sum(1 for booking in unpaid_confirmed if is_pre_payment(booking))
+        return Response(
+            {
+                "pending_requests": pending_total,
+                "unpaid_bookings": unpaid_total,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @action(
         detail=False,
