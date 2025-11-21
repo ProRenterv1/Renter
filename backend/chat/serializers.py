@@ -120,11 +120,15 @@ class MessageSerializer(serializers.ModelSerializer):
     def get_is_read(self, obj: Message) -> bool:
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        if user and obj.sender_id == user.id:
-            return True
+        sender_id = obj.sender_id
+        if user and sender_id == user.id:
+            other_read_state = self.context.get("other_read_state")
+            other_last_read_id = getattr(other_read_state, "last_read_message_id", None)
+            return bool(other_last_read_id and obj.id <= other_last_read_id)
+
         read_state = self.context.get("read_state")
         last_read_id = getattr(read_state, "last_read_message_id", None)
-        return bool(last_read_id is not None and obj.id <= last_read_id)
+        return bool(last_read_id and obj.id <= last_read_id)
 
 
 class ConversationDetailSerializer(serializers.ModelSerializer):

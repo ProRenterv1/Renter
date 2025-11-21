@@ -10,6 +10,7 @@ class Transaction(models.Model):
         PLATFORM_FEE = "PLATFORM_FEE", "Platform fee"
         DAMAGE_DEPOSIT_CAPTURE = "DAMAGE_DEPOSIT_CAPTURE", "Damage deposit capture"
         DAMAGE_DEPOSIT_RELEASE = "DAMAGE_DEPOSIT_RELEASE", "Damage deposit release"
+        PROMOTION_CHARGE = "PROMOTION_CHARGE", "Promotion charge"
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -20,6 +21,15 @@ class Transaction(models.Model):
         "bookings.Booking",
         on_delete=models.CASCADE,
         related_name="transactions",
+        null=True,
+        blank=True,
+    )
+    promotion_slot = models.ForeignKey(
+        "promotions.PromotedSlot",
+        on_delete=models.CASCADE,
+        related_name="transactions",
+        null=True,
+        blank=True,
     )
     kind = models.CharField(max_length=64, choices=Kind.choices)
     amount = models.DecimalField(max_digits=10, decimal_places=2)

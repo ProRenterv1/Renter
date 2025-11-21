@@ -1,0 +1,44 @@
+{% extends "email/base_email.html" %}
+{% block content %}
+  <h1 style="font-size:26px;line-height:1.2;color:{{ brand_heading_color }};margin:0 0 16px;font-family:'Manrope','Inter',sans-serif;">
+    Your promotion receipt
+  </h1>
+  <p style="font-size:16px;color:{{ brand_text_color }};margin:0 0 20px;">
+    Hi {{ user.first_name|default:user.username }}, thanks for promoting your listing. Your PDF receipt is attached for safekeeping.
+  </p>
+  <div style="border:1px solid {{ brand_border_color }};border-radius:20px;padding:20px 24px;margin-bottom:28px;background-color:{{ brand_surface_color }};">
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="font-size:15px;color:{{ brand_text_color }};">
+      <tr>
+        <td style="padding:6px 0;width:42%;color:{{ brand_muted_text_color }};">Listing</td>
+        <td style="padding:6px 0;font-weight:600;">{{ listing_title }}</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Dates</td>
+        <td style="padding:6px 0;font-weight:600;">{{ date_range_display }}</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Duration</td>
+        <td style="padding:6px 0;font-weight:600;">{{ duration_days }} days</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Price per day</td>
+        <td style="padding:6px 0;font-weight:600;">CAD ${{ price_per_day }}</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Promotion price</td>
+        <td style="padding:6px 0;font-weight:600;">CAD ${{ promotion_price }}</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">GST (5%)</td>
+        <td style="padding:6px 0;font-weight:600;">CAD ${{ gst_amount }}</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Total paid</td>
+        <td style="padding:6px 0;font-weight:600;">CAD ${{ total_paid }}</td>
+      </tr>
+    </table>
+  </div>
+  <p style="font-size:15px;color:{{ brand_text_color }};margin:0;">
+    Need to review the promotion later? You can revisit your dashboard any time.
+  </p>
+{% endblock %}

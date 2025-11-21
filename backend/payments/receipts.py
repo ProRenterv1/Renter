@@ -15,6 +15,7 @@ from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
 
 from bookings.models import Booking
+from promotions.models import PromotedSlot
 from storage import s3 as storage_s3
 
 _TWO_PLACES = Decimal("0.01")
@@ -27,6 +28,19 @@ class _PaymentBreakdown:
     service_fee: Decimal
     damage_deposit: Decimal
     total_charge: Decimal
+
+
+@dataclass(frozen=True)
+class _PromotionPaymentBreakdown:
+    base_price: Decimal
+    gst: Decimal
+    total_charge: Decimal
+    price_per_day: Decimal
+    duration_days: int
+
+
+def _cents_to_decimal(value: int | Decimal) -> Decimal:
+    return (Decimal(value) / Decimal("100")).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
 def render_booking_receipt_pdf(booking: Booking) -> bytes:
@@ -164,6 +178,127 @@ def upload_booking_receipt_pdf(booking: Booking) -> Tuple[str, str, bytes]:
     return key, url, pdf_bytes
 
 
+def render_promotion_receipt_pdf(slot: PromotedSlot) -> bytes:
+    """
+    Render a PDF receipt for a promotion payment.
+    """
+    duration_days = _promotion_duration_days(slot)
+    breakdown = _PromotionPaymentBreakdown(
+        base_price=_cents_to_decimal(getattr(slot, "base_price_cents", 0)),
+        gst=_cents_to_decimal(getattr(slot, "gst_cents", 0)),
+        total_charge=_cents_to_decimal(getattr(slot, "total_price_cents", 0)),
+        price_per_day=_cents_to_decimal(getattr(slot, "price_per_day_cents", 0)),
+        duration_days=duration_days,
+    )
+
+    owner_name = _display_name(getattr(slot, "owner", None))
+    listing = getattr(slot, "listing", None)
+    listing_title = getattr(listing, "title", "Listing")
+    listing_city = getattr(listing, "city", "") or "N/A"
+
+    start_date = _local_date(getattr(slot, "starts_at", None))
+    end_date_exclusive = _local_date(getattr(slot, "ends_at", None))
+    inclusive_end = (end_date_exclusive - timedelta(days=1)) if end_date_exclusive else None
+
+    created_at = _local_date(getattr(slot, "created_at", None))
+    updated_at = _local_date(getattr(slot, "updated_at", None))
+    issued_display = _format_date(created_at)
+    payment_display = _format_date(updated_at)
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    pdf.setTitle("Promotion Payment Receipt")
+
+    width, height = letter
+    margin = 0.9 * inch
+    y = height - margin
+
+    business_name = "Renter"
+    business_email = "asterokamax@gmail.com"
+    receipt_id = getattr(slot, "id", None) or getattr(slot, "pk", None) or "N/A"
+
+    def new_section(title: str, *, spacing: float = 0.22) -> None:
+        nonlocal y
+        pdf.setFont("Helvetica-Bold", 13)
+        pdf.drawString(margin, y, title)
+        y -= spacing * inch
+
+    def draw_row(label: str, value: str, *, label_width: float = 2.0) -> None:
+        nonlocal y
+        pdf.setFont("Helvetica-Bold", 10)
+        pdf.drawString(margin, y, label)
+        pdf.setFont("Helvetica", 10)
+        pdf.drawString(margin + label_width * inch, y, value)
+        y -= 0.18 * inch
+
+    pdf.setStrokeColorRGB(0.85, 0.85, 0.85)
+    pdf.setFillColorRGB(0, 0, 0)
+
+    pdf.setFont("Helvetica-Bold", 22)
+    pdf.drawString(margin, y, business_name)
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(margin, y - 0.2 * inch, business_email)
+
+    header_x = width - margin - 2.6 * inch
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(header_x, y, f"Receipt No: {receipt_id}")
+    pdf.drawString(header_x, y - 0.18 * inch, f"Issued on: {issued_display}")
+    pdf.drawString(header_x, y - 0.36 * inch, f"Payment date: {payment_display}")
+    y -= 0.65 * inch
+
+    pdf.line(margin, y, width - margin, y)
+    y -= 0.25 * inch
+
+    new_section("Promotion", spacing=0.2)
+    draw_row("Listing", listing_title)
+    draw_row("Promotion window", _format_date_range(start_date, inclusive_end))
+    duration_display = f"{duration_days} days" if duration_days else "N/A"
+    draw_row("Total duration", duration_display)
+    draw_row("City", listing_city)
+    draw_row("Promotion ID", str(receipt_id))
+    y -= 0.1 * inch
+
+    new_section("Payment breakdown", spacing=0.2)
+    draw_row("Price per day", _format_currency(breakdown.price_per_day))
+    draw_row("Promotion price", _format_currency(breakdown.base_price))
+    draw_row("GST (5%)", _format_currency(breakdown.gst))
+    draw_row("Total charged", _format_currency(breakdown.total_charge))
+    y -= 0.1 * inch
+
+    new_section("Client", spacing=0.2)
+    owner_email = getattr(getattr(slot, "owner", None), "email", "") or "N/A"
+    draw_row("Name", owner_name)
+    draw_row("Email", owner_email)
+    y -= 0.1 * inch
+
+    pdf.showPage()
+    pdf.save()
+
+    return buffer.getvalue()
+
+
+def upload_promotion_receipt_pdf(slot: PromotedSlot) -> Tuple[str, str, bytes]:
+    """
+    Generate and upload a promotion receipt PDF to S3.
+
+    Returns a tuple of (key, url, pdf_bytes) for the uploaded file.
+    """
+    if not slot.id:
+        raise ValueError("Promotion slot must be persisted before generating a receipt.")
+
+    pdf_bytes = render_promotion_receipt_pdf(slot)
+    key = f"uploads/private/receipts/promotions/{slot.id}_promotion_receipt.pdf"
+
+    storage_s3._client().put_object(
+        Bucket=settings.AWS_STORAGE_BUCKET_NAME,
+        Key=key,
+        Body=pdf_bytes,
+        ContentType="application/pdf",
+    )
+    url = storage_s3.public_url(key)
+    return key, url, pdf_bytes
+
+
 def _extract_payment_breakdown(totals: Mapping[str, object]) -> _PaymentBreakdown:
     rent = _get_amount(totals, ("rental_subtotal",))
     service_fee = _get_amount(totals, ("renter_fee", "service_fee"))
@@ -224,6 +359,15 @@ def _display_name(user) -> str:
     return full_name
 
 
+def _local_date(value):
+    if not value:
+        return None
+    candidate = timezone.localtime(value) if timezone.is_aware(value) else value
+    if hasattr(candidate, "date"):
+        return candidate.date()
+    return None
+
+
 def _format_date_range(start: date | None, end: date | None) -> str:
     if not start and not end:
         return "N/A"
@@ -255,4 +399,20 @@ def _extract_duration_days(booking: Booking, totals: Mapping[str, object]) -> st
     return "N/A"
 
 
-__all__ = ["render_booking_receipt_pdf", "upload_booking_receipt_pdf"]
+def _promotion_duration_days(slot: PromotedSlot) -> int:
+    start = getattr(slot, "starts_at", None)
+    end = getattr(slot, "ends_at", None)
+    if start and end:
+        start_local = timezone.localtime(start) if timezone.is_aware(start) else start
+        end_local = timezone.localtime(end) if timezone.is_aware(end) else end
+        delta = (end_local - start_local).days
+        return max(delta, 1)
+    return 0
+
+
+__all__ = [
+    "render_booking_receipt_pdf",
+    "upload_booking_receipt_pdf",
+    "render_promotion_receipt_pdf",
+    "upload_promotion_receipt_pdf",
+]

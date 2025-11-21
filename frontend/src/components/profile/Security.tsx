@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { AlertCircle, CheckCircle2, Eye, EyeOff, Loader2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Eye, EyeOff, Loader2, IdCard } from "lucide-react";
 import { toast } from "sonner";
+import { loadStripe, type Stripe } from "@stripe/stripe-js";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
@@ -23,6 +24,9 @@ import {
   type JsonError,
   type TwoFactorChannel,
   type TwoFactorSettings,
+  identityAPI,
+  type IdentityVerificationStatus,
+  type IdentityStatusLatest,
 } from "@/lib/api";
 
 type ChangePasswordForm = {
@@ -168,6 +172,15 @@ export function Security() {
   const [loginHistory, setLoginHistory] = useState<LoginHistoryEntry[]>([]);
   const [loginHistoryLoading, setLoginHistoryLoading] = useState(true);
   const [loginHistoryError, setLoginHistoryError] = useState<string | null>(null);
+  const [identityStatus, setIdentityStatus] = useState<IdentityVerificationStatus | "none">(
+    "none",
+  );
+  const [identityLatest, setIdentityLatest] = useState<IdentityStatusLatest | null>(null);
+  const [identityInitialLoading, setIdentityInitialLoading] = useState<boolean>(true);
+  const [identityLoading, setIdentityLoading] = useState<boolean>(false);
+  const [identityError, setIdentityError] = useState<string | null>(null);
+  const [showKycFlow, setShowKycFlow] = useState(false);
+  const [stripe, setStripe] = useState<Stripe | null>(null);
   const phoneVerified = profile?.phone_verified ?? false;
   const emailVerified = profile?.email_verified ?? false;
   const switchesDisabled = twoFactorLoading || twoFactorSaving;
@@ -261,6 +274,68 @@ export function Security() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function initStripe() {
+      try {
+        const publishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY as
+          | string
+          | undefined;
+        if (!publishableKey) {
+          console.warn("Missing VITE_STRIPE_PUBLISHABLE_KEY for Stripe Identity.");
+          return;
+        }
+        const instance = await loadStripe(publishableKey);
+        if (!cancelled) {
+          setStripe(instance);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error("Failed to initialize Stripe:", error);
+        }
+      }
+    }
+
+    void initStripe();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const refreshIdentityStatus = useCallback(async () => {
+    setIdentityInitialLoading(true);
+    setIdentityLoading(true);
+    setIdentityError(null);
+    try {
+      const res = await identityAPI.status();
+      const latest = res.latest ?? null;
+      setIdentityLatest(latest);
+
+      if (res.verified) {
+        setIdentityStatus("verified");
+      } else if (latest?.status) {
+        setIdentityStatus(latest.status as IdentityVerificationStatus);
+      } else {
+        setIdentityStatus("none");
+      }
+    } catch (error) {
+      console.error("Unable to load identity status", error);
+      setIdentityError(
+        extractDetailMessage(error) ?? "Unable to load identity verification status.",
+      );
+      setIdentityStatus("none");
+    } finally {
+      setIdentityInitialLoading(false);
+      setIdentityLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshIdentityStatus();
+  }, [refreshIdentityStatus]);
 
   const persistTwoFactorSetting = async (
     channel: TwoFactorChannel,
@@ -416,16 +491,105 @@ export function Security() {
     }
   };
 
-  return (
-    <>
-      <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl">Security Settings</h1>
-        <p className="mt-2" style={{ color: "var(--text-muted)" }}>
-          Manage your password and security preferences
-        </p>
-      </div>
+  const renderIdentityStatusPill = () => {
+    if (identityInitialLoading) {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          Checking...
+        </span>
+      );
+    }
 
+    const baseClass =
+      "inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium";
+    switch (identityStatus) {
+      case "verified":
+        return (
+          <span
+            className={`${baseClass} bg-[var(--success-bg)] text-[var(--success-text)]`}
+          >
+            <CheckCircle2 className="h-3 w-3" />
+            Verified
+          </span>
+        );
+      case "pending":
+        return (
+          <span className={`${baseClass} bg-[var(--info-bg)] text-[var(--info-text)]`}>
+            <Loader2 className="h-3 w-3 animate-spin" />
+            In review
+          </span>
+        );
+      case "failed":
+      case "canceled":
+        return (
+          <span className={`${baseClass} bg-[var(--error-bg)] text-[var(--error-text)]`}>
+            <AlertCircle className="h-3 w-3" />
+            Needs attention
+          </span>
+        );
+      case "none":
+      default:
+        return (
+          <span className={`${baseClass} bg-muted text-muted-foreground`}>
+            Not verified
+          </span>
+        );
+    }
+  };
+
+  const handleStartIdentityVerification = async () => {
+    setIdentityError(null);
+    setIdentityLoading(true);
+
+    try {
+      const response = await identityAPI.start();
+
+      if (response.already_verified) {
+        toast.success("Your identity is already verified.");
+        await refreshIdentityStatus();
+        return;
+      }
+
+      if (!stripe) {
+        toast.error("Stripe is not ready yet. Please try again in a moment.");
+        return;
+      }
+
+      if (!response.client_secret) {
+        toast.error("Identity verification is temporarily unavailable.");
+        return;
+      }
+
+      const result: any = await stripe.verifyIdentity(response.client_secret);
+
+      if (result && result.error) {
+        const message =
+          result.error.message || "Identity verification was not completed.";
+        setIdentityError(message);
+        toast.error(message);
+      } else {
+        toast.success("Identity verification completed.");
+        await refreshIdentityStatus();
+      }
+    } catch (error) {
+      const message =
+        extractDetailMessage(error) ??
+        "Unable to start identity verification. Please try again.";
+      setIdentityError(message);
+      toast.error(message);
+    } finally {
+      setIdentityLoading(false);
+    }
+  };
+
+  const headerTitle = "Security Settings";
+  const headerSubtitle = showKycFlow
+    ? "Verify your identity to unlock higher limits and smoother bookings."
+    : "Manage your password and security preferences";
+
+  const renderDefaultSecurityContent = () => (
+    <>
       <Card>
         <CardHeader>
           <CardTitle>Change Password</CardTitle>
@@ -659,6 +823,72 @@ export function Security() {
       </Card>
 
       <Card>
+        <CardHeader className="flex flex-col gap-2 space-y-0 md:flex-row md:items-center md:justify-between">
+          <div>
+            <CardTitle>Identity Verification (KYC)</CardTitle>
+            <CardDescription>
+              Verify your government-issued ID to increase limits for booking days, deposits,
+              and replacement values.
+            </CardDescription>
+          </div>
+          {renderIdentityStatusPill()}
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {identityError && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{identityError}</AlertDescription>
+            </Alert>
+          )}
+          <p className="text-sm text-muted-foreground">
+            We use Stripe Identity to verify IDs and keep renters and owners protected.
+          </p>
+          <div className="space-y-3 text-sm text-muted-foreground">
+            <div className="flex items-start gap-3">
+              <CheckCircle2 className="h-4 w-4 text-[var(--success-text)]" />
+              <p>Only Stripe and our platform see your verification result.</p>
+            </div>
+            <div className="flex items-start gap-3">
+              <IdCard className="h-4 w-4 text-[var(--primary)]" />
+              <p>
+                You'll be asked to upload or take a picture of your government-issued ID
+                (driver's licence, passport, or ID card).
+              </p>
+            </div>
+          </div>
+          {identityLatest?.verified_at && (
+            <p className="text-xs text-muted-foreground">Last verified {identityLatest.verified_at}</p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
+              style={{ color: "var(--primary-foreground)" }}
+              disabled={identityInitialLoading || identityLoading}
+              onClick={() => setShowKycFlow(true)}
+            >
+              {identityStatus === "verified" ? "View KYC details" : "Verify identity"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void refreshIdentityStatus()}
+              disabled={identityInitialLoading || identityLoading}
+            >
+              {identityLoading ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Refreshing...
+                </>
+              ) : (
+                "Refresh status"
+              )}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardHeader>
           <CardTitle>Recent Login History</CardTitle>
           <CardDescription>Monitor your account activity</CardDescription>
@@ -699,6 +929,119 @@ export function Security() {
           </div>
         </CardContent>
       </Card>
+    </>
+  );
+
+  const renderKycContent = () => {
+    const formattedVerifiedAt =
+      identityLatest?.verified_at && !Number.isNaN(Date.parse(identityLatest.verified_at))
+        ? new Date(identityLatest.verified_at).toLocaleString("en-CA", {
+            dateStyle: "medium",
+            timeStyle: "short",
+          })
+        : null;
+
+    return (
+      <Card>
+        <CardHeader className="flex flex-col gap-2 space-y-0 md:flex-row md:items-center md:justify-between">
+          <div>
+            <CardTitle>Identity Verification (KYC)</CardTitle>
+            <CardDescription>
+              Complete a quick Stripe-powered identity check to unlock higher limits.
+            </CardDescription>
+          </div>
+          {renderIdentityStatusPill()}
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {identityError && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{identityError}</AlertDescription>
+            </Alert>
+          )}
+          <div className="grid gap-6 md:grid-cols-[2fr,3fr]">
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Stripe Identity validates your government-issued ID so we can reduce fraud and
+                safely raise your booking and listing limits.
+              </p>
+              <ul className="space-y-2 text-sm text-muted-foreground">
+                <li className="flex items-start gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-[var(--success-text)]" />
+                  <span>Keep the rentals community safe from fraud.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-[var(--success-text)]" />
+                  <span>Qualify for higher replacement values and deposits.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-[var(--success-text)]" />
+                  <span>Speed up approvals for last-minute bookings.</span>
+                </li>
+              </ul>
+              {formattedVerifiedAt && (
+                <p className="text-xs text-muted-foreground">Last verified {formattedVerifiedAt}</p>
+              )}
+            </div>
+            <div className="space-y-4">
+              <div className="space-y-3 rounded-lg border-2 border-dashed border-muted-foreground/40 bg-muted/30 p-4">
+                <p className="text-sm font-medium">What you'll be asked to do</p>
+                <ul className="space-y-2 text-sm text-muted-foreground">
+                  <li>Upload or take a live photo of your ID.</li>
+                  <li>Ensure your name and photo are clearly visible.</li>
+                  <li>You may be asked for a quick selfie for liveness.</li>
+                  <li>The check happens in a secure Stripe window.</li>
+                </ul>
+                <p className="text-xs text-muted-foreground">
+                  We don't store your document photos—Stripe shares only the verification result.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
+                  style={{ color: "var(--primary-foreground)" }}
+                  disabled={identityLoading || identityInitialLoading}
+                  onClick={handleStartIdentityVerification}
+                >
+                  {identityLoading ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Starting verification...
+                    </>
+                  ) : identityStatus === "verified" ? (
+                    "Re-run verification"
+                  ) : (
+                    "Start verification"
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setShowKycFlow(false)}
+                  disabled={identityLoading}
+                >
+                  Back to security settings
+                </Button>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  };
+
+  return (
+    <>
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl">{headerTitle}</h1>
+          <p className="mt-2" style={{ color: "var(--text-muted)" }}>
+            {headerSubtitle}
+          </p>
+        </div>
+
+        {showKycFlow ? renderKycContent() : renderDefaultSecurityContent()}
       </div>
 
       <Dialog open={confirmOpen} onOpenChange={handleConfirmDialogChange}>

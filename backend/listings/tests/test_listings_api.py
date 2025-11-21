@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -9,6 +10,7 @@ from rest_framework.test import APIClient
 from identity.models import IdentityVerification
 from listings.api import GEOCODE_ENDPOINT
 from listings.models import Category, Listing
+from promotions.models import PromotedSlot
 
 pytestmark = pytest.mark.django_db
 
@@ -403,6 +405,56 @@ def test_listing_list_and_filters(owner_user):
 
     city_resp = client.get("/api/listings/?city=calgary")
     assert {item["slug"] for item in city_resp.data["results"]} == {visible_outdoors.slug}
+
+
+def test_listing_feed_prioritizes_promoted_listings(owner_user):
+    promoted_listing = make_listing(owner_user, title="Old Promoted")
+    regular_listing = make_listing(owner_user, title="New Regular")
+
+    now = timezone.now()
+    Listing.objects.filter(id=promoted_listing.id).update(created_at=now - timedelta(days=5))
+    Listing.objects.filter(id=regular_listing.id).update(created_at=now)
+    promoted_listing.refresh_from_db()
+    regular_listing.refresh_from_db()
+
+    PromotedSlot.objects.create(
+        listing=promoted_listing,
+        owner=owner_user,
+        price_per_day_cents=1500,
+        total_price_cents=1500 * 7,
+        starts_at=now - timedelta(days=1),
+        ends_at=now + timedelta(days=7),
+        active=True,
+    )
+
+    client = APIClient()
+    resp = client.get("/api/listings/")
+    assert resp.status_code == 200
+
+    slugs = [item["slug"] for item in resp.data["results"]]
+    assert slugs[0] == promoted_listing.slug
+    assert slugs[1] == regular_listing.slug
+    assert resp.data["results"][0]["is_promoted"] is True
+    assert resp.data["results"][1]["is_promoted"] is False
+
+
+def test_listing_mine_returns_promoted_flag(owner_user):
+    listing = make_listing(owner_user, title="Owner Listing")
+    now = timezone.now()
+    PromotedSlot.objects.create(
+        listing=listing,
+        owner=owner_user,
+        price_per_day_cents=999,
+        total_price_cents=999 * 3,
+        starts_at=now - timedelta(hours=2),
+        ends_at=now + timedelta(days=3),
+        active=True,
+    )
+
+    client = auth(owner_user)
+    resp = client.get("/api/listings/mine/")
+    assert resp.status_code == 200
+    assert resp.data["results"][0]["is_promoted"] is True
 
 
 def test_listing_list_allows_invalid_bearer_token(owner_user):

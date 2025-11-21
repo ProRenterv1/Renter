@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import Optional, Sequence, Tuple
 
 from celery import shared_task
@@ -10,8 +11,9 @@ from django.contrib.auth import get_user_model
 from django.core.mail import EmailMultiAlternatives
 from django.template import TemplateDoesNotExist
 from django.template.loader import render_to_string
+from django.utils import timezone
 
-from payments.receipts import upload_booking_receipt_pdf
+from payments.receipts import upload_booking_receipt_pdf, upload_promotion_receipt_pdf
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -179,6 +181,13 @@ def _format_receipt_date(value: Optional[date]) -> str:
         return "N/A"
     # Use leading-zero-friendly format compatible with Windows/POSIX.
     return value.strftime("%b %d, %Y")
+
+
+def _local_date(value):
+    if not value:
+        return None
+    candidate = timezone.localtime(value) if timezone.is_aware(value) else value
+    return candidate.date() if hasattr(candidate, "date") else None
 
 
 def _format_booking_date_range(start: Optional[date], end_exclusive: Optional[date]):
@@ -475,6 +484,70 @@ def send_booking_payment_receipt_email(user_id: int, booking_id: int):
     _send_email(
         "Your rental payment receipt",
         "booking_payment_receipt.txt",
+        context,
+        user.email,
+        attachments=attachments or None,
+    )
+
+
+@shared_task(queue="emails")
+def send_promotion_payment_receipt_email(user_id: int, promotion_slot_id: int):
+    """Email the listing owner a receipt after a promotion payment."""
+    user = _get_user(user_id)
+    if not user or not getattr(user, "email", None):
+        return
+
+    try:
+        from promotions.models import PromotedSlot
+
+        slot = PromotedSlot.objects.select_related("listing", "owner").get(pk=promotion_slot_id)
+    except PromotedSlot.DoesNotExist:
+        logger.warning("notifications: promotion slot %s no longer exists", promotion_slot_id)
+        return
+
+    def _format_cents(value: int | Decimal | None) -> str:
+        return f"{(Decimal(value or 0) / Decimal('100')).quantize(Decimal('0.01'))}"
+
+    attachments: list[Attachment] = []
+    receipt_s3_key: str | None = None
+    try:
+        receipt_key, _, pdf_bytes = upload_promotion_receipt_pdf(slot)
+        receipt_s3_key = receipt_key
+        attachments.append((f"{slot.id}_promotion_receipt.pdf", pdf_bytes, "application/pdf"))
+    except Exception:
+        logger.exception(
+            "notifications: failed to generate/upload promotion receipt PDF for slot %s",
+            promotion_slot_id,
+        )
+
+    listing_title = getattr(slot.listing, "title", "your listing")
+    start_display, end_display, date_range_display = _format_booking_date_range(
+        _local_date(getattr(slot, "starts_at", None)),
+        _local_date(getattr(slot, "ends_at", None)),
+    )
+
+    start_date = _local_date(getattr(slot, "starts_at", None))
+    end_date_exclusive = _local_date(getattr(slot, "ends_at", None))
+    duration_days = 0
+    if start_date and end_date_exclusive:
+        duration_days = max((end_date_exclusive - start_date).days, 1)
+
+    context = {
+        "user": user,
+        "listing_title": listing_title,
+        "start_date_display": start_display,
+        "end_date_display": end_display,
+        "date_range_display": date_range_display,
+        "promotion_price": _format_cents(getattr(slot, "base_price_cents", 0)),
+        "gst_amount": _format_cents(getattr(slot, "gst_cents", 0)),
+        "price_per_day": _format_cents(getattr(slot, "price_per_day_cents", 0)),
+        "duration_days": duration_days,
+        "total_paid": _format_cents(getattr(slot, "total_price_cents", 0)),
+        "receipt_s3_key": receipt_s3_key,
+    }
+    _send_email(
+        "Your promotion payment receipt",
+        "promotion_payment_receipt.txt",
         context,
         user.email,
         attachments=attachments or None,

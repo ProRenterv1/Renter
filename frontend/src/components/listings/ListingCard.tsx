@@ -19,6 +19,7 @@ export function ListingCard({ listing, onClick, className }: ListingCardProps) {
   const hasValidPrice = Number.isFinite(priceNumber) && priceNumber > 0;
   const price = hasValidPrice ? `$${priceNumber}/day` : "On request";
   const primaryPhoto = listing.photos?.[0]?.url ?? FALLBACK_IMAGE;
+  const isPromoted = Boolean(listing.is_promoted);
 
   const handleClick = () => {
     onClick?.(listing);
@@ -34,6 +35,11 @@ export function ListingCard({ listing, onClick, className }: ListingCardProps) {
       onClick={handleClick}
     >
       <div className="relative h-48 overflow-hidden bg-muted">
+        {isPromoted && (
+          <span className="absolute left-3 top-3 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground shadow">
+            Promoted
+          </span>
+        )}
         <img
           src={primaryPhoto}
           alt={listing.title}

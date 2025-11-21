@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
@@ -16,8 +17,10 @@ from rest_framework.response import Response
 
 from bookings.models import Booking
 from identity.models import IdentityVerification
+from listings.models import Listing
 from payments.ledger import log_transaction
 from payments.models import OwnerPayoutAccount, Transaction
+from promotions.models import PromotedSlot
 
 logger = logging.getLogger(__name__)
 IDEMPOTENCY_VERSION = "v2"
@@ -202,6 +205,87 @@ def _get_frontend_origin() -> str:
     configured = (getattr(settings, "FRONTEND_ORIGIN", "") or "").strip()
     base = configured or "http://localhost:5173"
     return base.rstrip("/") or base
+
+
+def _promotion_checkout_urls(listing_id: int) -> tuple[str, str]:
+    """Return the success and cancel URLs for promotion checkout sessions."""
+    base_origin = _get_frontend_origin()
+    base_path = f"{base_origin}/owner/listings/{listing_id}/promotions"
+    success_url = f"{base_path}?status=success&session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{base_path}?status=cancel"
+    return success_url, cancel_url
+
+
+def create_promotion_checkout_session(
+    *,
+    owner: User,
+    listing: Listing,
+    amount_cents: int,
+    duration_days: int,
+    starts_at: datetime,
+    ends_at: datetime,
+) -> tuple[str, str]:
+    """Create a Stripe Checkout session used to buy a promoted listing slot."""
+    stripe.api_key = _get_stripe_api_key()
+    customer_id = ensure_stripe_customer(owner)
+
+    success_url, cancel_url = _promotion_checkout_urls(listing.id)
+    if amount_cents <= 0:
+        raise StripePaymentError("Promotion total price must be greater than zero.")
+
+    listing_title = (listing.title or "").strip()
+    product_name = f"Listing promotion ({duration_days} days)"
+    date_range_text = f"{starts_at.date().isoformat()} to {ends_at.date().isoformat()}"
+    description = (
+        f"{duration_days}-day promotion for listing {listing_title} ({date_range_text})"
+        if listing_title
+        else f"{duration_days}-day listing promotion ({date_range_text})"
+    )
+    metadata = {
+        "env": getattr(settings, "STRIPE_ENV", "dev") or "dev",
+        "kind": "promotion_slot",
+        "listing_id": str(listing.id),
+        "owner_id": str(owner.id),
+        "starts_at": starts_at.isoformat(),
+        "ends_at": ends_at.isoformat(),
+        "duration_days": str(duration_days),
+    }
+
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            customer=customer_id,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            client_reference_id=f"listing:{listing.id}:promotion",
+            metadata=metadata,
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": "cad",
+                        "unit_amount": amount_cents,
+                        "product_data": {
+                            "name": product_name,
+                            "description": description,
+                        },
+                    },
+                    "quantity": 1,
+                }
+            ],
+        )
+    except stripe.error.StripeError as exc:
+        _handle_stripe_error(exc)
+
+    session_id = getattr(session, "id", None)
+    if not session_id and hasattr(session, "get"):
+        session_id = session.get("id")
+    session_url = getattr(session, "url", None)
+    if not session_url and hasattr(session, "get"):
+        session_url = session.get("url")
+    if not session_id or not session_url:
+        raise StripeConfigurationError("Stripe did not return a checkout session URL.")
+
+    return session_id, session_url
 
 
 def create_connect_onboarding_link(user: User) -> str:
@@ -574,6 +658,46 @@ def _ensure_payment_method_for_customer(payment_method_id: str, customer_id: str
         _handle_stripe_error(exc)
 
 
+def charge_promotion_payment(
+    *,
+    owner: User,
+    amount_cents: int,
+    payment_method_id: str,
+    customer_id: str,
+    metadata: dict[str, str] | None = None,
+) -> str:
+    """Charge a promotion amount immediately using Stripe PaymentIntents."""
+    if amount_cents <= 0:
+        raise StripePaymentError("Promotion total must be greater than zero.")
+
+    stripe.api_key = _get_stripe_api_key()
+    _ensure_payment_method_for_customer(payment_method_id, customer_id)
+
+    metadata_payload = {
+        "env": getattr(settings, "STRIPE_ENV", "dev") or "dev",
+        "kind": "promotion_payment",
+        "owner_id": str(owner.id),
+    }
+    if metadata:
+        metadata_payload.update(metadata)
+
+    try:
+        intent = stripe.PaymentIntent.create(
+            amount=amount_cents,
+            currency="cad",
+            customer=customer_id,
+            payment_method=payment_method_id,
+            confirm=True,
+            off_session=False,
+            automatic_payment_methods={**AUTOMATIC_PAYMENT_METHODS_CONFIG},
+            metadata=metadata_payload,
+        )
+    except stripe.error.StripeError as exc:
+        _handle_stripe_error(exc)
+
+    return intent.id
+
+
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([])
@@ -628,6 +752,64 @@ def stripe_webhook(request):
 
     if event_type == "account.updated":
         _handle_connect_account_updated_event(data_object)
+        return Response(status=status.HTTP_200_OK)
+
+    if event_type == "checkout.session.completed":
+        session_metadata = metadata or {}
+        if session_metadata.get("kind") != "promotion_slot":
+            return Response(status=status.HTTP_200_OK)
+        session_id = data_object.get("id", "")
+        if not session_id:
+            logger.warning("stripe_webhook: promotion session missing id")
+            return Response(status=status.HTTP_200_OK)
+        slot = (
+            PromotedSlot.objects.filter(stripe_session_id=session_id)
+            .select_related("listing")
+            .first()
+        )
+        if slot is None:
+            logger.info("stripe_webhook: no promoted slot for session %s", session_id)
+            return Response(status=status.HTTP_200_OK)
+        if slot.active:
+            return Response(status=status.HTTP_200_OK)
+
+        updated_fields = ["active", "updated_at"]
+        current_tz = timezone.get_current_timezone()
+
+        if slot.starts_at is None:
+            start_value = session_metadata.get("starts_at")
+            if start_value:
+                try:
+                    parsed_start = datetime.fromisoformat(start_value)
+                    if parsed_start.tzinfo is None:
+                        parsed_start = timezone.make_aware(parsed_start, current_tz)
+                    else:
+                        parsed_start = parsed_start.astimezone(current_tz)
+                    slot.starts_at = parsed_start
+                except (TypeError, ValueError):
+                    slot.starts_at = timezone.now()
+            else:
+                slot.starts_at = timezone.now()
+            updated_fields.append("starts_at")
+
+        if slot.ends_at is None:
+            end_value = session_metadata.get("ends_at")
+            if end_value:
+                try:
+                    parsed_end = datetime.fromisoformat(end_value)
+                    if parsed_end.tzinfo is None:
+                        parsed_end = timezone.make_aware(parsed_end, current_tz)
+                    else:
+                        parsed_end = parsed_end.astimezone(current_tz)
+                    slot.ends_at = parsed_end
+                except (TypeError, ValueError):
+                    slot.ends_at = slot.starts_at + timedelta(days=1)
+            else:
+                slot.ends_at = slot.starts_at + timedelta(days=1)
+            updated_fields.append("ends_at")
+
+        slot.active = True
+        slot.save(update_fields=updated_fields)
         return Response(status=status.HTTP_200_OK)
 
     if event_type == "payment_intent.succeeded" and booking_id and kind == "booking_charge":

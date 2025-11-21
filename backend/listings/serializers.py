@@ -1,9 +1,11 @@
 from decimal import Decimal
 
 from django.conf import settings
+from django.utils import timezone
 from rest_framework import serializers
 
 from identity.models import is_user_identity_verified
+from promotions.models import PromotedSlot
 
 from .models import Category, Listing, ListingPhoto
 
@@ -79,6 +81,7 @@ class ListingSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
     category_name = serializers.ReadOnlyField(source="category.name")
+    is_promoted = serializers.SerializerMethodField()
 
     class Meta:
         model = Listing
@@ -101,6 +104,7 @@ class ListingSerializer(serializers.ModelSerializer):
             "is_active",
             "is_available",
             "photos",
+            "is_promoted",
             "created_at",
         ]
         read_only_fields = ["owner", "slug", "created_at"]
@@ -202,3 +206,10 @@ class ListingSerializer(serializers.ModelSerializer):
         if value is not None and value < 0:
             raise serializers.ValidationError("Damage deposit cannot be negative.")
         return value
+
+    def get_is_promoted(self, obj) -> bool:
+        annotated = getattr(obj, "is_promoted", None)
+        if annotated is not None:
+            return bool(annotated)
+        now = timezone.now()
+        return PromotedSlot.active_for_feed(now=now).filter(listing_id=obj.id).exists()

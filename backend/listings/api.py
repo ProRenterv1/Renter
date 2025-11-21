@@ -5,6 +5,7 @@ from functools import lru_cache
 import redis
 import requests
 from django.conf import settings
+from django.db.models import Exists, OuterRef
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
@@ -13,6 +14,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from promotions.models import PromotedSlot
 from storage.s3 import guess_content_type, object_key, presign_put, public_url
 from storage.tasks import scan_and_finalize_photo
 
@@ -268,7 +270,7 @@ class ListingViewSet(viewsets.ModelViewSet):
         except (TypeError, ValueError):
             owner_id = None
 
-        return search_listings(
+        qs = search_listings(
             qs=base_qs,
             q=q,
             price_min=price_min,
@@ -277,6 +279,9 @@ class ListingViewSet(viewsets.ModelViewSet):
             city=city,
             owner_id=owner_id,
         )
+        active_slots = PromotedSlot.active_for_feed().filter(listing_id=OuterRef("pk"))
+        qs = qs.annotate(is_promoted=Exists(active_slots))
+        return qs.order_by("-is_promoted", "-created_at")
 
     def perform_create(self, serializer):
         serializer.save()

@@ -127,6 +127,26 @@ export interface ContactVerificationVerifyResponse {
   profile: Profile;
 }
 
+export type IdentityVerificationStatus = "pending" | "verified" | "failed" | "canceled";
+
+export interface IdentityStartResponse {
+  session_id: string;
+  client_secret: string | null;
+  status: IdentityVerificationStatus | string;
+  already_verified: boolean;
+}
+
+export interface IdentityStatusLatest {
+  status: IdentityVerificationStatus | string;
+  session_id: string;
+  verified_at: string | null;
+}
+
+export interface IdentityStatusResponse {
+  verified: boolean;
+  latest: IdentityStatusLatest | null;
+}
+
 export interface PublicProfile {
   id: number;
   username: string;
@@ -188,6 +208,7 @@ export interface Listing {
   is_available: boolean;
   photos: ListingPhoto[];
   created_at: string;
+  is_promoted?: boolean;
 }
 
 export interface CreateListingPayload {
@@ -250,6 +271,37 @@ export interface ListingGeocodeResponse {
     region?: string | null;
   };
   cache_hit: boolean;
+}
+
+export interface PromotionPricingResponse {
+  price_per_day_cents: number;
+}
+
+export interface PromotionPaymentPayload {
+  listing_id: number;
+  promotion_start: string;
+  promotion_end: string;
+  base_price_cents: number;
+  gst_cents: number;
+  stripe_payment_method_id: string;
+  stripe_customer_id?: string;
+  save_payment_method?: boolean;
+}
+
+export interface PromotionSlot {
+  id: number;
+  listing_id: number;
+  starts_at: string;
+  ends_at: string;
+  price_per_day_cents: number;
+  total_price_cents: number;
+  duration_days: number;
+  base_price_cents: number;
+  gst_cents: number;
+}
+
+export interface PromotionPaymentResponse {
+  slot: PromotionSlot;
 }
 
 export type BookingStatus = "requested" | "confirmed" | "paid" | "canceled" | "completed";
@@ -813,6 +865,34 @@ export const bookingsAPI = {
   confirmPickup(id: number) {
     return jsonFetch<Booking>(`/bookings/${id}/confirm-pickup/`, {
       method: "POST",
+    });
+  },
+};
+
+export const promotionsAPI = {
+  fetchPromotionPricing(listingId: number) {
+    const search = new URLSearchParams({ listing_id: String(listingId) }).toString();
+    return jsonFetch<PromotionPricingResponse>(`/promotions/pricing/?${search}`, {
+      method: "GET",
+    });
+  },
+  payPromotion(payload: PromotionPaymentPayload) {
+    return jsonFetch<PromotionPaymentResponse>("/promotions/pay/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+};
+
+export const identityAPI = {
+  start() {
+    return jsonFetch<IdentityStartResponse>("/identity/start/", {
+      method: "POST",
+    });
+  },
+  status() {
+    return jsonFetch<IdentityStatusResponse>("/identity/status/", {
+      method: "GET",
     });
   },
 };
