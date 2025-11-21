@@ -84,6 +84,19 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
     }
   }, [conversation?.messages.length]);
 
+  const lastUserMessageId = useMemo(() => {
+    if (!conversation?.messages.length) {
+      return null;
+    }
+    for (let i = conversation.messages.length - 1; i >= 0; i -= 1) {
+      const msg = conversation.messages[i];
+      if (msg.message_type === "user") {
+        return msg.id;
+      }
+    }
+    return null;
+  }, [conversation?.messages]);
+
   const handleSend = async () => {
     const text = input.trim();
     if (!text || chatClosed) {
@@ -312,23 +325,53 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
             );
           }
 
+<<<<<<< HEAD
+=======
+<<<<<<< Updated upstream
+=======
+>>>>>>> 1218fb0 (feat(char): read status)
           const participant = getParticipantForMessage(isMine);
           const bubbleClass = isMine
             ? "bg-emerald-500/90 text-emerald-50 shadow-sm"
             : "bg-card text-foreground border border-border shadow-sm";
           const timeClass = isMine ? "text-emerald-50/80" : "text-muted-foreground";
+<<<<<<< HEAD
 
+=======
+          const isLastUserMessage = msg.id === lastUserMessageId;
+          const statusLabel =
+            isLastUserMessage && isMine ? (msg.is_read ? "Read" : "Sent") : null;
+
+>>>>>>> Stashed changes
+>>>>>>> 1218fb0 (feat(char): read status)
           return (
             <div
               key={msg.id}
               className="flex w-full items-end gap-3"
             >
+<<<<<<< HEAD
+=======
+<<<<<<< Updated upstream
+              {!isMine && sentAt ? (
+                <span className="text-[10px] text-muted-foreground">{sentAt}</span>
+              ) : null}
+              <div
+                className={`max-w-[70%] rounded-2xl px-3 py-2 text-sm ${
+                  isMine
+                    ? "bg-primary text-primary-foreground"
+                    : "border border-border bg-card text-foreground"
+                }`}
+              >
+                <p>{msg.text}</p>
+=======
+>>>>>>> 1218fb0 (feat(char): read status)
               <Avatar className="h-10 w-10">
                 {participant.avatarUrl ? (
                   <AvatarImage src={participant.avatarUrl} alt={participant.name} />
                 ) : null}
                 <AvatarFallback>{getInitials(participant.name)}</AvatarFallback>
               </Avatar>
+<<<<<<< HEAD
               <div className={`max-w-[75%] rounded-3xl px-4 py-2 text-sm ${bubbleClass}`}>
                 {sentAt ? (
                   <p className="flex items-end gap-2 whitespace-pre-wrap break-words max-w-[40ch]">
@@ -340,6 +383,27 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
                 ) : (
                   <p className="whitespace-pre-wrap break-words max-w-[40ch]">{msg.text}</p>
                 )}
+=======
+              <div className="flex flex-1 flex-col">
+                <div className={`max-w-[75%] rounded-3xl px-4 py-2 text-sm ${bubbleClass}`}>
+                  {sentAt ? (
+                    <p className="flex items-end gap-2 whitespace-pre-wrap break-words max-w-[40ch]">
+                      <span className="flex-1 break-words">{msg.text}</span>
+                      <span className={`shrink-0 text-[10px] leading-tight ${timeClass}`}>
+                        {sentAt}
+                      </span>
+                    </p>
+                  ) : (
+                    <p className="whitespace-pre-wrap break-words max-w-[40ch]">{msg.text}</p>
+                  )}
+                </div>
+                {statusLabel ? (
+                  <span className={`mt-1 text-[10px] leading-tight ${timeClass}`}>
+                    {statusLabel}
+                  </span>
+                ) : null}
+>>>>>>> Stashed changes
+>>>>>>> 1218fb0 (feat(char): read status)
               </div>
             </div>
           );
