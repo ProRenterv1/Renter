@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     "bookings.apps.BookingsConfig",
     "payments.apps.PaymentsConfig",
     "chat.apps.ChatConfig",
+    "identity",
     "users",
     "listings",
     "storage",
@@ -207,3 +208,10 @@ BOOKING_OWNER_FEE_RATE = Decimal(
 STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY", default="")
 STRIPE_ENV = env("STRIPE_ENV", default="dev")
 STRIPE_PUBLISHABLE_KEY = env("STRIPE_PUBLISHABLE_KEY", default="")
+
+# --- Identity / verification limits ---
+UNVERIFIED_MAX_REPLACEMENT_CAD = Decimal(
+    env("UNVERIFIED_MAX_REPLACEMENT_CAD", default="1000")
+)
+UNVERIFIED_MAX_DEPOSIT_CAD = Decimal(env("UNVERIFIED_MAX_DEPOSIT_CAD", default="700"))
+UNVERIFIED_MAX_BOOKING_DAYS = env.int("UNVERIFIED_MAX_BOOKING_DAYS", default=3)

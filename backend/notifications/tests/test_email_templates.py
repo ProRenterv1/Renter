@@ -95,6 +95,7 @@ def test_booking_request_email_has_html_and_button(settings, owner, renter, book
     assert f'href="{cta_url}"' in html_body
     assert "Review booking request" in html_body
     assert settings.SITE_PRIMARY_COLOR.lower() in html_body.lower()
+    assert tasks.CHECK_ID_MESSAGE in html_body
 
 
 @pytest.mark.django_db

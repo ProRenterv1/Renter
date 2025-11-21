@@ -31,6 +31,21 @@ EXPECTED_TOTAL_KEYS = {
     "damage_deposit",
     "total_charge",
 }
+CURRENCY_QUANTIZE = Decimal("0.01")
+
+
+def _format_currency(value: Decimal | str | float | int) -> str:
+    return f"${Decimal(value).quantize(CURRENCY_QUANTIZE)}"
+
+
+def booking_limit_error_message(settings) -> str:
+    return (
+        "This booking is only available to users with ID verification. "
+        "Unverified profiles are limited to tools up to "
+        f"{_format_currency(settings.UNVERIFIED_MAX_REPLACEMENT_CAD)} replacement value, "
+        f"{_format_currency(settings.UNVERIFIED_MAX_DEPOSIT_CAD)} damage deposit, "
+        f"and rentals up to {settings.UNVERIFIED_MAX_BOOKING_DAYS} days."
+    )
 
 
 def auth(user):
@@ -65,6 +80,61 @@ def test_create_booking_success(renter_user, listing):
     assert resp.data["owner"] == listing.owner_id
     assert resp.data["renter"] == renter_user.id
     assert EXPECTED_TOTAL_KEYS <= set(resp.data["totals"].keys())
+
+
+def test_booking_blocked_for_unverified_high_replacement(unverified_renter_user, listing, settings):
+    listing.replacement_value_cad = settings.UNVERIFIED_MAX_REPLACEMENT_CAD + Decimal("100.00")
+    listing.save(update_fields=["replacement_value_cad"])
+    client = auth(unverified_renter_user)
+    start = date.today() + timedelta(days=1)
+    end = start + timedelta(days=2)
+
+    resp = client.post("/api/bookings/", booking_payload(listing, start, end), format="json")
+
+    assert resp.status_code == 400
+    assert resp.data["non_field_errors"][0] == booking_limit_error_message(settings)
+
+
+def test_booking_blocked_for_unverified_high_deposit(unverified_renter_user, listing, settings):
+    listing.replacement_value_cad = Decimal("500.00")
+    listing.damage_deposit_cad = Decimal("850.00")
+    listing.save(update_fields=["replacement_value_cad", "damage_deposit_cad"])
+    client = auth(unverified_renter_user)
+    start = date.today() + timedelta(days=1)
+    end = start + timedelta(days=2)
+
+    resp = client.post("/api/bookings/", booking_payload(listing, start, end), format="json")
+
+    assert resp.status_code == 400
+    assert resp.data["non_field_errors"][0] == booking_limit_error_message(settings)
+
+
+def test_booking_blocked_for_unverified_excessive_days(unverified_renter_user, listing, settings):
+    listing.replacement_value_cad = Decimal("500.00")
+    listing.damage_deposit_cad = Decimal("100.00")
+    listing.save(update_fields=["replacement_value_cad", "damage_deposit_cad"])
+    client = auth(unverified_renter_user)
+    start = date.today() + timedelta(days=1)
+    end = start + timedelta(days=settings.UNVERIFIED_MAX_BOOKING_DAYS + 1)
+
+    resp = client.post("/api/bookings/", booking_payload(listing, start, end), format="json")
+
+    assert resp.status_code == 400
+    assert resp.data["non_field_errors"][0] == booking_limit_error_message(settings)
+
+
+def test_verified_user_can_book_high_value_listing(renter_user, listing, settings):
+    listing.replacement_value_cad = Decimal("2000.00")
+    listing.damage_deposit_cad = Decimal("900.00")
+    listing.save(update_fields=["replacement_value_cad", "damage_deposit_cad"])
+    client = auth(renter_user)
+    start = date.today() + timedelta(days=1)
+    end = start + timedelta(days=settings.UNVERIFIED_MAX_BOOKING_DAYS + 2)
+
+    resp = client.post("/api/bookings/", booking_payload(listing, start, end), format="json")
+
+    assert resp.status_code == 201, resp.data
+    assert resp.data["status"] == Booking.Status.REQUESTED
 
 
 @pytest.mark.parametrize(

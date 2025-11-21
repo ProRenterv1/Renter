@@ -8,11 +8,11 @@ from decimal import Decimal
 import pytest
 from rest_framework.test import APIClient
 
+from backend.payments.stripe_api import StripeConfigurationError, StripeTransientError
 from bookings.models import Booking
 from payments import api as payments_api
 from payments.ledger import log_transaction
 from payments.models import OwnerPayoutAccount, Transaction
-from payments.stripe_api import StripeConfigurationError, StripeTransientError
 
 pytestmark = pytest.mark.django_db
 

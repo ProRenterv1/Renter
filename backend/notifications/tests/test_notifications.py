@@ -111,6 +111,7 @@ def test_send_booking_request_email_includes_details(settings):
     assert settings.FRONTEND_ORIGIN in body
     assert date_format(start, use_l10n=True) in body
     assert date_format(end, use_l10n=True) in body
+    assert tasks.CHECK_ID_MESSAGE in body
 
 
 @pytest.mark.django_db

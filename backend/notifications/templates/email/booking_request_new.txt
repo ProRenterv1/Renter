@@ -6,5 +6,7 @@ Dates: {{ start_date }} to {{ end_date }}
 {% if renter_full_name %}Renter: {{ renter_full_name }}{% elif renter %}Renter: {{ renter.first_name }} {{ renter.last_name }}{% endif %}
 You can earn: ${{ totals.owner_payout|default:totals.rental_subtotal|default:"0.00" }}
 
+{{ check_id_message|safe }}
+
 Review booking request:
 {{ cta_url }}

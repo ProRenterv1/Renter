@@ -4,9 +4,9 @@ from decimal import Decimal
 import pytest
 from django.contrib.auth import get_user_model
 
+from backend.payments import stripe_api as stripe_api
 from bookings.models import Booking
 from listings.models import Listing
-from payments import stripe_api
 from payments.models import Transaction
 
 pytestmark = pytest.mark.django_db
