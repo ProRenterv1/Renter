@@ -40,6 +40,7 @@ class BookingSerializer(serializers.ModelSerializer):
     listing_owner_first_name = serializers.ReadOnlyField(source="listing.owner.first_name")
     listing_owner_last_name = serializers.ReadOnlyField(source="listing.owner.last_name")
     listing_owner_username = serializers.ReadOnlyField(source="listing.owner.username")
+    listing_owner_avatar_url = serializers.ReadOnlyField(source="listing.owner.avatar_url")
     listing_slug = serializers.ReadOnlyField(source="listing.slug")
     listing_primary_photo_url = serializers.SerializerMethodField()
     status_label = serializers.SerializerMethodField()
@@ -74,6 +75,7 @@ class BookingSerializer(serializers.ModelSerializer):
             "listing_owner_first_name",
             "listing_owner_last_name",
             "listing_owner_username",
+            "listing_owner_avatar_url",
             "listing_slug",
             "listing_primary_photo_url",
             "owner",

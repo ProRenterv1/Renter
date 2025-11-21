@@ -206,10 +206,15 @@ class BookingViewSet(viewsets.ModelViewSet):
             status=Booking.Status.CONFIRMED,
         ).only("id", "charge_payment_intent_id")
         unpaid_total = sum(1 for booking in unpaid_confirmed if is_pre_payment(booking))
+        renter_unpaid_total = Booking.objects.filter(
+            renter=user,
+            status=Booking.Status.CONFIRMED,
+        ).count()
         return Response(
             {
                 "pending_requests": pending_total,
                 "unpaid_bookings": unpaid_total,
+                "renter_unpaid_bookings": renter_unpaid_total,
             },
             status=status.HTTP_200_OK,
         )

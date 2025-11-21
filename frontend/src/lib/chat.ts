@@ -45,6 +45,7 @@ export interface ConversationSummary {
   booking_id: number;
   listing_title: string;
   other_party_name: string;
+  other_party_avatar_url?: string | null;
   is_active: boolean;
   last_message: {
     id: number;

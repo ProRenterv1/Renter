@@ -14,6 +14,7 @@ class ConversationSerializer(serializers.ModelSerializer):
     booking_id = serializers.IntegerField(source="booking.id", read_only=True)
     listing_title = serializers.CharField(source="booking.listing.title", read_only=True)
     other_party_name = serializers.SerializerMethodField()
+    other_party_avatar_url = serializers.SerializerMethodField()
     last_message = serializers.SerializerMethodField()
     last_message_at = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
@@ -26,21 +27,29 @@ class ConversationSerializer(serializers.ModelSerializer):
             "listing_title",
             "other_party_name",
             "is_active",
+            "other_party_avatar_url",
             "last_message",
             "last_message_at",
             "unread_count",
         ]
 
-    def get_other_party_name(self, obj: Conversation) -> str:
+    def _get_other_party(self, obj: Conversation):
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        other = obj.owner if user and obj.renter_id == user.id else obj.renter
+        return obj.owner if user and obj.renter_id == user.id else obj.renter
+
+    def get_other_party_name(self, obj: Conversation) -> str:
+        other = self._get_other_party(obj)
         name_callable = getattr(other, "get_full_name", None)
         if callable(name_callable):
             name = name_callable()
             if name:
                 return name
         return getattr(other, "email", None) or getattr(other, "username", "")
+
+    def get_other_party_avatar_url(self, obj: Conversation):
+        other = self._get_other_party(obj)
+        return getattr(other, "avatar_url", None)
 
     def _get_last_message(self, obj: Conversation) -> Message | None:
         if hasattr(obj, "_last_message_cache"):

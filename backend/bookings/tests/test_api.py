@@ -715,6 +715,35 @@ def test_pending_requests_count_reports_unpaid_confirmed_bookings(
     assert resp.data["unpaid_bookings"] == 2
 
 
+def test_pending_requests_count_reports_renter_unpaid_bookings(
+    booking_factory,
+    renter_user,
+    owner_user,
+):
+    start = date.today() + timedelta(days=5)
+    booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.CONFIRMED,
+        renter=renter_user,
+        owner=owner_user,
+    )
+    booking_factory(
+        start_date=start + timedelta(days=4),
+        end_date=start + timedelta(days=5),
+        status=Booking.Status.PAID,
+        renter=renter_user,
+        owner=owner_user,
+    )
+
+    client = auth(renter_user)
+    resp = client.get("/api/bookings/pending-requests-count/")
+    assert resp.status_code == 200
+    assert resp.data["pending_requests"] == 0
+    assert resp.data["unpaid_bookings"] == 0
+    assert resp.data["renter_unpaid_bookings"] == 1
+
+
 def test_pending_requests_count_ignores_unpaid_bookings_for_other_owners(
     owner_user,
     other_user,
