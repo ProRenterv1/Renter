@@ -279,6 +279,7 @@ export interface Booking {
   listing_owner_first_name?: string | null;
   listing_owner_last_name?: string | null;
   listing_owner_username?: string | null;
+  listing_owner_avatar_url?: string | null;
   listing_primary_photo_url?: string | null;
   owner: number;
   renter: number;
@@ -305,6 +306,7 @@ export interface BookingAvailabilityRange {
 export interface PendingRequestsCountResponse {
   pending_requests: number;
   unpaid_bookings: number;
+  renter_unpaid_bookings?: number;
 }
 
 export type RentalDirection = "earned" | "spent";

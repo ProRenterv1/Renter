@@ -45,6 +45,7 @@ export interface ConversationSummary {
   booking_id: number;
   listing_title: string;
   other_party_name: string;
+  other_party_avatar_url?: string | null;
   is_active: boolean;
   last_message: {
     id: number;
@@ -75,6 +76,7 @@ export interface ChatEventPayload {
     sender?: number | null;
     sender_id?: number | null;
     sender_is_me?: boolean;
+    is_read?: boolean;
     message_type: "user" | "system";
     system_kind: string | null;
     text: string;
@@ -123,6 +125,7 @@ function normalizeEventMessage(message: ChatEventPayload["message"]): ChatMessag
     system_kind: message.system_kind ?? null,
     text: message.text ?? "",
     created_at: message.created_at,
+    is_read: typeof message.is_read === "boolean" ? message.is_read : undefined,
   };
 }
 

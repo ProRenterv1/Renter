@@ -84,6 +84,19 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
     }
   }, [conversation?.messages.length]);
 
+  const lastUserMessageId = useMemo(() => {
+    if (!conversation?.messages.length) {
+      return null;
+    }
+    for (let i = conversation.messages.length - 1; i >= 0; i -= 1) {
+      const msg = conversation.messages[i];
+      if (msg.message_type === "user") {
+        return msg.id;
+      }
+    }
+    return null;
+  }, [conversation?.messages]);
+
   const handleSend = async () => {
     const text = input.trim();
     if (!text || chatClosed) {
@@ -118,24 +131,24 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
       [booking.renter_first_name, booking.renter_last_name].filter(Boolean).join(" ") ||
       booking.renter_username ||
       "Renter";
-    const ownerName =
-      [booking.listing_owner_first_name, booking.listing_owner_last_name]
-        .filter(Boolean)
-        .join(" ") ||
-      booking.listing_owner_username ||
-      "Owner";
-    return {
-      renter: {
-        id: booking.renter,
-        name: renterName,
-        avatarUrl: booking.renter_avatar_url ?? null,
-      },
-      owner: {
-        id: booking.owner,
-        name: ownerName,
-        avatarUrl: null,
-      },
-    };
+      const ownerName =
+        [booking.listing_owner_first_name, booking.listing_owner_last_name]
+          .filter(Boolean)
+          .join(" ") ||
+        booking.listing_owner_username ||
+        "Owner";
+      return {
+        renter: {
+          id: booking.renter,
+          name: renterName,
+          avatarUrl: booking.renter_avatar_url ?? null,
+        },
+        owner: {
+          id: booking.owner,
+          name: ownerName,
+          avatarUrl: booking.listing_owner_avatar_url ?? null,
+        },
+      };
   }, [conversation]);
 
   const getParticipantForMessage = useCallback(
@@ -317,29 +330,41 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
             ? "bg-emerald-500/90 text-emerald-50 shadow-sm"
             : "bg-card text-foreground border border-border shadow-sm";
           const timeClass = isMine ? "text-emerald-50/80" : "text-muted-foreground";
+          const isLastUserMessage = msg.id === lastUserMessageId;
+          const statusLabel =
+            isLastUserMessage && isMine ? (msg.is_read === true ? "Read" : "Sent") : null;
+          const statusTextClass = isMine ? "text-emerald-700" : "text-muted-foreground/80";
 
           return (
-            <div
-              key={msg.id}
-              className="flex w-full items-end gap-3"
-            >
-              <Avatar className="h-10 w-10">
+            <div key={msg.id} className="flex w-full items-start gap-3">
+              <Avatar className="h-10 w-10 shrink-0">
                 {participant.avatarUrl ? (
                   <AvatarImage src={participant.avatarUrl} alt={participant.name} />
                 ) : null}
                 <AvatarFallback>{getInitials(participant.name)}</AvatarFallback>
               </Avatar>
-              <div className={`max-w-[75%] rounded-3xl px-4 py-2 text-sm ${bubbleClass}`}>
-                {sentAt ? (
-                  <p className="flex items-end gap-2 whitespace-pre-wrap break-words max-w-[40ch]">
-                    <span className="flex-1 break-words">{msg.text}</span>
-                    <span className={`shrink-0 text-[10px] leading-tight ${timeClass}`}>
-                      {sentAt}
-                    </span>
-                  </p>
-                ) : (
-                  <p className="whitespace-pre-wrap break-words max-w-[40ch]">{msg.text}</p>
-                )}
+              <div className="relative flex flex-col">
+                <div
+                  className={`w-fit min-w-[7.5rem] max-w-[75%] rounded-3xl px-5 py-2 text-sm ${bubbleClass}`}
+                >
+                  {sentAt ? (
+                    <p className="flex items-end gap-2 whitespace-pre-wrap break-words max-w-[40ch]">
+                      <span className="flex-1 break-words">{msg.text}</span>
+                      <span className={`shrink-0 text-[10px] leading-tight ${timeClass}`}>
+                        {sentAt}
+                      </span>
+                    </p>
+                  ) : (
+                    <p className="whitespace-pre-wrap break-words max-w-[40ch]">{msg.text}</p>
+                  )}
+                </div>
+                {statusLabel ? (
+                  <span
+                    className={`absolute top-full mt-1 text-[10px] leading-tight ${statusTextClass} right-0 text-right`}
+                  >
+                    {statusLabel}
+                  </span>
+                ) : null}
               </div>
             </div>
           );

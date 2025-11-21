@@ -3,7 +3,7 @@ import { Search } from "lucide-react";
 
 import ChatMessages from "@/components/chat/Messages";
 import { Header } from "@/components/Header";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -260,6 +260,12 @@ export default function MessagesPage() {
                 >
                   <div className="flex items-center gap-3">
                     <Avatar className="h-10 w-10">
+                      {conversation.other_party_avatar_url ? (
+                        <AvatarImage
+                          src={conversation.other_party_avatar_url}
+                          alt={conversation.other_party_name}
+                        />
+                      ) : null}
                       <AvatarFallback>{getInitials(conversation.other_party_name)}</AvatarFallback>
                     </Avatar>
                     <div className="flex-1">

@@ -85,40 +85,43 @@ export default function UserProfile() {
   useEffect(() => {
     if (!profile?.id) {
       setPendingBookingCount(0);
+      setUnpaidRentalsCount(0);
       return;
     }
 
     let subscribed = true;
     const POLL_INTERVAL_MS = 15000;
 
-    const fetchPendingCount = async () => {
+    const fetchSidebarCounters = async () => {
       try {
         const response = await bookingsAPI.pendingRequestsCount();
         if (!subscribed) {
           return;
         }
-        const nextCount = Number(response.pending_requests ?? 0);
-        setPendingBookingCount((current) => (current === nextCount ? current : nextCount));
+        const nextPendingCount = Number(response.pending_requests ?? 0);
+        const nextUnpaidCount = Number(
+          response.renter_unpaid_bookings ?? response.unpaid_bookings ?? 0,
+        );
+        setPendingBookingCount((current) =>
+          current === nextPendingCount ? current : nextPendingCount,
+        );
+        setUnpaidRentalsCount((current) =>
+          current === nextUnpaidCount ? current : nextUnpaidCount,
+        );
       } catch (error) {
         if (import.meta.env.DEV) {
-          console.warn("Failed to fetch pending booking count", error);
+          console.warn("Failed to fetch booking sidebar counters", error);
         }
       }
     };
 
-    fetchPendingCount();
-    const intervalId = window.setInterval(fetchPendingCount, POLL_INTERVAL_MS);
+    fetchSidebarCounters();
+    const intervalId = window.setInterval(fetchSidebarCounters, POLL_INTERVAL_MS);
 
     return () => {
       subscribed = false;
       window.clearInterval(intervalId);
     };
-  }, [profile?.id]);
-
-  useEffect(() => {
-    if (!profile?.id) {
-      setUnpaidRentalsCount(0);
-    }
   }, [profile?.id]);
 
   const handleListingSelected = (listing: Listing) => {
