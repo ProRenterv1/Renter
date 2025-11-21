@@ -33,6 +33,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Star } from "lucide-react";
 import { format } from "date-fns";
@@ -738,6 +739,15 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                     {getBookingStatusBadge(selectedRequest.booking)}
                   </div>
                   <div className="h-px bg-border" />
+                  {selectedRequest.booking.status === "paid" && (
+                    <Alert className="mt-4 border-primary/30 bg-primary/5">
+                      <AlertTitle>At pickup</AlertTitle>
+                      <AlertDescription>
+                        Before handing over the tool, please check that the renter&apos;s government ID matches
+                        their profile name.
+                      </AlertDescription>
+                    </Alert>
+                  )}
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-muted-foreground">Rental amount (days × rate)</span>

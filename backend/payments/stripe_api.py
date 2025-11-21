@@ -15,6 +15,7 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 from rest_framework.response import Response
 
 from bookings.models import Booking
+from identity.models import IdentityVerification
 from payments.ledger import log_transaction
 from payments.models import OwnerPayoutAccount, Transaction
 
@@ -598,6 +599,32 @@ def stripe_webhook(request):
     metadata = data_object.get("metadata") or {}
     booking_id = metadata.get("booking_id")
     kind = metadata.get("kind")
+
+    if event_type == "identity.verification_session.verified":
+        user_id = metadata.get("user_id")
+        session_id = data_object.get("id")
+        if not user_id or not session_id:
+            return Response(status=status.HTTP_200_OK)
+        try:
+            user = User.objects.get(pk=int(user_id))
+        except (User.DoesNotExist, ValueError, TypeError):
+            return Response(status=status.HTTP_200_OK)
+
+        IdentityVerification.objects.update_or_create(
+            user=user,
+            session_id=session_id,
+            defaults={
+                "status": IdentityVerification.Status.VERIFIED,
+                "verified_at": timezone.now(),
+                "last_error_code": "",
+                "last_error_reason": "",
+            },
+        )
+        logger.info(
+            "Stripe identity session verified",
+            extra={"user_id": user.id, "session_id": session_id},
+        )
+        return Response(status=status.HTTP_200_OK)
 
     if event_type == "account.updated":
         _handle_connect_account_updated_event(data_object)

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from typing import Any
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
+from identity.models import is_user_identity_verified
 from listings.models import Listing, ListingPhoto
 from listings.services import compute_booking_totals
 from notifications import tasks as notification_tasks
@@ -22,6 +25,16 @@ from .domain import ensure_no_conflict, validate_booking_dates
 from .models import Booking
 
 logger = logging.getLogger(__name__)
+CURRENCY_QUANTIZE = Decimal("0.01")
+
+
+def _format_currency(amount: Decimal | None) -> str:
+    """Return a normalized currency string for limit messaging."""
+    if amount is None:
+        amount = Decimal("0")
+    if not isinstance(amount, Decimal):
+        amount = Decimal(str(amount))
+    return f"${amount.quantize(CURRENCY_QUANTIZE)}"
 
 
 class BookingSerializer(serializers.ModelSerializer):
@@ -147,6 +160,25 @@ class BookingSerializer(serializers.ModelSerializer):
                     ]
                 }
             )
+
+        if listing and start_date and end_date and not is_user_identity_verified(user):
+            rental_days = (end_date - start_date).days
+            max_repl = settings.UNVERIFIED_MAX_REPLACEMENT_CAD
+            max_dep = settings.UNVERIFIED_MAX_DEPOSIT_CAD
+            max_days = settings.UNVERIFIED_MAX_BOOKING_DAYS
+
+            replacement = listing.replacement_value_cad or Decimal("0")
+            deposit = listing.damage_deposit_cad or Decimal("0")
+
+            if replacement > max_repl or deposit > max_dep or rental_days > max_days:
+                message = (
+                    "This booking is only available to users with ID verification. "
+                    "Unverified profiles are limited to tools up to "
+                    f"{_format_currency(max_repl)} replacement value, "
+                    f"{_format_currency(max_dep)} damage deposit, "
+                    f"and rentals up to {max_days} days."
+                )
+                raise serializers.ValidationError({"non_field_errors": [message]})
 
         if listing and listing.owner_id == user.id:
             raise serializers.ValidationError(

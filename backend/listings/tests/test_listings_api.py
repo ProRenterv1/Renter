@@ -3,14 +3,17 @@ from decimal import Decimal
 import pytest
 import responses
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from rest_framework.test import APIClient
 
+from identity.models import IdentityVerification
 from listings.api import GEOCODE_ENDPOINT
 from listings.models import Category, Listing
 
 pytestmark = pytest.mark.django_db
 
 User = get_user_model()
+CURRENCY_QUANTIZE = Decimal("0.01")
 
 
 class DummyRedis:
@@ -37,6 +40,28 @@ def auth(user):
     token = token_resp.data["access"]
     client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
     return client
+
+
+def _format_currency(value: Decimal | str | float | int) -> str:
+    return f"${Decimal(value).quantize(CURRENCY_QUANTIZE)}"
+
+
+def listing_limit_error_message(settings) -> str:
+    return (
+        "To list tools with higher replacement value or damage deposit, please complete "
+        "ID verification. Unverified owners are limited to "
+        f"{_format_currency(settings.UNVERIFIED_MAX_REPLACEMENT_CAD)} replacement and "
+        f"{_format_currency(settings.UNVERIFIED_MAX_DEPOSIT_CAD)} damage deposit per listing."
+    )
+
+
+def mark_user_identity_verified(user) -> None:
+    IdentityVerification.objects.create(
+        user=user,
+        session_id=f"vs_listing_{user.id}",
+        status=IdentityVerification.Status.VERIFIED,
+        verified_at=timezone.now(),
+    )
 
 
 @pytest.fixture
@@ -123,6 +148,47 @@ def test_create_listing_success(owner_user, category):
     assert resp.data["is_available"] is True
     assert resp.data["category_name"] == category.name
     assert Listing.objects.filter(slug=resp.data["slug"]).exists()
+
+
+def test_create_listing_blocked_for_unverified_high_values(owner_user, category, settings):
+    client = auth(owner_user)
+    payload = create_listing_payload(
+        category=category.slug,
+        replacement_value_cad="1500.00",
+        damage_deposit_cad="900.00",
+    )
+
+    resp = client.post("/api/listings/", payload, format="json")
+
+    assert resp.status_code == 400
+    assert resp.data["non_field_errors"][0] == listing_limit_error_message(settings)
+
+
+def test_update_listing_blocked_for_unverified_high_values(owner_user, category, settings):
+    listing = make_listing(owner_user, category=category)
+    client = auth(owner_user)
+    payload = {"replacement_value_cad": "1500.00"}
+
+    resp = client.patch(f"/api/listings/{listing.slug}/", payload, format="json")
+
+    assert resp.status_code == 400
+    assert resp.data["non_field_errors"][0] == listing_limit_error_message(settings)
+
+
+def test_verified_owner_can_create_high_value_listing(owner_user, category, settings):
+    mark_user_identity_verified(owner_user)
+    client = auth(owner_user)
+    payload = create_listing_payload(
+        category=category.slug,
+        replacement_value_cad="2000.00",
+        damage_deposit_cad="900.00",
+    )
+
+    resp = client.post("/api/listings/", payload, format="json")
+
+    assert resp.status_code == 201, resp.data
+    assert resp.data["replacement_value_cad"] == payload["replacement_value_cad"]
+    assert resp.data["damage_deposit_cad"] == payload["damage_deposit_cad"]
 
 
 @pytest.mark.parametrize(

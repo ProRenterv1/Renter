@@ -14,15 +14,22 @@ from rest_framework.response import Response
 
 from .ledger import compute_owner_balances, get_owner_earnings_queryset
 from .models import OwnerPayoutAccount
-from .stripe_api import (
-    StripeConfigurationError,
-    StripePaymentError,
-    StripeTransientError,
-    create_connect_onboarding_link,
-    ensure_connect_account,
-)
+from .stripe_api import create_connect_onboarding_link, ensure_connect_account
 
 logger = logging.getLogger(__name__)
+STRIPE_ERROR_NAMES = {
+    "StripeConfigurationError",
+    "StripePaymentError",
+    "StripeTransientError",
+}
+ONBOARDING_ERROR_MESSAGE = "Stripe onboarding is temporarily unavailable. Please try again later."
+
+
+def _is_stripe_api_error(exc: Exception) -> bool:
+    """Return True if the exception matches a known Stripe error by name."""
+    return exc.__class__.__name__ in STRIPE_ERROR_NAMES
+
+
 DEFAULT_HISTORY_LIMIT = 50
 MAX_HISTORY_LIMIT = 200
 
@@ -114,9 +121,12 @@ def owner_payouts_summary(request):
     payout_account: OwnerPayoutAccount | None = None
     try:
         payout_account = ensure_connect_account(user)
-    except (StripeConfigurationError, StripePaymentError, StripeTransientError) as exc:
-        logger.warning("payments: ensure_connect_account failed for user %s: %s", user.id, exc)
-        payout_account = None
+    except Exception as exc:
+        if _is_stripe_api_error(exc):
+            logger.warning("payments: ensure_connect_account failed for user %s: %s", user.id, exc)
+            payout_account = None
+        else:
+            raise
     balances = compute_owner_balances(user)
     return Response(
         {
@@ -189,20 +199,25 @@ def owner_payouts_start_onboarding(request):
     user = request.user
     try:
         onboarding_url = create_connect_onboarding_link(user)
-    except (StripeConfigurationError, StripePaymentError, StripeTransientError) as exc:
-        logger.warning("payments: onboarding link failure for user %s: %s", user.id, exc)
-        return Response(
-            {"detail": "Stripe onboarding is temporarily unavailable. Please try again later."},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
+    except Exception as exc:
+        if _is_stripe_api_error(exc):
+            logger.warning("payments: onboarding link failure for user %s: %s", user.id, exc)
+            return Response(
+                {"detail": ONBOARDING_ERROR_MESSAGE},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        raise
 
     try:
         payout_account = user.payout_account
     except OwnerPayoutAccount.DoesNotExist:
         try:
             payout_account = ensure_connect_account(user)
-        except (StripeConfigurationError, StripePaymentError, StripeTransientError):
-            payout_account = None
+        except Exception as exc:
+            if _is_stripe_api_error(exc):
+                payout_account = None
+            else:
+                raise
 
     stripe_account_id = payout_account.stripe_account_id if payout_account else None
     return Response(

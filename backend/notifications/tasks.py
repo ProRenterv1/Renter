@@ -15,6 +15,10 @@ from payments.receipts import upload_booking_receipt_pdf
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
+CHECK_ID_MESSAGE = (
+    "At pickup, please check the renter's government ID matches their profile name "
+    "before handing over the tool."
+)
 
 
 def _get_user(user_id: int) -> Optional[User]:
@@ -314,6 +318,7 @@ def send_booking_request_email(owner_id: int, booking_id: int):
         "renter_last_name": renter_last,
         "renter_full_name": renter_full_name,
         "cta_url": f"{frontend_origin}/profile?tab=booking-requests" if frontend_origin else "",
+        "check_id_message": CHECK_ID_MESSAGE,
     }
     _send_email(
         f"New booking request for {listing_title}",

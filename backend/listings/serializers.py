@@ -1,6 +1,22 @@
+from decimal import Decimal
+
+from django.conf import settings
 from rest_framework import serializers
 
+from identity.models import is_user_identity_verified
+
 from .models import Category, Listing, ListingPhoto
+
+CURRENCY_QUANTIZE = Decimal("0.01")
+
+
+def _format_currency(amount: Decimal | None) -> str:
+    """Return a normalized currency string for ID verification messaging."""
+    if amount is None:
+        amount = Decimal("0")
+    if not isinstance(amount, Decimal):
+        amount = Decimal(str(amount))
+    return f"${amount.quantize(CURRENCY_QUANTIZE)}"
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -97,6 +113,40 @@ class ListingSerializer(serializers.ModelSerializer):
         )
         serializer = ListingPhotoSerializer(qs, many=True, context=self.context)
         return serializer.data
+
+    def validate(self, attrs):
+        """Enforce ID verification limits for high-value listings."""
+        attrs = super().validate(attrs)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+
+        if not user or not user.is_authenticated or is_user_identity_verified(user):
+            return attrs
+
+        replacement = attrs.get("replacement_value_cad")
+        deposit = attrs.get("damage_deposit_cad")
+
+        if self.instance:
+            if replacement is None:
+                replacement = self.instance.replacement_value_cad
+            if deposit is None:
+                deposit = self.instance.damage_deposit_cad
+
+        replacement = replacement or Decimal("0")
+        deposit = deposit or Decimal("0")
+        max_repl = settings.UNVERIFIED_MAX_REPLACEMENT_CAD
+        max_dep = settings.UNVERIFIED_MAX_DEPOSIT_CAD
+
+        if replacement > max_repl or deposit > max_dep:
+            message = (
+                "To list tools with higher replacement value or damage deposit, please complete "
+                "ID verification. Unverified owners are limited to "
+                f"{_format_currency(max_repl)} replacement and {_format_currency(max_dep)} "
+                "damage deposit per listing."
+            )
+            raise serializers.ValidationError({"non_field_errors": [message]})
+
+        return attrs
 
     def create(self, validated_data):
         """Create a listing for the authenticated user if allowed."""

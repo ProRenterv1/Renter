@@ -10,10 +10,10 @@ import pytest
 import stripe
 from rest_framework.test import APIClient
 
+from backend.payments import stripe_api as stripe_api
 from bookings.models import Booking
 from listings.models import Listing
 from listings.services import compute_booking_totals
-from payments import stripe_api
 
 pytestmark = pytest.mark.django_db
 
