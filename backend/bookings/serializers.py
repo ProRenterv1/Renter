@@ -50,10 +50,12 @@ class BookingSerializer(serializers.ModelSerializer):
     renter_last_name = serializers.ReadOnlyField(source="renter.last_name")
     renter_username = serializers.ReadOnlyField(source="renter.username")
     renter_avatar_url = serializers.ReadOnlyField(source="renter.avatar_url")
+    renter_identity_verified = serializers.SerializerMethodField()
     listing_owner_first_name = serializers.ReadOnlyField(source="listing.owner.first_name")
     listing_owner_last_name = serializers.ReadOnlyField(source="listing.owner.last_name")
     listing_owner_username = serializers.ReadOnlyField(source="listing.owner.username")
     listing_owner_avatar_url = serializers.ReadOnlyField(source="listing.owner.avatar_url")
+    listing_owner_identity_verified = serializers.SerializerMethodField()
     listing_slug = serializers.ReadOnlyField(source="listing.slug")
     listing_primary_photo_url = serializers.SerializerMethodField()
     status_label = serializers.SerializerMethodField()
@@ -89,6 +91,7 @@ class BookingSerializer(serializers.ModelSerializer):
             "listing_owner_last_name",
             "listing_owner_username",
             "listing_owner_avatar_url",
+            "listing_owner_identity_verified",
             "listing_slug",
             "listing_primary_photo_url",
             "owner",
@@ -97,6 +100,7 @@ class BookingSerializer(serializers.ModelSerializer):
             "renter_last_name",
             "renter_username",
             "renter_avatar_url",
+            "renter_identity_verified",
             "totals",
             "charge_payment_intent_id",
             "deposit_hold_id",
@@ -128,7 +132,27 @@ class BookingSerializer(serializers.ModelSerializer):
             "listing_owner_username",
             "listing_slug",
             "listing_primary_photo_url",
+            "listing_owner_identity_verified",
+            "renter_identity_verified",
         )
+
+    def _get_identity_cache(self) -> dict[int, bool]:
+        cache = getattr(self, "_identity_cache", None)
+        if cache is None:
+            cache = {}
+            self._identity_cache = cache
+        return cache
+
+    def _is_identity_verified(self, user) -> bool:
+        user_id = getattr(user, "id", None)
+        if not user_id:
+            return False
+        cache = self._get_identity_cache()
+        if user_id in cache:
+            return cache[user_id]
+        result = is_user_identity_verified(user)
+        cache[user_id] = result
+        return result
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         """Validate booking creation payload."""
@@ -311,3 +335,11 @@ class BookingSerializer(serializers.ModelSerializer):
             .first()
         )
         return photo.url if photo else None
+
+    def get_renter_identity_verified(self, booking: Booking) -> bool:
+        return self._is_identity_verified(getattr(booking, "renter", None))
+
+    def get_listing_owner_identity_verified(self, booking: Booking) -> bool:
+        listing = getattr(booking, "listing", None)
+        owner = getattr(listing, "owner", None) if listing else None
+        return self._is_identity_verified(owner)

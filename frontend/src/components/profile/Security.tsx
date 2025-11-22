@@ -29,6 +29,13 @@ import {
   type IdentityStatusLatest,
 } from "@/lib/api";
 
+type SecurityProps = {
+  onIdentityStatusChange?: (
+    status: IdentityVerificationStatus | "none",
+    latest: IdentityStatusLatest | null,
+  ) => void;
+};
+
 type ChangePasswordForm = {
   current_password: string;
   new_password: string;
@@ -146,7 +153,7 @@ const extractDetailMessage = (error: unknown): string | null => {
   return null;
 };
 
-export function Security() {
+export function Security({ onIdentityStatusChange }: SecurityProps) {
   const [form, setForm] = useState<ChangePasswordForm>(initialForm);
   const [errors, setErrors] = useState<Partial<Record<keyof ChangePasswordForm, string>>>(
     {},
@@ -305,6 +312,15 @@ export function Security() {
     };
   }, []);
 
+  const updateIdentityState = useCallback(
+    (status: IdentityVerificationStatus | "none", latest: IdentityStatusLatest | null) => {
+      setIdentityStatus(status);
+      setIdentityLatest(latest);
+      onIdentityStatusChange?.(status, latest);
+    },
+    [onIdentityStatusChange],
+  );
+
   const refreshIdentityStatus = useCallback(async () => {
     setIdentityInitialLoading(true);
     setIdentityLoading(true);
@@ -312,26 +328,23 @@ export function Security() {
     try {
       const res = await identityAPI.status();
       const latest = res.latest ?? null;
-      setIdentityLatest(latest);
-
-      if (res.verified) {
-        setIdentityStatus("verified");
-      } else if (latest?.status) {
-        setIdentityStatus(latest.status as IdentityVerificationStatus);
-      } else {
-        setIdentityStatus("none");
-      }
+      const nextStatus: IdentityVerificationStatus | "none" = res.verified
+        ? "verified"
+        : latest?.status
+          ? (latest.status as IdentityVerificationStatus)
+          : "none";
+      updateIdentityState(nextStatus, latest);
     } catch (error) {
       console.error("Unable to load identity status", error);
       setIdentityError(
         extractDetailMessage(error) ?? "Unable to load identity verification status.",
       );
-      setIdentityStatus("none");
+      updateIdentityState("none", null);
     } finally {
       setIdentityInitialLoading(false);
       setIdentityLoading(false);
     }
-  }, []);
+  }, [updateIdentityState]);
 
   useEffect(() => {
     void refreshIdentityStatus();

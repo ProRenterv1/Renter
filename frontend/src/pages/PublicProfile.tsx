@@ -5,13 +5,14 @@ import { Star } from "lucide-react";
 
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ListingCard } from "@/components/listings/ListingCard";
 import { listingsAPI, usersAPI, type Listing, type PublicProfile as PublicProfileType } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { VerifiedAvatar } from "@/components/VerifiedAvatar";
 
 const PROFILE_TABS = ["listings", "reviews"] as const;
 type ProfileTab = (typeof PROFILE_TABS)[number];
@@ -246,12 +247,15 @@ export default function PublicProfile() {
             <div className="rounded-3xl bg-card p-6 shadow-sm">
               <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
                 <div className="flex flex-1 items-center gap-4">
-                  <Avatar className="h-24 w-24 border-2 border-primary/10 sm:h-28 sm:w-28">
+                  <VerifiedAvatar
+                    isVerified={Boolean(profile.identity_verified)}
+                    className="h-24 w-24 border-2 border-primary/10 sm:h-28 sm:w-28"
+                  >
                     <AvatarImage src={profile.avatar_url ?? undefined} alt={displayName} />
                     <AvatarFallback className="text-xl font-semibold">
                       {initials}
                     </AvatarFallback>
-                  </Avatar>
+                  </VerifiedAvatar>
                   <div>
                     <h1 className="text-2xl font-semibold" style={{ fontFamily: "Manrope" }}>
                       {displayName}

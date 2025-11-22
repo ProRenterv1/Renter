@@ -23,11 +23,18 @@ import { Statistics } from "../components/profile/Statistics";
 import { Payments } from "../components/profile/Payments";
 import { EditListing } from "../components/profile/EditListing";
 import { BookingRequests } from "../components/profile/BookingRequests";
-import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
+import { AvatarFallback, AvatarImage } from "../components/ui/avatar";
 import { Badge } from "../components/ui/badge";
 import { toast } from "sonner";
 import { AuthStore, type Profile } from "@/lib/auth";
-import { authAPI, bookingsAPI, type Listing } from "@/lib/api";
+import {
+  authAPI,
+  bookingsAPI,
+  identityAPI,
+  type IdentityVerificationStatus,
+  type Listing,
+} from "@/lib/api";
+import { VerifiedAvatar } from "@/components/VerifiedAvatar";
 
 const TAB_KEYS = [
   "personal",
@@ -62,6 +69,9 @@ export default function UserProfile() {
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [pendingBookingCount, setPendingBookingCount] = useState(0);
   const [unpaidRentalsCount, setUnpaidRentalsCount] = useState(0);
+  const [identityStatus, setIdentityStatus] = useState<IdentityVerificationStatus | "none">(
+    "none",
+  );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -124,6 +134,37 @@ export default function UserProfile() {
     };
   }, [profile?.id]);
 
+  useEffect(() => {
+    if (!profile?.id) {
+      setIdentityStatus("none");
+      return;
+    }
+
+    let cancelled = false;
+    const loadIdentityStatus = async () => {
+      try {
+        const res = await identityAPI.status();
+        if (cancelled) return;
+        const nextStatus: IdentityVerificationStatus | "none" = res.verified
+          ? "verified"
+          : res.latest?.status
+            ? (res.latest.status as IdentityVerificationStatus)
+            : "none";
+        setIdentityStatus((current) => (current === nextStatus ? current : nextStatus));
+      } catch (error) {
+        if (!cancelled) {
+          setIdentityStatus((current) => (current === "none" ? current : "none"));
+        }
+      }
+    };
+
+    void loadIdentityStatus();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [profile?.id]);
+
   const handleListingSelected = (listing: Listing) => {
     setListingBeingEdited(listing);
   };
@@ -151,6 +192,7 @@ export default function UserProfile() {
   const fallbackInitial = displayName ? displayName[0] : "U";
   const initials = (initialsSource || fallbackInitial).toUpperCase();
   const hasCustomAvatar = Boolean(profile?.avatar_uploaded);
+  const isIdentityVerified = identityStatus === "verified";
 
   const triggerAvatarPicker = () => {
     fileInputRef.current?.click();
@@ -195,6 +237,10 @@ export default function UserProfile() {
     }
   };
 
+  const handleIdentityStatusChange = (status: IdentityVerificationStatus | "none") => {
+    setIdentityStatus((current) => (current === status ? current : status));
+  };
+
   const tabs = [
     { id: "personal" as Tab, label: "Personal Info", icon: User },
     { id: "security" as Tab, label: "Security", icon: Lock },
@@ -216,7 +262,7 @@ export default function UserProfile() {
         <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:fixed lg:top-16 lg:bottom-0 lg:border-r bg-card lg:overflow-y-auto">
           <div className="p-6 border-b">
             <div className="flex items-center gap-3">
-                <Avatar className="w-16 h-16">
+                <VerifiedAvatar isVerified={isIdentityVerified} className="w-16 h-16">
                 <AvatarImage
                   src={hasCustomAvatar ? profile?.avatar_url ?? "" : undefined}
                   alt={displayName}
@@ -224,15 +270,17 @@ export default function UserProfile() {
                 <AvatarFallback className="bg-[var(--primary)]" style={{ color: "var(--primary-foreground)" }}>
                   {initials}
                 </AvatarFallback>
-              </Avatar>
+              </VerifiedAvatar>
               <div>
                 <h3 className="font-medium">{displayName}</h3>
-                <div className="flex items-center gap-1 mt-1">
-                  <Badge variant="secondary" className="text-xs">
-                    <Shield className="w-3 h-3 mr-1" />
-                    Verified
-                  </Badge>
-                </div>
+                {isIdentityVerified && (
+                  <div className="flex items-center gap-1 mt-1">
+                    <Badge variant="secondary" className="text-xs">
+                      <Shield className="w-3 h-3 mr-1" />
+                      Verified
+                    </Badge>
+                  </div>
+                )}
                 <div className="mt-2 space-y-1">
                   <button
                     type="button"
@@ -308,7 +356,9 @@ export default function UserProfile() {
         <main className="flex-1 p-6 lg:p-8 lg:ml-64">
           <div className="max-w-5xl mx-auto">
             {activeTab === "personal" && <PersonalInfo onProfileUpdate={setProfile} />}
-            {activeTab === "security" && <Security />}
+            {activeTab === "security" && (
+              <Security onIdentityStatusChange={handleIdentityStatusChange} />
+            )}
             {activeTab === "listings" &&
               (listingBeingEdited ? (
                 <EditListing

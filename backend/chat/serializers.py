@@ -6,6 +6,7 @@ from rest_framework import serializers
 
 from bookings.serializers import BookingSerializer
 from chat.models import Conversation, Message, get_unread_message_count
+from identity.models import is_user_identity_verified
 
 
 class ConversationSerializer(serializers.ModelSerializer):
@@ -15,6 +16,7 @@ class ConversationSerializer(serializers.ModelSerializer):
     listing_title = serializers.CharField(source="booking.listing.title", read_only=True)
     other_party_name = serializers.SerializerMethodField()
     other_party_avatar_url = serializers.SerializerMethodField()
+    other_party_identity_verified = serializers.SerializerMethodField()
     last_message = serializers.SerializerMethodField()
     last_message_at = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
@@ -28,10 +30,29 @@ class ConversationSerializer(serializers.ModelSerializer):
             "other_party_name",
             "is_active",
             "other_party_avatar_url",
+            "other_party_identity_verified",
             "last_message",
             "last_message_at",
             "unread_count",
         ]
+
+    def _get_identity_cache(self) -> dict[int, bool]:
+        cache = getattr(self, "_identity_cache", None)
+        if cache is None:
+            cache = {}
+            self._identity_cache = cache
+        return cache
+
+    def _is_identity_verified(self, user) -> bool:
+        user_id = getattr(user, "id", None)
+        if not user_id:
+            return False
+        cache = self._get_identity_cache()
+        if user_id in cache:
+            return cache[user_id]
+        result = is_user_identity_verified(user)
+        cache[user_id] = result
+        return result
 
     def _get_other_party(self, obj: Conversation):
         request = self.context.get("request")
@@ -50,6 +71,10 @@ class ConversationSerializer(serializers.ModelSerializer):
     def get_other_party_avatar_url(self, obj: Conversation):
         other = self._get_other_party(obj)
         return getattr(other, "avatar_url", None)
+
+    def get_other_party_identity_verified(self, obj: Conversation) -> bool:
+        other = self._get_other_party(obj)
+        return self._is_identity_verified(other)
 
     def _get_last_message(self, obj: Conversation) -> Message | None:
         if hasattr(obj, "_last_message_cache"):

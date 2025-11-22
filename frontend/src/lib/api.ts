@@ -158,6 +158,7 @@ export interface PublicProfile {
   date_joined?: string;
   rating?: number | null;
   review_count?: number | null;
+  identity_verified?: boolean;
 }
 
 export interface ListingPhoto {
@@ -332,6 +333,7 @@ export interface Booking {
   listing_owner_last_name?: string | null;
   listing_owner_username?: string | null;
   listing_owner_avatar_url?: string | null;
+  listing_owner_identity_verified?: boolean;
   listing_primary_photo_url?: string | null;
   owner: number;
   renter: number;
@@ -339,6 +341,7 @@ export interface Booking {
   renter_last_name?: string | null;
   renter_username?: string;
   renter_avatar_url?: string | null;
+  renter_identity_verified?: boolean;
   renter_rating?: number | null;
   totals: BookingTotals | null;
   charge_payment_intent_id?: string;
