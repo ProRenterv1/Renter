@@ -32,12 +32,14 @@ export interface ChatBookingSummary {
   listing_owner_first_name?: string | null;
   listing_owner_last_name?: string | null;
   listing_owner_username?: string | null;
+  listing_owner_identity_verified?: boolean;
   listing_slug?: string | null;
   listing_primary_photo_url?: string | null;
   renter_first_name?: string | null;
   renter_last_name?: string | null;
   renter_username?: string | null;
   renter_avatar_url?: string | null;
+  renter_identity_verified?: boolean;
 }
 
 export interface ConversationSummary {
@@ -46,6 +48,7 @@ export interface ConversationSummary {
   listing_title: string;
   other_party_name: string;
   other_party_avatar_url?: string | null;
+  other_party_identity_verified?: boolean;
   is_active: boolean;
   last_message: {
     id: number;

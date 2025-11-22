@@ -11,8 +11,9 @@ import {
 import { startEventStream } from "@/lib/events";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { AuthStore } from "@/lib/auth";
+import { VerifiedAvatar } from "@/components/VerifiedAvatar";
 
 type MessagesProps = {
   conversationId: number;
@@ -142,11 +143,13 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
           id: booking.renter,
           name: renterName,
           avatarUrl: booking.renter_avatar_url ?? null,
+          isVerified: Boolean(booking.renter_identity_verified),
         },
         owner: {
           id: booking.owner,
           name: ownerName,
           avatarUrl: booking.listing_owner_avatar_url ?? null,
+          isVerified: Boolean(booking.listing_owner_identity_verified),
         },
       };
   }, [conversation]);
@@ -161,6 +164,7 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
         return {
           name,
           avatarUrl: currentUser?.avatar_url ?? null,
+          isVerified: Boolean(currentUser?.identity_verified),
         };
       }
       if (participantMeta) {
@@ -171,9 +175,10 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
         return {
           name: other.name,
           avatarUrl: other.avatarUrl,
+          isVerified: other.isVerified,
         };
       }
-      return { name: "User", avatarUrl: null };
+      return { name: "User", avatarUrl: null, isVerified: false };
     },
     [currentUser, participantMeta],
   );
@@ -337,12 +342,15 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
 
           return (
             <div key={msg.id} className="flex w-full items-start gap-3">
-              <Avatar className="h-10 w-10 shrink-0">
+              <VerifiedAvatar
+                isVerified={participant.isVerified}
+                className="h-10 w-10 shrink-0"
+              >
                 {participant.avatarUrl ? (
                   <AvatarImage src={participant.avatarUrl} alt={participant.name} />
                 ) : null}
                 <AvatarFallback>{getInitials(participant.name)}</AvatarFallback>
-              </Avatar>
+              </VerifiedAvatar>
               <div className="relative flex flex-col">
                 <div
                   className={`w-fit min-w-[7.5rem] max-w-[75%] rounded-3xl px-5 py-2 text-sm ${bubbleClass}`}

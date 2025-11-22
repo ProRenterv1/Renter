@@ -57,6 +57,32 @@ def _auth_client(user):
     return client
 
 
+def test_photo_presign_requires_authentication(listing):
+    client = APIClient()
+    resp = client.post(
+        f"/api/listings/{listing.id}/photos/presign",
+        {"filename": "tool.jpg", "content_type": "image/jpeg", "size": 100},
+        format="json",
+    )
+    assert resp.status_code == 401
+
+
+def test_photo_complete_requires_authentication(listing):
+    client = APIClient()
+    resp = client.post(
+        f"/api/listings/{listing.id}/photos/complete",
+        {
+            "key": "uploads/listings/x.jpg",
+            "etag": "etag",
+            "filename": "photo.jpg",
+            "content_type": "image/jpeg",
+            "size": 50,
+        },
+        format="json",
+    )
+    assert resp.status_code == 401
+
+
 def test_owner_can_presign_upload(monkeypatch, owner, listing):
     client = _auth_client(owner)
 

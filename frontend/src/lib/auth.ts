@@ -25,6 +25,7 @@ export type UserProfile = {
   phone_verified: boolean;
   two_factor_email_enabled: boolean;
   two_factor_sms_enabled: boolean;
+  identity_verified?: boolean;
   avatar_url?: string | null;
   avatar_uploaded?: boolean;
   date_joined?: string;

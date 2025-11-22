@@ -34,7 +34,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
-import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
+import { AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Star } from "lucide-react";
 import { format } from "date-fns";
 import { AuthStore } from "@/lib/auth";
@@ -50,6 +50,7 @@ import {
 import { fetchConversations, type ConversationSummary } from "@/lib/chat";
 import { formatCurrency } from "@/lib/utils";
 import { PolicyConfirmationModal } from "../PolicyConfirmationModal";
+import { VerifiedAvatar } from "@/components/VerifiedAvatar";
 
 type RequestStatus = "pending" | "approved" | "denied";
 type StatusFilter = "all" | RequestStatus;
@@ -282,6 +283,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
       avatarUrl: renterAvatarUrl,
       initials,
       rating,
+      isVerified: Boolean(selectedRequest.booking.renter_identity_verified),
     };
   }, [selectedRequest]);
 
@@ -692,13 +694,16 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                   <p className="text-sm text-muted-foreground mb-3">Requested by</p>
                   {selectedRenterDetails && (
                     <div className="flex items-center gap-3">
-                      <Avatar className="w-12 h-12">
+                      <VerifiedAvatar
+                        isVerified={selectedRenterDetails.isVerified}
+                        className="w-12 h-12"
+                      >
                         <AvatarImage
                           src={selectedRenterDetails.avatarUrl}
                           alt={`${selectedRenterDetails.displayName} avatar`}
                         />
                         <AvatarFallback>{selectedRenterDetails.initials}</AvatarFallback>
-                      </Avatar>
+                      </VerifiedAvatar>
                       <div className="flex-1">
                         <p style={{ fontFamily: "Manrope" }}>{selectedRenterDetails.displayName}</p>
                         <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">

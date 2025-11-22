@@ -1,0 +1,14 @@
+Hi {{ user.first_name|default:user.username }},
+
+Listing: {{ listing_title }}
+Dates: {{ date_range_display }}
+Duration: {{ duration_days }} days
+Price per day: CAD ${{ price_per_day }}
+Promotion price: CAD ${{ promotion_price }}
+GST (5%): CAD ${{ gst_amount }}
+Total paid: CAD ${{ total_paid }}
+
+Your PDF receipt is attached for your records{% if receipt_s3_key %}, and available in your account{% endif %}.
+
+Thanks,
+The Renter Team

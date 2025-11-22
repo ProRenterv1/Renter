@@ -14,7 +14,7 @@ import { Button } from "../components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Calendar } from "../components/ui/calendar";
 import { Badge } from "../components/ui/badge";
-import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
+import { AvatarFallback, AvatarImage } from "../components/ui/avatar";
 import { Separator } from "../components/ui/separator";
 import { BookingMap } from "../components/BookingMap";
 import { LoginModal } from "../components/LoginModal";
@@ -24,6 +24,7 @@ import { useNavigate } from "react-router-dom";
 import { bookingsAPI, usersAPI, type Listing as ApiListing, type PublicProfile } from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
 import { cn, formatCurrency, parseMoney } from "@/lib/utils";
+import { VerifiedAvatar } from "@/components/VerifiedAvatar";
 
 interface BookingPageProps {
   listing: ApiListing | null;
@@ -41,6 +42,7 @@ interface Review {
   rating: number;
   date: string;
   comment: string;
+  userVerified?: boolean;
 }
 
 
@@ -224,6 +226,7 @@ export default function Booking({
     .join(" ");
   const ownerDisplayName = profileName || ownerProfile?.username || baseOwnerName;
   const ownerAvatarUrl = ownerProfile?.avatar_url ?? undefined;
+  const ownerIdentityVerified = Boolean(ownerProfile?.identity_verified);
   const ownerInitials =
     ownerDisplayName
       .split(" ")
@@ -792,10 +795,10 @@ export default function Booking({
                 About the Owner
               </h3>
               <div className="flex items-start gap-4">
-                <Avatar className="w-16 h-16">
+                <VerifiedAvatar isVerified={ownerIdentityVerified} className="w-16 h-16">
                   <AvatarImage src={ownerAvatarUrl} alt={ownerDisplayName} />
                   <AvatarFallback>{ownerInitials}</AvatarFallback>
-                </Avatar>
+                </VerifiedAvatar>
                 <div className="flex-1">
                   <p className="text-[18px] mb-1" style={{ fontFamily: "Manrope" }}>
                     {ownerDisplayName}
@@ -850,7 +853,10 @@ export default function Booking({
                 {reviews.map((review) => (
                   <div key={review.id}>
                     <div className="flex items-start gap-4">
-                      <Avatar className="w-12 h-12">
+                      <VerifiedAvatar
+                        isVerified={Boolean(review.userVerified)}
+                        className="w-12 h-12"
+                      >
                         <AvatarImage src={review.userAvatar} />
                         <AvatarFallback>
                           {review.userName
@@ -858,7 +864,7 @@ export default function Booking({
                             .map((n) => n[0])
                             .join("")}
                         </AvatarFallback>
-                      </Avatar>
+                      </VerifiedAvatar>
                       <div className="flex-1">
                         <div className="flex items-center justify-between mb-1">
                           <p style={{ fontFamily: "Manrope" }}>

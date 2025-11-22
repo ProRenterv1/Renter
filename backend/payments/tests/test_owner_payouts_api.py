@@ -29,6 +29,20 @@ def _auth_client(user):
     return client
 
 
+@pytest.mark.parametrize(
+    ("method", "url"),
+    [
+        ("get", "/api/owner/payouts/summary/"),
+        ("get", "/api/owner/payouts/history/"),
+        ("post", "/api/owner/payouts/start-onboarding/"),
+    ],
+)
+def test_owner_payouts_endpoints_require_authentication(method, url):
+    client = APIClient()
+    response = getattr(client, method)(url, format="json")
+    assert response.status_code == 401
+
+
 def test_owner_payouts_summary_returns_balances(owner_user, booking_factory, monkeypatch):
     booking = booking_factory(
         start_date=date.today(),

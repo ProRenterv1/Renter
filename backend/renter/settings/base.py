@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     "listings",
     "storage",
     "notifications",
+    "promotions.apps.PromotionsConfig",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -95,6 +96,14 @@ REST_FRAMEWORK = {
         "rest_framework.filters.SearchFilter",
         "rest_framework.filters.OrderingFilter",
     ],
+    "DEFAULT_THROTTLE_CLASSES":[
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES":{
+        "anon": "100/hour",
+        "user": "1000/hour",
+    }
 }
 
 CORS_ALLOW_ALL_ORIGINS = True
@@ -194,6 +203,9 @@ GOOGLE_MAPS_API_KEY= env("GOOGLE_MAPS_API_KEY", default=None)
 GEOCODE_CACHE_TTL= env.int("GEOCODE_CACHE_TTL", default=7 * 24 * 60 * 60)
 GEOCODE_REQUEST_TIMEOUT= env.float("GEOCODE_REQUEST_TIMEOUT", default=5.0)
 
+# --- Promotions ---
+PROMOTION_PRICE_CENTS = env.int("PROMOTION_PRICE_CENTS", default=500)
+
 # --- Booking fees ---
 # Percentage surcharges expressed as Decimal fractions, e.g. 0.10 == 10%
 BOOKING_RENTER_FEE_RATE = Decimal(
@@ -208,6 +220,7 @@ BOOKING_OWNER_FEE_RATE = Decimal(
 STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY", default="")
 STRIPE_ENV = env("STRIPE_ENV", default="dev")
 STRIPE_PUBLISHABLE_KEY = env("STRIPE_PUBLISHABLE_KEY", default="")
+STRIPE_WEBHOOK_SECRET = env("STRIPE_WEBHOOK_SECRET", default="")
 
 # --- Identity / verification limits ---
 UNVERIFIED_MAX_REPLACEMENT_CAD = Decimal(

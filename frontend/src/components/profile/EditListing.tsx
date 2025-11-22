@@ -24,6 +24,7 @@ import {
   type ListingPhoto,
   type UpdateListingPayload,
 } from "@/lib/api";
+import { ListingPromotionCheckout } from "./ListingPromotionCheckout";
 
 const MAX_PHOTOS = 6;
 
@@ -105,15 +106,21 @@ export function EditListing({
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"edit" | "promote">("edit");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [photosLoading, setPhotosLoading] = useState(true);
   const isMountedRef = useRef(true);
+  const isPromoteMode = mode === "promote";
 
   useEffect(() => {
     return () => {
       isMountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    setMode("edit");
+  }, [listing.id]);
 
   const refreshPhotos = useCallback(async (slug: string) => {
     if (!slug) return;
@@ -363,33 +370,41 @@ export function EditListing({
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-4">
-        <Button variant="ghost" size="sm" onClick={onBackToListings} className="rounded-full">
-          <ArrowLeft className="w-4 h-4 mr-2" />
-          Back to Listings
-        </Button>
-      </div>
+      {!isPromoteMode && (
+        <>
+          <div className="flex items-center gap-4">
+            <Button variant="ghost" size="sm" onClick={onBackToListings} className="rounded-full">
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Back to Listings
+            </Button>
+          </div>
 
-      <div>
-        <h1 className="text-3xl">Edit Listing</h1>
-        <p className="mt-2" style={{ color: "var(--text-muted)" }}>
-          Update your listing information
-        </p>
-      </div>
-
-      {loadError && (
-        <Alert variant="destructive">
-          <AlertDescription>{loadError}</AlertDescription>
-        </Alert>
-      )}
-      {formError && (
-        <Alert variant="destructive">
-          <AlertDescription>{formError}</AlertDescription>
-        </Alert>
+          <div>
+            <h1 className="text-3xl">Edit Listing</h1>
+            <p className="mt-2" style={{ color: "var(--text-muted)" }}>
+              Update your listing information
+            </p>
+          </div>
+        </>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
+      {isPromoteMode ? (
+        <ListingPromotionCheckout listing={currentListing} onBack={() => setMode("edit")} />
+      ) : (
+        <>
+          {loadError && (
+            <Alert variant="destructive">
+              <AlertDescription>{loadError}</AlertDescription>
+            </Alert>
+          )}
+          {formError && (
+            <Alert variant="destructive">
+              <AlertDescription>{formError}</AlertDescription>
+            </Alert>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2 space-y-6">
           <Card>
             <CardHeader>
               <CardTitle>Listing Images</CardTitle>
@@ -597,45 +612,57 @@ export function EditListing({
                 <Button onClick={onBackToListings} variant="outline" className="w-full rounded-full">
                   Cancel
                 </Button>
-                <AlertDialog open={deleteDialogOpen} onOpenChange={handleDeleteDialogOpenChange}>
-                  <AlertDialogTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      className="w-full rounded-full"
-                    >
-                      Delete Listing
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Delete this listing?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        This action cannot be undone and will remove the listing for
-                        "{currentListing.title}" permanently.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    {deleteError && (
-                      <p className="text-sm text-destructive">{deleteError}</p>
-                    )}
-                    <AlertDialogFooter>
-                      <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+                <div className="flex flex-col gap-3 sm:flex-row">
+                  <AlertDialog open={deleteDialogOpen} onOpenChange={handleDeleteDialogOpenChange}>
+                    <AlertDialogTrigger asChild>
                       <Button
                         type="button"
-                        className="rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                        onClick={handleDeleteListing}
-                        disabled={deleting}
+                        variant="destructive"
+                        className="w-full rounded-full sm:flex-1"
                       >
-                        {deleting ? "Deleting..." : "Delete"}
+                        Delete Listing
                       </Button>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Delete this listing?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          This action cannot be undone and will remove the listing for
+                          "{currentListing.title}" permanently.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      {deleteError && (
+                        <p className="text-sm text-destructive">{deleteError}</p>
+                      )}
+                      <AlertDialogFooter>
+                        <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+                        <Button
+                          type="button"
+                          className="rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          onClick={handleDeleteListing}
+                          disabled={deleting}
+                        >
+                          {deleting ? "Deleting..." : "Delete"}
+                        </Button>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="w-full rounded-full sm:flex-1"
+                    onClick={() => setMode("promote")}
+                  >
+                    Promote
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { Search } from "lucide-react";
 
 import ChatMessages from "@/components/chat/Messages";
 import { Header } from "@/components/Header";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,7 @@ import {
 } from "@/lib/chat";
 import { startEventStream } from "@/lib/events";
 import { AuthStore } from "@/lib/auth";
+import { VerifiedAvatar } from "@/components/VerifiedAvatar";
 
 const getInitials = (name: string) =>
   name
@@ -259,7 +260,10 @@ export default function MessagesPage() {
                   }`}
                 >
                   <div className="flex items-center gap-3">
-                    <Avatar className="h-10 w-10">
+                    <VerifiedAvatar
+                      isVerified={Boolean(conversation.other_party_identity_verified)}
+                      className="h-10 w-10"
+                    >
                       {conversation.other_party_avatar_url ? (
                         <AvatarImage
                           src={conversation.other_party_avatar_url}
@@ -267,7 +271,7 @@ export default function MessagesPage() {
                         />
                       ) : null}
                       <AvatarFallback>{getInitials(conversation.other_party_name)}</AvatarFallback>
-                    </Avatar>
+                    </VerifiedAvatar>
                     <div className="flex-1">
                       <p
                         className={`leading-tight ${

@@ -20,7 +20,8 @@ TWO_PLACES = Decimal("0.01")
 def log_transaction(
     *,
     user: User,
-    booking,
+    booking=None,
+    promotion_slot=None,
     kind: str,
     amount: Decimal,
     currency: str = "cad",
@@ -31,9 +32,13 @@ def log_transaction(
 
     This is a thin helper; no complex business logic here yet.
     """
+    if booking is None and promotion_slot is None:
+        raise ValueError("booking or promotion_slot is required to log a transaction.")
+
     return Transaction.objects.create(
         user=user,
         booking=booking,
+        promotion_slot=promotion_slot,
         kind=kind,
         amount=amount,
         currency=currency,

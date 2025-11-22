@@ -72,11 +72,19 @@ def chat_detail(request, pk: int):
     """Return the full conversation history."""
     conv = _get_user_conversation_or_404(request.user, pk)
     read_state = mark_conversation_read(conv, request.user)
+    other_user_id = conv.owner_id if request.user.id == conv.renter_id else conv.renter_id
+    other_read_state = None
+    if other_user_id:
+        other_read_state = ConversationReadState.objects.filter(
+            conversation=conv,
+            user_id=other_user_id,
+        ).first()
     serializer = ConversationDetailSerializer(
         conv,
         context={
             "request": request,
             "read_state": read_state,
+            "other_read_state": other_read_state,
         },
     )
     return Response(serializer.data)

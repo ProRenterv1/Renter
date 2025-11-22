@@ -11,6 +11,8 @@ from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
+from identity.models import is_user_identity_verified
+
 from .models import (
     ContactVerificationChallenge,
     LoginEvent,
@@ -80,6 +82,7 @@ class ProfileSerializer(serializers.ModelSerializer):
     )
     avatar_url = serializers.SerializerMethodField()
     avatar_uploaded = serializers.SerializerMethodField()
+    identity_verified = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -105,6 +108,7 @@ class ProfileSerializer(serializers.ModelSerializer):
             "avatar",
             "date_joined",
             "stripe_customer_id",
+            "identity_verified",
         ]
         read_only_fields = (
             "id",
@@ -116,6 +120,7 @@ class ProfileSerializer(serializers.ModelSerializer):
             "avatar_uploaded",
             "date_joined",
             "stripe_customer_id",
+            "identity_verified",
         )
 
     @staticmethod
@@ -166,6 +171,9 @@ class ProfileSerializer(serializers.ModelSerializer):
     def get_avatar_uploaded(self, obj: User) -> bool:
         return obj.avatar_uploaded
 
+    def get_identity_verified(self, obj: User) -> bool:
+        return is_user_identity_verified(obj)
+
     def update(self, instance: User, validated_data: dict):
         avatar = validated_data.pop("avatar", serializers.empty)
         if avatar is not serializers.empty:
@@ -190,6 +198,7 @@ class PublicProfileSerializer(serializers.ModelSerializer):
 
     avatar_url = serializers.SerializerMethodField()
     avatar_uploaded = serializers.SerializerMethodField()
+    identity_verified = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -202,6 +211,7 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             "avatar_url",
             "avatar_uploaded",
             "date_joined",
+            "identity_verified",
         ]
         read_only_fields = tuple(fields)
 
@@ -210,6 +220,9 @@ class PublicProfileSerializer(serializers.ModelSerializer):
 
     def get_avatar_uploaded(self, obj: User) -> bool:
         return obj.avatar_uploaded
+
+    def get_identity_verified(self, obj: User) -> bool:
+        return is_user_identity_verified(obj)
 
 
 class LoginEventSerializer(serializers.ModelSerializer):
