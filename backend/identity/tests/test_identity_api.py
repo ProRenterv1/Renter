@@ -24,6 +24,14 @@ def auth_client(user):
     return client
 
 
+def test_identity_endpoints_require_authentication():
+    client = APIClient()
+    start_resp = client.post("/api/identity/start/")
+    status_resp = client.get("/api/identity/status/")
+    assert start_resp.status_code == 401
+    assert status_resp.status_code == 401
+
+
 def test_identity_start_creates_verification_session(monkeypatch, renter_user, settings):
     settings.STRIPE_SECRET_KEY = "sk_test_identity"
     captured = {}

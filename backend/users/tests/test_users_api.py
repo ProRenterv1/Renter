@@ -45,6 +45,30 @@ def spy_task(monkeypatch, task):
     return calls
 
 
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("get", "/api/users/login-events/", None),
+        ("patch", "/api/users/two-factor/settings/", {"two_factor_email_enabled": True}),
+        ("post", "/api/users/change-password/", {"current_password": "x", "new_password": "y"}),
+        ("post", "/api/users/contact-verification/request/", {"channel": "email"}),
+        (
+            "post",
+            "/api/users/contact-verification/verify/",
+            {"channel": "email", "code": "000000", "challenge_id": 1},
+        ),
+    ],
+)
+def test_protected_user_endpoints_require_authentication(method, path, payload):
+    client = APIClient()
+    call = getattr(client, method)
+    kwargs = {"format": "json"}
+    if payload is not None:
+        kwargs["data"] = payload
+    resp = call(path, **kwargs)
+    assert resp.status_code == 401
+
+
 def test_signup_creates_user_and_hashes_password():
     client = APIClient()
     payload = {

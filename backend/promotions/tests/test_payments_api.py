@@ -15,6 +15,33 @@ def _expected_base_and_gst(price_per_day_cents: int, days: int) -> tuple[int, in
 
 
 @pytest.mark.django_db
+def test_promotions_endpoints_require_authentication(listing, settings):
+    settings.PROMOTION_PRICE_CENTS = 1500
+    client = APIClient()
+
+    pricing_resp = client.get(
+        reverse("promotions:promotion_pricing") + f"?listing_id={listing.id}",
+        format="json",
+    )
+    assert pricing_resp.status_code == 401
+
+    base_cents, gst_cents = _expected_base_and_gst(settings.PROMOTION_PRICE_CENTS, 3)
+    pay_resp = client.post(
+        reverse("promotions:promotion_pay"),
+        {
+            "listing_id": listing.id,
+            "promotion_start": "2025-02-01",
+            "promotion_end": "2025-02-03",
+            "base_price_cents": base_cents,
+            "gst_cents": gst_cents,
+            "stripe_payment_method_id": "pm_unauth",
+        },
+        format="json",
+    )
+    assert pay_resp.status_code == 401
+
+
+@pytest.mark.django_db
 def test_pay_for_promotion_creates_slot(monkeypatch, owner_user, listing, settings):
     settings.PROMOTION_PRICE_CENTS = 1500
     api_client = APIClient()
