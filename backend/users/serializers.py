@@ -212,6 +212,8 @@ class PublicProfileSerializer(serializers.ModelSerializer):
             "avatar_uploaded",
             "date_joined",
             "identity_verified",
+            "rating",
+            "review_count",
         ]
         read_only_fields = tuple(fields)
 

@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { AuthStore } from "@/lib/auth";
 import ChatMessages from "@/components/chat/Messages";
+import { ReviewModal } from "@/components/reviews/ReviewModal";
 import {
   authAPI,
   bookingsAPI,
@@ -23,6 +24,7 @@ import {
 } from "@/lib/api";
 import { fetchConversations, type ConversationSummary } from "@/lib/chat";
 import { formatCurrency, parseMoney } from "@/lib/utils";
+import { startEventStream, type EventEnvelope } from "@/lib/events";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -63,6 +65,9 @@ interface RentalRow {
   primaryPhotoUrl: string;
   startDate: string;
   endDate: string;
+  endDateRaw: string;
+  returnedByRenterAt: string | null;
+  returnConfirmedAt: string | null;
   pickupConfirmedAt: string | null;
   beforePhotosUploadedAt: string | null;
   beforePhotosRequired: boolean;
@@ -84,6 +89,11 @@ type PaymentFormState = {
 };
 
 type BookingTotalsWithBase = BookingTotals & { base_amount?: string | number };
+
+type BookingWithReturnFields = Booking & {
+  returned_by_renter_at?: string | null;
+  return_confirmed_at?: string | null;
+};
 
 type BeforePhotoUpload = {
   file: File;
@@ -235,6 +245,30 @@ const matchesStatusFilter = (row: RentalRow, filter: StatusFilter) => {
   return true;
 };
 
+const hasReachedReturnWindow = (endDateRaw: string): boolean => {
+  try {
+    const today = startOfToday();
+    const endDate = parseLocalDate(endDateRaw);
+    endDate.setDate(endDate.getDate() - 1);
+    return today.getTime() >= endDate.getTime();
+  } catch {
+    return false;
+  }
+};
+
+const canRequestReturn = (row: RentalRow): boolean => {
+  if (row.statusRaw !== "paid" || row.statusLabel !== "In progress") {
+    return false;
+  }
+  if (!hasReachedReturnWindow(row.endDateRaw)) {
+    return false;
+  }
+  if (row.returnedByRenterAt) {
+    return false;
+  }
+  return true;
+};
+
 export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(false);
@@ -257,8 +291,13 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
   const [beforePhotos, setBeforePhotos] = useState<BeforePhotoUpload[]>([]);
   const [beforeUploadLoading, setBeforeUploadLoading] = useState(false);
   const [beforeUploadError, setBeforeUploadError] = useState<string | null>(null);
+  const [actionLoadingId, setActionLoadingId] = useState<number | null>(null);
   const [chatConversations, setChatConversations] = useState<ConversationSummary[]>([]);
   const [chatConversationId, setChatConversationId] = useState<number | null>(null);
+  const [renterReviewTarget, setRenterReviewTarget] = useState<{
+    bookingId: number;
+    ownerName: string;
+  } | null>(null);
   const currentUser = AuthStore.getCurrentUser();
   const currentUserId = currentUser?.id ?? null;
   const stripe = useStripe();
@@ -267,6 +306,8 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
   const listingCacheRef = useRef<Map<string, Listing | null>>(new Map());
   const beforeFileInputRef = useRef<HTMLInputElement | null>(null);
   const beforePhotosRef = useRef<BeforePhotoUpload[]>([]);
+  const isMountedRef = useRef(true);
+  const rentalRowsRef = useRef<RentalRow[]>([]);
   const cardElementOptions = useMemo<StripeCardElementOptions>(
     () => ({
       hidePostalCode: true,
@@ -286,6 +327,14 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     }),
     []
   );
+
+  const getOwnerDisplayName = useCallback((row: RentalRow | null | undefined) => {
+    const first = row?.ownerFirstName?.trim() ?? "";
+    const last = row?.ownerLastName?.trim() ?? "";
+    const username = row?.ownerUsername ?? "";
+    const full = [first, last].filter(Boolean).join(" ").trim();
+    return full || username || "Owner";
+  }, []);
 
   const loadChatConversations = useCallback(async () => {
     try {
@@ -320,41 +369,88 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     [chatConversations, loadChatConversations],
   );
 
-  useEffect(() => {
+  const reloadBookings = useCallback(async () => {
     if (!currentUserId) {
       setBookings([]);
       setError(null);
       setLoading(false);
       return;
     }
-    let active = true;
     setLoading(true);
     setError(null);
-    bookingsAPI
-      .listMine()
-      .then((data) => {
-        if (!active) return;
-        const mine = data
-          .filter((booking) => booking.renter === currentUserId)
-          .sort(
-            (a, b) =>
-              new Date(b.created_at).getTime() -
-              new Date(a.created_at).getTime(),
-          );
-        setBookings(mine);
-      })
-      .catch(() => {
-        if (!active) return;
-        setError("Unable to load your rentals. Please try again.");
-      })
-      .finally(() => {
-        if (!active) return;
-        setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
+    try {
+      const data = await bookingsAPI.listMine();
+      if (!isMountedRef.current) {
+        return;
+      }
+      const mine = data
+        .filter((booking) => booking.renter === currentUserId)
+        .sort(
+          (a, b) =>
+            new Date(b.created_at).getTime() -
+            new Date(a.created_at).getTime(),
+        );
+      setBookings(mine);
+    } catch (err) {
+      if (!isMountedRef.current) {
+        return;
+      }
+      setError("Unable to load your rentals. Please try again.");
+    } finally {
+      if (!isMountedRef.current) {
+        return;
+      }
+      setLoading(false);
+    }
   }, [currentUserId]);
+
+  useEffect(() => {
+    void reloadBookings();
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, [reloadBookings]);
+
+  useEffect(() => {
+    if (!currentUserId) {
+      return;
+    }
+    const handle = startEventStream({
+      onEvents: (events) => {
+        let shouldReload = false;
+        for (const event of events as EventEnvelope<any>[]) {
+          if (
+            event.type === "booking:status_changed" ||
+            event.type === "booking:return_requested"
+          ) {
+            shouldReload = true;
+          }
+          if (event.type === "booking:review_invite") {
+            shouldReload = true;
+            const payload = event.payload as {
+              booking_id: number;
+              owner_id: number;
+              renter_id: number;
+            };
+            if (payload.renter_id === currentUserId) {
+              const row = rentalRowsRef.current.find(
+                (entry) => entry.bookingId === payload.booking_id,
+              );
+              const ownerName = row ? getOwnerDisplayName(row) : "Owner";
+              setRenterReviewTarget({ bookingId: payload.booking_id, ownerName });
+            }
+          }
+        }
+        if (shouldReload) {
+          void reloadBookings();
+        }
+      },
+    });
+
+    return () => {
+      handle.stop();
+    };
+  }, [currentUserId, getOwnerDisplayName, reloadBookings]);
 
   useEffect(() => {
     beforePhotosRef.current = beforePhotos;
@@ -453,6 +549,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
         (booking) => booking.status !== "canceled" && booking.status !== "completed",
       )
       .map((booking) => {
+        const bookingWithReturn = booking as BookingWithReturnFields;
         const totals = booking.totals as BookingTotalsWithBase | null;
         let rentalSubtotal = parseMoney(totals?.rental_subtotal ?? totals?.base_amount ?? 0);
         const rawServiceFee = parseMoney(totals?.service_fee ?? totals?.renter_fee ?? 0);
@@ -485,12 +582,19 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
           primaryPhotoUrl: booking.listing_primary_photo_url || placeholderImage,
           startDate: booking.start_date,
           endDate: booking.end_date,
+          endDateRaw: booking.end_date,
+          returnedByRenterAt: bookingWithReturn.returned_by_renter_at ?? null,
+          returnConfirmedAt: bookingWithReturn.return_confirmed_at ?? null,
           pickupConfirmedAt: booking.pickup_confirmed_at ?? null,
           beforePhotosUploadedAt: booking.before_photos_uploaded_at ?? null,
           beforePhotosRequired: booking.before_photos_required !== false,
         };
       });
   }, [bookings]);
+
+  useEffect(() => {
+    rentalRowsRef.current = rentalRows;
+  }, [rentalRows]);
 
   const filteredRows = useMemo(() => {
     return rentalRows.filter((row) => matchesStatusFilter(row, statusFilter));
@@ -658,6 +762,30 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     resetBeforePhotoUploads();
     setBeforeUploadError(null);
     setBeforeUploadLoading(false);
+  };
+
+  const handleRequestReturn = async (row: RentalRow) => {
+    const confirmed = window.confirm("Are you sure you want to mark this rental as returned?");
+    if (!confirmed) {
+      return;
+    }
+    setActionLoadingId(row.bookingId);
+    try {
+      const updated = await bookingsAPI.renterReturn(row.bookingId);
+      setBookings((prev) =>
+        prev.map((booking) => (booking.id === updated.id ? updated : booking)),
+      );
+      const ownerName = getOwnerDisplayName(row);
+      setRenterReviewTarget({ bookingId: row.bookingId, ownerName });
+      toast.success("Return requested – waiting for owner.");
+    } catch (err) {
+      const message = isJsonError(err)
+        ? extractJsonErrorMessage(err) ?? "Could not request a return right now."
+        : "Could not request a return right now.";
+      toast.error(message);
+    } finally {
+      setActionLoadingId(null);
+    }
   };
 
   const startPaymentFlow = (row: RentalRow) => {
@@ -1121,6 +1249,10 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                     row.beforePhotosRequired &&
                     Boolean(row.beforePhotosUploadedAt) &&
                     !row.pickupConfirmedAt;
+                  const isInProgress = row.statusLabel === "In progress";
+                  const canReturnRental = canRequestReturn(row);
+                  const isRowActionLoading = actionLoadingId === row.bookingId;
+                  const hasReturnRequest = Boolean(row.returnedByRenterAt);
 
                   return (
                     <TableRow
@@ -1183,16 +1315,18 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                       <TableCell>
                         <div className="flex flex-col items-end gap-1">
                           <div className="flex justify-end gap-2">
-                            <Button
-                              size="sm"
-                              variant="secondary"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void openChatForBooking(row.bookingId);
-                              }}
-                            >
-                              Chat
-                            </Button>
+                            {!isInProgress && (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void openChatForBooking(row.bookingId);
+                                }}
+                              >
+                                Chat
+                              </Button>
+                            )}
                             {row.isPayable && (
                               <Button
                                 size="sm"
@@ -1216,7 +1350,28 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                                 Pick up
                               </Button>
                             )}
-                            {row.isCancelable && (
+                            {canReturnRental && (
+                              <Button
+                                size="sm"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleRequestReturn(row);
+                                }}
+                                disabled={isRowActionLoading}
+                              >
+                                {isRowActionLoading ? "Requesting..." : "Return rental"}
+                              </Button>
+                            )}
+                            {isInProgress && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={(event) => event.stopPropagation()}
+                              >
+                                Report an Issue
+                              </Button>
+                            )}
+                            {!isInProgress && row.isCancelable && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -1238,6 +1393,11 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                           {awaitingOwner && (
                             <span className="text-xs text-muted-foreground">
                               Before photos uploaded · Awaiting owner
+                            </span>
+                          )}
+                          {hasReturnRequest && (
+                            <span className="text-xs text-muted-foreground">
+                              Return requested – waiting for owner
                             </span>
                           )}
                         </div>
@@ -1297,6 +1457,16 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
           {chatConversationId && <ChatMessages conversationId={chatConversationId} />}
         </DialogContent>
       </Dialog>
+      <ReviewModal
+        open={renterReviewTarget !== null}
+        role="renter_to_owner"
+        bookingId={renterReviewTarget?.bookingId ?? 0}
+        otherPartyName={renterReviewTarget?.ownerName ?? "Owner"}
+        onClose={() => setRenterReviewTarget(null)}
+        onSubmitted={() => {
+          toast.success("Thanks for reviewing the owner.");
+        }}
+      />
       <PolicyConfirmationModal
         open={policyModalOpen}
         roleLabel="renter"

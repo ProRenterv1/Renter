@@ -161,6 +161,26 @@ export interface PublicProfile {
   identity_verified?: boolean;
 }
 
+export type ReviewRole = "owner_to_renter" | "renter_to_owner";
+
+export interface Review {
+  id: number;
+  booking: number;
+  author: number;
+  subject: number;
+  role: ReviewRole;
+  rating: number | null;
+  text: string;
+  created_at: string;
+}
+
+export interface CreateReviewPayload {
+  booking: number;
+  role: ReviewRole;
+  rating?: number | null;
+  text?: string;
+}
+
 export interface ListingPhoto {
   id: number;
   listing: number;
@@ -869,6 +889,52 @@ export const bookingsAPI = {
     return jsonFetch<Booking>(`/bookings/${id}/confirm-pickup/`, {
       method: "POST",
     });
+  },
+  renterReturn(id: number) {
+    return jsonFetch<Booking>(`/bookings/${id}/renter-return/`, {
+      method: "POST",
+    });
+  },
+  ownerMarkReturned(id: number) {
+    return jsonFetch<Booking>(`/bookings/${id}/owner-mark-returned/`, {
+      method: "POST",
+    });
+  },
+  afterPhotosPresign(id: number, payload: PhotoPresignRequest) {
+    return jsonFetch<PhotoPresignResponse>(
+      `/bookings/${id}/after-photos/presign/`,
+      {
+        method: "POST",
+        body: payload,
+      },
+    );
+  },
+  afterPhotosComplete(id: number, payload: PhotoCompletePayload) {
+    return jsonFetch<PhotoCompleteResponse>(
+      `/bookings/${id}/after-photos/complete/`,
+      {
+        method: "POST",
+        body: payload,
+      },
+    );
+  },
+};
+
+export const reviewsAPI = {
+  create(payload: CreateReviewPayload) {
+    return jsonFetch<Review>("/reviews/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  list(params?: { booking?: number; subject?: number; role?: ReviewRole }) {
+    const search = new URLSearchParams();
+    if (params?.booking) search.set("booking", String(params.booking));
+    if (params?.subject) search.set("subject", String(params.subject));
+    if (params?.role) search.set("role", params.role);
+    const query = search.toString();
+    const path = `/reviews/${query ? `?${query}` : ""}`;
+    return jsonFetch<Review[]>(path, { method: "GET" });
   },
 };
 

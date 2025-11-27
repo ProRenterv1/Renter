@@ -7,6 +7,7 @@ import requests
 from django.conf import settings
 from django.db.models import Exists, OuterRef
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
@@ -221,7 +222,11 @@ class CanListItems(permissions.BasePermission):
 
 
 class ListingViewSet(viewsets.ModelViewSet):
-    queryset = Listing.objects.all().select_related("owner", "category").prefetch_related("photos")
+    queryset = (
+        Listing.objects.filter(is_deleted=False)
+        .select_related("owner", "category")
+        .prefetch_related("photos")
+    )
     serializer_class = ListingSerializer
     pagination_class = ListingPagination
     permission_classes = [
@@ -247,7 +252,11 @@ class ListingViewSet(viewsets.ModelViewSet):
             raise
 
     def get_queryset(self):
-        base_qs = Listing.objects.select_related("owner", "category").prefetch_related("photos")
+        base_qs = (
+            Listing.objects.filter(is_deleted=False)
+            .select_related("owner", "category")
+            .prefetch_related("photos")
+        )
         params = self.request.query_params
         q = params.get("q") or None
         category = params.get("category") or None
@@ -286,6 +295,19 @@ class ListingViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save()
 
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.is_deleted:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        instance.is_deleted = True
+        instance.deleted_at = timezone.now()
+        update_fields = ["is_deleted", "deleted_at"]
+        if hasattr(instance, "updated_at"):
+            update_fields.append("updated_at")
+        instance.save(update_fields=update_fields)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=True, methods=["get"], url_path="photos")
     def photos_list(self, request, slug=None):
         listing = self.get_object()
@@ -316,7 +338,7 @@ class ListingViewSet(viewsets.ModelViewSet):
     def mine(self, request):
         """Return the authenticated user's listings using existing pagination."""
         qs = (
-            Listing.objects.filter(owner=request.user)
+            Listing.objects.filter(owner=request.user, is_deleted=False)
             .select_related("category")
             .prefetch_related("photos")
             .order_by("-created_at")

@@ -21,7 +21,7 @@ from payments.stripe_api import (
     create_booking_payment_intents,
 )
 
-from .domain import ensure_no_conflict, validate_booking_dates
+from .domain import ensure_no_conflict, is_return_initiated, validate_booking_dates
 from .models import Booking
 
 logger = logging.getLogger(__name__)
@@ -85,6 +85,12 @@ class BookingSerializer(serializers.ModelSerializer):
             "pickup_confirmed_at",
             "before_photos_required",
             "before_photos_uploaded_at",
+            "returned_by_renter_at",
+            "return_confirmed_at",
+            "after_photos_uploaded_at",
+            "deposit_release_scheduled_at",
+            "deposit_released_at",
+            "dispute_window_expires_at",
             "listing",
             "listing_title",
             "listing_owner_first_name",
@@ -119,6 +125,12 @@ class BookingSerializer(serializers.ModelSerializer):
             "pickup_confirmed_at",
             "before_photos_required",
             "before_photos_uploaded_at",
+            "returned_by_renter_at",
+            "return_confirmed_at",
+            "after_photos_uploaded_at",
+            "deposit_release_scheduled_at",
+            "deposit_released_at",
+            "dispute_window_expires_at",
             "owner",
             "renter",
             "totals",
@@ -185,16 +197,28 @@ class BookingSerializer(serializers.ModelSerializer):
                 }
             )
 
-        if listing and start_date and end_date and not is_user_identity_verified(user):
-            rental_days = (end_date - start_date).days
+        rental_days = (end_date - start_date).days if start_date and end_date else None
+        is_verified = is_user_identity_verified(user)
+
+        if listing and start_date and end_date and not is_verified:
+            max_days = settings.UNVERIFIED_MAX_BOOKING_DAYS
             max_repl = settings.UNVERIFIED_MAX_REPLACEMENT_CAD
             max_dep = settings.UNVERIFIED_MAX_DEPOSIT_CAD
-            max_days = settings.UNVERIFIED_MAX_BOOKING_DAYS
 
             replacement = listing.replacement_value_cad or Decimal("0")
             deposit = listing.damage_deposit_cad or Decimal("0")
 
-            if replacement > max_repl or deposit > max_dep or rental_days > max_days:
+            if rental_days is not None and rental_days > max_days:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            f"Unverified renters can book tools for up to {max_days} days. "
+                            "Please shorten your rental or complete ID verification."
+                        ]
+                    }
+                )
+
+            if replacement > max_repl or deposit > max_dep:
                 message = (
                     "This booking is only available to users with ID verification. "
                     "Unverified profiles are limited to tools up to "
@@ -203,6 +227,20 @@ class BookingSerializer(serializers.ModelSerializer):
                     f"and rentals up to {max_days} days."
                 )
                 raise serializers.ValidationError({"non_field_errors": [message]})
+
+        if listing and start_date and end_date and is_verified:
+            max_days_verified = settings.VERIFIED_MAX_BOOKING_DAYS
+            if rental_days is not None and rental_days > max_days_verified:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            (
+                                f"Bookings are limited to {max_days_verified} days at a time. "
+                                "Please shorten your rental period."
+                            )
+                        ]
+                    }
+                )
 
         if listing and listing.owner_id == user.id:
             raise serializers.ValidationError(
@@ -316,6 +354,8 @@ class BookingSerializer(serializers.ModelSerializer):
         status_value = booking.status
         if status_value == Booking.Status.REQUESTED and booking.charge_payment_intent_id:
             status_value = Booking.Status.PAID
+        if is_return_initiated(booking):
+            return "Return pending"
         if status_value == Booking.Status.PAID and booking.pickup_confirmed_at:
             return "In progress"
 
