@@ -28,7 +28,7 @@ def search_listings(
         qs = qs.filter(city__iexact=city)
     if owner_id is not None:
         qs = qs.filter(owner_id=owner_id)
-    return qs.filter(is_active=True, is_available=True).order_by("-created_at")
+    return qs.filter(is_active=True, is_available=True, is_deleted=False).order_by("-created_at")
 
 
 def compute_booking_totals(

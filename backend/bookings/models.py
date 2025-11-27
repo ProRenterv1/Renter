@@ -86,6 +86,36 @@ class Booking(models.Model):
         blank=True,
         help_text="When renter finished uploading 'before' photos for this booking.",
     )
+    returned_by_renter_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When renter indicated the tool has been returned.",
+    )
+    return_confirmed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When owner confirmed the tool return.",
+    )
+    after_photos_uploaded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When renter completed uploading 'after' photos.",
+    )
+    deposit_release_scheduled_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When a damage deposit release was scheduled.",
+    )
+    deposit_released_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the damage deposit hold was actually released.",
+    )
+    dispute_window_expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="End of the post-return dispute window.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

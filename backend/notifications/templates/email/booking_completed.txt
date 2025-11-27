@@ -1,0 +1,13 @@
+Hi {{ user.first_name|default:user.username }},
+
+Your rental for "{{ tool_title }}" with {{ owner_full_name }} is complete.
+
+Dates: {{ date_range_display }}
+{% if totals.total_charge %}Total paid: ${{ totals.total_charge }}{% endif %}
+{% if damage_deposit %}Damage deposit: ${{ damage_deposit }}{% endif %}
+
+We'd love to hear how it went. You can leave a quick review from your rentals dashboard:
+{{ cta_url }}
+
+Thanks,
+The Renter Team

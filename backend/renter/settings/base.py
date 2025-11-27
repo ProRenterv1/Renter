@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     "listings",
     "storage",
     "notifications",
+    "reviews",
     "promotions.apps.PromotionsConfig",
     "django.contrib.admin",
     "django.contrib.auth",
@@ -192,7 +193,15 @@ CELERY_BEAT_SCHEDULE.update(
         "bookings_auto_expire_stale_daily": {
             "task": "bookings.auto_expire_stale_bookings",
             "schedule": crontab(hour=3, minute=0),
-        }
+        },
+        "bookings_auto_release_deposits_hourly": {
+            "task": "bookings.auto_release_deposits",
+            "schedule": crontab(minute=0),  # every hour on the hour
+        },
+        "listings_purge_soft_deleted_nightly": {
+            "task": "listings.purge_soft_deleted_listings",
+            "schedule": crontab(hour=4, minute=0),
+        },
     }
 )
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -227,4 +236,11 @@ UNVERIFIED_MAX_REPLACEMENT_CAD = Decimal(
     env("UNVERIFIED_MAX_REPLACEMENT_CAD", default="1000")
 )
 UNVERIFIED_MAX_DEPOSIT_CAD = Decimal(env("UNVERIFIED_MAX_DEPOSIT_CAD", default="700"))
-UNVERIFIED_MAX_BOOKING_DAYS = env.int("UNVERIFIED_MAX_BOOKING_DAYS", default=3)
+UNVERIFIED_MAX_BOOKING_DAYS = env.int(
+    "UNVERIFIED_MAX_BOOKING_DAYS",
+    default=3,
+)
+VERIFIED_MAX_BOOKING_DAYS = env.int(
+    "VERIFIED_MAX_BOOKING_DAYS",
+    default=5,
+)

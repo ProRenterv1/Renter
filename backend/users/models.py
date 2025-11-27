@@ -66,6 +66,8 @@ class User(AbstractUser):
         default="",
         help_text="Stripe Customer ID for renter payments.",
     )
+    rating = models.FloatField(null=True, blank=True)
+    review_count = models.PositiveIntegerField(default=0)
 
     def is_owner(self) -> bool:
         return bool(self.can_list)

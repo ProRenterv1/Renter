@@ -6,9 +6,11 @@ import logging
 from datetime import date
 
 from celery import shared_task
+from django.db import models
 from django.utils import timezone
 
 from notifications import tasks as notification_tasks
+from payments.stripe_api import release_deposit_hold
 
 from .domain import is_pre_payment, mark_canceled
 from .models import Booking
@@ -70,3 +72,43 @@ def auto_expire_stale_bookings() -> int:
         _expire_booking(booking)
 
     return expired_count
+
+
+@shared_task(name="bookings.auto_release_deposits")
+def auto_release_deposits() -> int:
+    """
+    Automatically release damage deposit holds after their scheduled time,
+    once the booking is completed and no dispute window is open.
+
+    Returns the number of bookings where a deposit was released.
+    """
+    now = timezone.now()
+    released_count = 0
+
+    qs = (
+        Booking.objects.filter(
+            status=Booking.Status.COMPLETED,
+            deposit_hold_id__isnull=False,
+            deposit_hold_id__gt="",
+            deposit_released_at__isnull=True,
+            deposit_release_scheduled_at__lte=now,
+        )
+        .filter(
+            models.Q(dispute_window_expires_at__isnull=True)
+            | models.Q(dispute_window_expires_at__lte=now)
+        )
+        .select_related("renter")
+    )
+
+    for booking in qs:
+        try:
+            release_deposit_hold(booking)
+        except Exception:
+            logger.exception("auto_release_deposits: failed for booking %s", booking.id)
+            continue
+
+        booking.deposit_released_at = timezone.now()
+        booking.save(update_fields=["deposit_released_at", "updated_at"])
+        released_count += 1
+
+    return released_count

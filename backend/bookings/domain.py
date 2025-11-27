@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Literal, Optional
 
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from listings.models import Listing
 
@@ -154,6 +155,38 @@ def is_severely_overdue(today: date, booking: Booking, *, threshold_days: int = 
         threshold_days = 0
     days_late = (today - booking.end_date).days
     return days_late >= threshold_days
+
+
+def is_return_initiated(booking: Booking) -> bool:
+    """
+    True when the renter has indicated return (and optionally uploaded after photos),
+    but the owner has not yet confirmed.
+    """
+    return (
+        booking.status == Booking.Status.PAID
+        and booking.pickup_confirmed_at is not None
+        and booking.returned_by_renter_at is not None
+        and booking.return_confirmed_at is None
+    )
+
+
+def is_return_completed(booking: Booking) -> bool:
+    """
+    True when the owner has confirmed the return (status is still PAID or COMPLETED).
+    """
+    return booking.return_confirmed_at is not None
+
+
+def is_in_dispute_window(booking: Booking, *, now: datetime | None = None) -> bool:
+    """
+    True if a dispute window is defined and has not expired yet.
+    This will be used later for dispute flows.
+    """
+    if booking.dispute_window_expires_at is None:
+        return False
+    if now is None:
+        now = timezone.now()
+    return now < booking.dispute_window_expires_at
 
 
 def mark_canceled(

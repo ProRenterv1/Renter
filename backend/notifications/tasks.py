@@ -383,6 +383,14 @@ def send_booking_status_email(renter_id: int, booking_id: int, new_status: str):
 
 
 @shared_task(queue="emails")
+def send_booking_completed_review_invite_email(booking_id: int):
+    """
+    Placeholder task for booking completion review invitations.
+    """
+    logger.info("notifications: review invite placeholder for booking %s", booking_id)
+
+
+@shared_task(queue="emails")
 def send_booking_expired_email(booking_id: int):
     """
     Notify both renter and owner that a booking expired before payment.
@@ -487,6 +495,53 @@ def send_booking_payment_receipt_email(user_id: int, booking_id: int):
         context,
         user.email,
         attachments=attachments or None,
+    )
+
+
+@shared_task(queue="emails")
+def send_booking_completed_email(renter_id: int, booking_id: int) -> None:
+    """Email the renter when their booking is marked completed."""
+    from bookings.models import Booking
+
+    renter = _get_user(renter_id)
+    if not renter or not getattr(renter, "email", None):
+        return
+
+    try:
+        booking = Booking.objects.select_related("listing", "owner", "renter").get(pk=booking_id)
+    except Booking.DoesNotExist:
+        logger.warning("notifications: booking %s no longer exists", booking_id)
+        return
+
+    frontend_origin = (getattr(settings, "FRONTEND_ORIGIN", "") or "").rstrip("/")
+    totals = booking.totals or {}
+    owner_full_name = _display_name(getattr(booking, "owner", None))
+    tool_title = getattr(getattr(booking, "listing", None), "title", "your listing")
+    start_display, end_display, date_range_display = _format_booking_date_range(
+        getattr(booking, "start_date", None),
+        getattr(booking, "end_date", None),
+    )
+
+    subject = "Your rental is complete"
+    if tool_title and tool_title != "your listing":
+        subject = f"Your {tool_title} rental is complete"
+
+    context = {
+        "user": renter,
+        "owner_full_name": owner_full_name,
+        "tool_title": tool_title,
+        "start_date_display": start_display,
+        "end_date_display": end_display,
+        "date_range_display": date_range_display,
+        "totals": totals,
+        "damage_deposit": totals.get("damage_deposit"),
+        "cta_url": f"{frontend_origin}/profile?tab=rentals" if frontend_origin else "",
+    }
+    _send_email(
+        subject,
+        "booking_completed.txt",
+        context,
+        renter.email,
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import logging
 import subprocess
+from datetime import datetime, time, timedelta
 from typing import Dict, Optional, Tuple
 
 import boto3
@@ -10,7 +11,11 @@ from botocore.exceptions import BotoCoreError, ClientError
 from celery import shared_task
 from django.conf import settings
 from django.db import transaction
+from django.utils import timezone
 from PIL import Image, UnidentifiedImageError
+
+from core.redis import push_event
+from notifications import tasks as notification_tasks
 
 from . import s3 as s3util
 
@@ -220,11 +225,17 @@ def _finalize_booking_photo_record(
 
     public_url = s3util.public_url(key)
 
+    transitioned_to_completed = False
+    booking_owner_id: Optional[int] = None
+    booking_renter_id: Optional[int] = None
     with transaction.atomic():
         try:
             booking = Booking.objects.select_for_update().get(id=booking_id)
         except Booking.DoesNotExist as exc:
             raise ValueError("Booking not found for provided identifier.") from exc
+
+        booking_owner_id = booking.owner_id
+        booking_renter_id = booking.renter_id
 
         photo = (
             BookingPhoto.objects.select_for_update()
@@ -252,7 +263,80 @@ def _finalize_booking_photo_record(
         photo.status = status
         photo.av_status = av_status
         photo.save()
-        return photo
+
+        if role_value == BookingPhoto.Role.AFTER and verdict == "clean":
+            now = timezone.now()
+            updated_fields: list[str] = []
+
+            if not booking.after_photos_uploaded_at:
+                booking.after_photos_uploaded_at = now
+                updated_fields.append("after_photos_uploaded_at")
+
+            if booking.status != Booking.Status.COMPLETED:
+                booking.status = Booking.Status.COMPLETED
+                updated_fields.append("status")
+                transitioned_to_completed = True
+
+            if booking.dispute_window_expires_at is None:
+                booking.dispute_window_expires_at = now + timedelta(hours=24)
+                updated_fields.append("dispute_window_expires_at")
+
+            if booking.deposit_release_scheduled_at is None and booking.end_date:
+                release_date = booking.end_date + timedelta(days=1)
+                deposit_dt = timezone.make_aware(
+                    datetime.combine(release_date, time.min),
+                    timezone.get_current_timezone(),
+                )
+                booking.deposit_release_scheduled_at = deposit_dt
+                updated_fields.append("deposit_release_scheduled_at")
+
+            if updated_fields:
+                booking.updated_at = now
+                updated_fields.append("updated_at")
+                booking.save(update_fields=updated_fields)
+
+    if transitioned_to_completed and booking_owner_id and booking_renter_id:
+        payload = {"booking_id": booking_id, "status": Booking.Status.COMPLETED}
+        push_event(booking_owner_id, "booking:status_changed", payload)
+        push_event(booking_renter_id, "booking:status_changed", payload)
+
+        review_payload = {
+            "booking_id": booking_id,
+            "owner_id": booking_owner_id,
+            "renter_id": booking_renter_id,
+        }
+        push_event(booking_owner_id, "booking:review_invite", review_payload)
+        push_event(booking_renter_id, "booking:review_invite", review_payload)
+
+        try:
+            notification_tasks.send_booking_status_email.delay(
+                booking_renter_id, booking_id, Booking.Status.COMPLETED
+            )
+        except Exception:
+            logger.info(
+                "notifications: could not queue send_booking_status_email for booking %s",
+                booking_id,
+                exc_info=True,
+            )
+
+        try:
+            notification_tasks.send_booking_completed_email.delay(booking_renter_id, booking_id)
+        except Exception:
+            logger.info(
+                "notifications: could not queue send_booking_completed_email for booking %s",
+                booking_id,
+                exc_info=True,
+            )
+
+        try:
+            notification_tasks.send_booking_completed_review_invite_email.delay(booking_id)
+        except Exception:
+            logger.info(
+                "notifications: could not queue send_booking_completed_review_invite_email",
+                exc_info=True,
+            )
+
+    return photo
 
 
 def _run_scan_and_finalize(

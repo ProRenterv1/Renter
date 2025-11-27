@@ -600,6 +600,81 @@ def capture_deposit_amount(*, booking: Booking, amount: Decimal) -> str | None:
     return intent.id
 
 
+def release_deposit_hold(booking: Booking) -> None:
+    """Release a damage deposit hold for a completed booking."""
+    deposit_intent_id = (getattr(booking, "deposit_hold_id", "") or "").strip()
+    if not deposit_intent_id:
+        return
+
+    totals = booking.totals or {}
+    damage_deposit = _parse_decimal(totals.get("damage_deposit"), "damage_deposit")
+    if damage_deposit <= Decimal("0"):
+        return
+
+    existing_release = Transaction.objects.filter(
+        user=booking.renter,
+        booking=booking,
+        kind=Transaction.Kind.DAMAGE_DEPOSIT_RELEASE,
+        stripe_id=deposit_intent_id,
+    ).first()
+    if existing_release is not None:
+        return
+
+    stripe.api_key = _get_stripe_api_key()
+    intent = None
+    try:
+        intent = stripe.PaymentIntent.retrieve(deposit_intent_id)
+        retrieved_id = getattr(intent, "id", "") or deposit_intent_id
+        deposit_intent_id = retrieved_id
+    except stripe.error.InvalidRequestError as exc:
+        if getattr(exc, "code", "") == "resource_missing":
+            logger.info(
+                "Stripe deposit PaymentIntent %s missing for booking %s; treating as released.",
+                deposit_intent_id,
+                booking.id,
+            )
+        else:
+            _handle_stripe_error(exc)
+    except stripe.error.StripeError as exc:
+        _handle_stripe_error(exc)
+
+    if intent is not None:
+        status = getattr(intent, "status", "") or ""
+        if status == "succeeded":
+            return
+        if status != "canceled" and status in (
+            "requires_capture",
+            "requires_payment_method",
+            "requires_confirmation",
+            "requires_action",
+            "processing",
+        ):
+            try:
+                canceled_intent = stripe.PaymentIntent.cancel(deposit_intent_id)
+                canceled_id = getattr(canceled_intent, "id", "") or deposit_intent_id
+                deposit_intent_id = canceled_id
+            except stripe.error.InvalidRequestError as exc:
+                if getattr(exc, "code", "") == "resource_missing":
+                    logger.info(
+                        "Stripe deposit PaymentIntent %s already released for booking %s.",
+                        deposit_intent_id,
+                        booking.id,
+                    )
+                else:
+                    _handle_stripe_error(exc)
+            except stripe.error.StripeError as exc:
+                _handle_stripe_error(exc)
+
+    log_transaction(
+        user=booking.renter,
+        booking=booking,
+        kind=Transaction.Kind.DAMAGE_DEPOSIT_RELEASE,
+        amount=damage_deposit,
+        currency="cad",
+        stripe_id=deposit_intent_id,
+    )
+
+
 def ensure_stripe_customer(user: User, *, customer_id: str | None = None) -> str:
     """
     Return an existing Stripe Customer ID for the user, creating one if necessary.

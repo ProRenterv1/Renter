@@ -16,6 +16,7 @@ from rest_framework.response import Response
 
 from chat.models import Message as ChatMessage
 from chat.models import create_system_message
+from core.redis import push_event
 from listings.models import Listing
 from listings.services import compute_booking_totals
 from notifications import tasks as notification_tasks
@@ -594,7 +595,73 @@ class BookingViewSet(viewsets.ModelViewSet):
             "Booking completed",
             close_chat=True,
         )
+        if booking.renter_id:
+            try:
+                notification_tasks.send_booking_completed_email.delay(booking.renter_id, booking.id)
+            except Exception:
+                logger.info(
+                    "notifications: could not queue send_booking_completed_email for booking %s",
+                    booking.id,
+                    exc_info=True,
+                )
         return Response(self.get_serializer(booking).data)
+
+    @action(detail=True, methods=["post"], url_path="renter-return")
+    def renter_return(self, request, *args, **kwargs):
+        """Allow renters to mark a booking as returned after the end date."""
+        booking: Booking = self.get_object()
+        if booking.renter_id != request.user.id:
+            return Response(
+                {"detail": "Only the renter can mark the tool as returned."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if booking.status != Booking.Status.PAID or not booking.pickup_confirmed_at:
+            return Response(
+                {
+                    "detail": (
+                        "Booking must be in progress and past its end date before marking return."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if booking.end_date and timezone.localdate() < booking.end_date:
+            return Response(
+                {"detail": "Booking must be past its end date before marking return."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        booking.returned_by_renter_at = timezone.now()
+        booking.save(update_fields=["returned_by_renter_at", "updated_at"])
+
+        payload = {"booking_id": booking.id, "triggered_by": request.user.id}
+        push_event(booking.owner_id, "booking:return_requested", payload)
+        push_event(booking.renter_id, "booking:return_requested", payload)
+
+        return Response(self.get_serializer(booking).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="owner-mark-returned")
+    def owner_mark_returned(self, request, *args, **kwargs):
+        """Allow owners to confirm a renter-marked return."""
+        booking: Booking = self.get_object()
+        if booking.owner_id != request.user.id:
+            return Response(
+                {"detail": "Only the listing owner can confirm the return."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if booking.status != Booking.Status.PAID:
+            return Response(
+                {"detail": "Booking must be in a paid state to confirm return."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not booking.returned_by_renter_at:
+            return Response(
+                {"detail": "Renter must mark return before owner confirmation."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        booking.return_confirmed_at = timezone.now()
+        booking.save(update_fields=["return_confirmed_at", "updated_at"])
+        return Response(self.get_serializer(booking).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="before-photos/presign")
     def before_photos_presign(self, request, *args, **kwargs):
@@ -741,6 +808,140 @@ class BookingViewSet(viewsets.ModelViewSet):
         if not booking.before_photos_uploaded_at:
             booking.before_photos_uploaded_at = timezone.now()
             booking.save(update_fields=["before_photos_uploaded_at", "updated_at"])
+
+        return Response({"status": "queued", "key": key}, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=True, methods=["post"], url_path="after-photos/presign")
+    def after_photos_presign(self, request, *args, **kwargs):
+        """Return a presigned PUT URL so participants can upload after photos."""
+        booking: Booking = self.get_object()
+        if booking.is_terminal():
+            return Response(
+                {"detail": "Cannot upload photos for a canceled or completed booking."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        filename = request.data.get("filename") or "upload"
+        content_type = request.data.get("content_type") or guess_content_type(filename)
+        content_md5 = request.data.get("content_md5")
+        size_raw = request.data.get("size")
+        if size_raw in (None, ""):
+            return Response({"detail": "size is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            size_hint = int(size_raw)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "size must be an integer."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        if size_hint <= 0:
+            return Response(
+                {"detail": "size must be greater than zero."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        max_bytes = getattr(settings, "S3_MAX_UPLOAD_BYTES", None)
+        if max_bytes and size_hint > max_bytes:
+            return Response(
+                {"detail": f"File too large. Max allowed is {max_bytes} bytes."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        key = booking_object_key(
+            booking_id=booking.id,
+            user_id=request.user.id,
+            filename=filename,
+        )
+        try:
+            presigned = presign_put(
+                key,
+                content_type=content_type,
+                content_md5=content_md5,
+                size_hint=size_hint,
+            )
+        except ValueError:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {
+                "key": key,
+                "upload_url": presigned["upload_url"],
+                "headers": presigned["headers"],
+                "max_bytes": getattr(settings, "S3_MAX_UPLOAD_BYTES", None),
+                "tagging": "av-status=pending",
+            }
+        )
+
+    @action(detail=True, methods=["post"], url_path="after-photos/complete")
+    def after_photos_complete(self, request, *args, **kwargs):
+        """Persist an after photo record and queue antivirus processing."""
+        booking: Booking = self.get_object()
+        if booking.is_terminal():
+            return Response(
+                {"detail": "Cannot upload photos for a canceled or completed booking."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        key = request.data.get("key")
+        etag = request.data.get("etag")
+        if not key or not etag:
+            return Response(
+                {"detail": "key and etag required."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        filename = request.data.get("filename") or "upload"
+        content_type = request.data.get("content_type") or guess_content_type(filename)
+        size_raw = request.data.get("size")
+        if size_raw in (None, ""):
+            return Response({"detail": "size is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            size_int = int(size_raw)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "size must be an integer."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        if size_int <= 0:
+            return Response(
+                {"detail": "size must be greater than zero."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        max_bytes = getattr(settings, "S3_MAX_UPLOAD_BYTES", None)
+        if max_bytes and size_int > max_bytes:
+            return Response(
+                {"detail": f"File too large. Max allowed is {max_bytes} bytes."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        photo_url = public_url(key)
+        photo, _ = BookingPhoto.objects.get_or_create(
+            booking=booking,
+            uploaded_by=request.user,
+            s3_key=key,
+            defaults={"role": BookingPhoto.Role.AFTER},
+        )
+        photo.role = BookingPhoto.Role.AFTER
+        photo.url = photo_url
+        photo.filename = filename
+        photo.content_type = content_type
+        photo.size = size_int
+        photo.etag = (etag or "").strip('"')
+        photo.status = BookingPhoto.Status.PENDING
+        photo.av_status = BookingPhoto.AVStatus.PENDING
+        photo.width = None
+        photo.height = None
+        photo.save()
+
+        meta = {
+            "etag": etag,
+            "filename": filename,
+            "content_type": content_type,
+            "size": size_int,
+            "role": BookingPhoto.Role.AFTER,
+        }
+        scan_and_finalize_booking_photo.delay(
+            key=key,
+            booking_id=booking.id,
+            uploaded_by_id=request.user.id,
+            meta=meta,
+        )
 
         return Response({"status": "queued", "key": key}, status=status.HTTP_202_ACCEPTED)
 

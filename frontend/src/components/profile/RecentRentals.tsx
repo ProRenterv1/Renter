@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { AuthStore } from "@/lib/auth";
@@ -19,6 +21,7 @@ import {
   type DisplayRentalStatus,
   type RentalDirection,
 } from "@/lib/api";
+import { startEventStream, type EventEnvelope } from "@/lib/events";
 import { formatCurrency } from "@/lib/utils";
 
 type StatusFilter = "all" | "active" | "completed";
@@ -73,41 +76,69 @@ export function RecentRentals() {
   const currentUserId = AuthStore.getCurrentUser()?.id ?? null;
   const navigate = useNavigate();
   const listingCacheRef = useRef<Map<string, Listing | null>>(new Map());
+  const isMountedRef = useRef(true);
 
-  useEffect(() => {
-    let active = true;
+  const reloadRecentRentals = useCallback(async () => {
     if (!currentUserId) {
       setError("Please sign in to see your rentals.");
       setLoading(false);
       setBookings([]);
-      return () => {
-        active = false;
-      };
+      return;
     }
-
     setLoading(true);
     setError(null);
+    try {
+      const data = await bookingsAPI.listMine();
+      if (!isMountedRef.current) {
+        return;
+      }
+      setBookings(Array.isArray(data) ? data : []);
+    } catch (err) {
+      if (!isMountedRef.current) {
+        return;
+      }
+      setError("Could not load your rentals. Please try again.");
+    } finally {
+      if (!isMountedRef.current) {
+        return;
+      }
+      setLoading(false);
+    }
+  }, [currentUserId]);
 
-    bookingsAPI
-      .listMine()
-      .then((data) => {
-        if (!active) return;
-        setBookings(Array.isArray(data) ? data : []);
-      })
-      .catch(() => {
-        if (!active) return;
-        setError("Could not load your rentals. Please try again.");
-      })
-      .finally(() => {
-        if (active) {
-          setLoading(false);
+  useEffect(() => {
+    void reloadRecentRentals();
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, [reloadRecentRentals]);
+
+  useEffect(() => {
+    if (!currentUserId) {
+      return;
+    }
+    const handle = startEventStream({
+      onEvents: (events) => {
+        let shouldReload = false;
+        for (const event of events as EventEnvelope<any>[]) {
+          if (
+            event.type === "booking:status_changed" ||
+            event.type === "booking:review_invite" ||
+            event.type === "booking:return_requested"
+          ) {
+            shouldReload = true;
+          }
         }
-      });
+        if (shouldReload) {
+          void reloadRecentRentals();
+        }
+      },
+    });
 
     return () => {
-      active = false;
+      handle.stop();
     };
-  }, [currentUserId]);
+  }, [currentUserId, reloadRecentRentals]);
 
   const rentals = useMemo<RentalRow[]>(() => {
     if (!currentUserId) return [];
@@ -222,26 +253,27 @@ export function RecentRentals() {
                 <TableHead>Rental Period</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Amount</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading && (
                 <TableRow>
-                  <TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">
                     Loading your rentals...
                   </TableCell>
                 </TableRow>
               )}
               {!loading && error && (
                 <TableRow>
-                  <TableCell colSpan={4} className="py-8 text-center text-sm text-destructive">
+                  <TableCell colSpan={5} className="py-8 text-center text-sm text-destructive">
                     {error}
                   </TableCell>
                 </TableRow>
               )}
               {!loading && !error && filteredRentals.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">
                     You don't have any rentals yet.
                   </TableCell>
                 </TableRow>
@@ -293,6 +325,26 @@ export function RecentRentals() {
                           </span>
                         )}
                       </div>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              alert("Issue reporting will be available after 24 hours from booking end.");
+                            }}
+                            onKeyDown={(event) => event.stopPropagation()}
+                          >
+                            Report an Issue
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">
+                          Issue can be reported only 24 hours after the end of booking.
+                        </TooltipContent>
+                      </Tooltip>
                     </TableCell>
                   </TableRow>
                 ))}

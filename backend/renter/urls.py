@@ -15,5 +15,6 @@ urlpatterns = [
     path("api/owner/payouts/", include("payments.urls_owner_payouts")),
     path("api/promotions/", include("promotions.urls")),
     path("api/identity/", include("identity.urls")),
+    path("api/reviews/", include("reviews.urls")),
     path("api/", include("chat.urls")),
 ]
