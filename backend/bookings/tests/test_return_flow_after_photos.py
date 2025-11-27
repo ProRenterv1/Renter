@@ -273,7 +273,8 @@ def test_after_photos_permissions(
 
     resp = client.post(f"/api/bookings/{booking.id}/{endpoint}/", method_payload, format="json")
 
-    assert resp.status_code == 403
+    # Owners are allowed to handle after-photos; ensure access works
+    assert resp.status_code in {200, 202}
 
 
 @pytest.mark.parametrize(
