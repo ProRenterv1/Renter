@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     "anymail",
     "bookings.apps.BookingsConfig",
     "payments.apps.PaymentsConfig",
+    "disputes",
     "chat.apps.ChatConfig",
     "identity",
     "users",

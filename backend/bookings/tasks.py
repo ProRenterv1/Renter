@@ -92,6 +92,7 @@ def auto_release_deposits() -> int:
             deposit_hold_id__gt="",
             deposit_released_at__isnull=True,
             deposit_release_scheduled_at__lte=now,
+            deposit_locked=False,
         )
         .filter(
             models.Q(dispute_window_expires_at__isnull=True)

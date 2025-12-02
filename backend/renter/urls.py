@@ -13,6 +13,7 @@ urlpatterns = [
     path("api/bookings/", include(("bookings.urls", "bookings"), namespace="bookings")),
     path("api/payments/", include("payments.urls")),
     path("api/owner/payouts/", include("payments.urls_owner_payouts")),
+    path("api/disputes/", include("disputes.urls")),
     path("api/promotions/", include("promotions.urls")),
     path("api/identity/", include("identity.urls")),
     path("api/reviews/", include("reviews.urls")),

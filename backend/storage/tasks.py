@@ -339,6 +339,46 @@ def _finalize_booking_photo_record(
     return photo
 
 
+def _finalize_dispute_evidence_record(
+    *,
+    dispute_id: int,
+    uploaded_by_id: int,
+    key: str,
+    verdict: str,
+    meta: Dict,
+):
+    from disputes.models import DisputeEvidence
+
+    etag = (meta.get("etag") or "").strip('"')
+    filename = meta.get("filename") or ""
+    content_type = meta.get("content_type") or ""
+    size = _coerce_int(meta.get("size"))
+
+    av_status = (
+        DisputeEvidence.AVStatus.CLEAN if verdict == "clean" else DisputeEvidence.AVStatus.INFECTED
+    )
+
+    evidence = DisputeEvidence.objects.filter(
+        dispute_id=dispute_id,
+        uploaded_by_id=uploaded_by_id,
+        s3_key=key,
+    ).first()
+    if not evidence:
+        evidence = DisputeEvidence(
+            dispute_id=dispute_id,
+            uploaded_by_id=uploaded_by_id,
+            s3_key=key,
+        )
+
+    evidence.filename = filename
+    evidence.content_type = content_type
+    evidence.size = size
+    evidence.etag = etag
+    evidence.av_status = av_status
+    evidence.save()
+    return evidence
+
+
 def _run_scan_and_finalize(
     *,
     key: str,
@@ -385,6 +425,29 @@ def _run_scan_and_finalize_booking_photo(
         dimensions=_extract_dimensions(data),
     )
     return {"status": verdict, "photo_id": str(photo.id)}
+
+
+def _run_scan_and_finalize_dispute_evidence(
+    *,
+    key: str,
+    dispute_id: int,
+    uploaded_by_id: int,
+    meta: Dict | None,
+):
+    data = _download_bytes(key)
+    verdict = _scan_bytes(data)
+    if verdict not in {"clean", "infected"}:
+        raise AntivirusError("Unknown antivirus verdict.")
+
+    _apply_av_metadata(key, verdict)
+    evidence = _finalize_dispute_evidence_record(
+        dispute_id=dispute_id,
+        uploaded_by_id=uploaded_by_id,
+        key=key,
+        verdict=verdict,
+        meta=meta or {},
+    )
+    return {"status": verdict, "evidence_id": str(evidence.id)}
 
 
 @shared_task(
@@ -437,4 +500,48 @@ def scan_and_finalize_booking_photo(
     )
 
 
-__all__ = ["scan_and_finalize_photo", "scan_and_finalize_booking_photo"]
+@shared_task(name="storage.tasks.scan_and_finalize_dispute_evidence")
+def scan_and_finalize_dispute_evidence(
+    key: str,
+    dispute_id: int,
+    uploaded_by_id: int,
+    meta: Dict | None = None,
+):
+    """
+    Download dispute evidence, run AV scan, and finalize the DisputeEvidence row.
+    """
+
+    try:
+        return _run_scan_and_finalize_dispute_evidence(
+            key=key,
+            dispute_id=dispute_id,
+            uploaded_by_id=uploaded_by_id,
+            meta=meta or {},
+        )
+    except Exception:
+        logger.exception(
+            "Failed to scan dispute evidence",
+            extra={"dispute_id": dispute_id, "key": key},
+        )
+        try:
+            from disputes.models import DisputeEvidence
+
+            DisputeEvidence.objects.filter(
+                dispute_id=dispute_id,
+                uploaded_by_id=uploaded_by_id,
+                s3_key=key,
+            ).update(av_status=DisputeEvidence.AVStatus.FAILED)
+        except Exception:
+            logger.info(
+                "Best-effort: could not mark dispute evidence failed",
+                extra={"dispute_id": dispute_id, "key": key},
+                exc_info=True,
+            )
+        return {"status": "failed"}
+
+
+__all__ = [
+    "scan_and_finalize_photo",
+    "scan_and_finalize_booking_photo",
+    "scan_and_finalize_dispute_evidence",
+]

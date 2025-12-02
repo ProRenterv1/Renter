@@ -54,6 +54,14 @@ class Booking(models.Model):
         help_text="Stripe PaymentIntent ID for the rental charge (base + renter fee).",
     )
     deposit_hold_id = models.CharField(max_length=120, blank=True, default="")
+    is_disputed = models.BooleanField(
+        default=False,
+        help_text="True when at least one dispute case is open for this booking.",
+    )
+    deposit_locked = models.BooleanField(
+        default=False,
+        help_text="When True, automatic deposit release is blocked while a dispute is active.",
+    )
     totals = models.JSONField(default=dict, blank=True)
     canceled_by = models.CharField(
         max_length=16,
