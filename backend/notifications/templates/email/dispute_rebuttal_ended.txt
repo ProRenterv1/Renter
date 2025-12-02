@@ -1,0 +1,8 @@
+{% if recipient_name %}Hi {{ recipient_name }},{% else %}Hi,{% endif %}
+
+The rebuttal window has ended for booking #{{ booking.id }} ({{ listing_title }}). Our team will now review the available evidence.
+
+Booking dates: {{ date_range_display|default:"n/a" }}
+
+You can review this booking and dispute here:
+{{ cta_url }}

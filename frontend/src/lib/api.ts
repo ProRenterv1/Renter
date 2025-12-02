@@ -555,15 +555,47 @@ export type DisputeStatus =
   | "resolved_partial"
   | "closed_auto";
 
+export type DisputeRole = "renter" | "owner" | "admin" | "system";
+
+export interface DisputeMessage {
+  id: number;
+  dispute: number;
+  author: number | null;
+  role: DisputeRole;
+  text: string;
+  created_at: string;
+}
+
+export interface DisputeEvidence {
+  id: number;
+  dispute: number;
+  uploaded_by: number;
+  kind: "photo" | "video" | "other";
+  s3_key: string;
+  filename: string;
+  content_type: string;
+  size: number | null;
+  etag: string;
+  av_status: "pending" | "clean" | "infected" | "failed";
+  created_at: string;
+}
+
 export interface DisputeCase {
   id: number;
   booking: number;
+  opened_by?: number;
+  opened_by_role: "renter" | "owner";
   category: DisputeCategory;
   damage_flow_kind: DisputeDamageFlowKind;
   description: string;
   status: DisputeStatus;
   filed_at?: string;
   rebuttal_due_at?: string | null;
+  auto_rebuttal_timeout?: boolean;
+  review_started_at?: string | null;
+  resolved_at?: string | null;
+  messages?: DisputeMessage[];
+  evidence?: DisputeEvidence[];
 }
 
 export interface DisputeCreatePayload {
@@ -581,6 +613,12 @@ export interface DisputeEvidenceCompletePayload {
   etag: string;
   kind: "photo" | "video" | "other";
 }
+
+export type DisputeEvidenceCompleteResponse = {
+  status: string;
+  key: string;
+  id?: number;
+};
 
 export type UpdateProfilePayload = Partial<
   Pick<
@@ -971,10 +1009,28 @@ export const bookingsAPI = {
 };
 
 export const disputesAPI = {
+  list(params?: { bookingId?: number }) {
+    const search = new URLSearchParams();
+    if (params?.bookingId) {
+      search.set("booking", String(params.bookingId));
+    }
+    const query = search.toString();
+    const suffix = query ? `?${query}` : "";
+    return jsonFetch<DisputeCase[]>(`/disputes/${suffix}`, { method: "GET" });
+  },
+  retrieve(disputeId: number) {
+    return jsonFetch<DisputeCase>(`/disputes/${disputeId}/`, { method: "GET" });
+  },
   create(payload: DisputeCreatePayload) {
     return jsonFetch<DisputeCase>("/disputes/", {
       method: "POST",
       body: payload,
+    });
+  },
+  createMessage(disputeId: number, text: string) {
+    return jsonFetch<DisputeMessage>(`/disputes/${disputeId}/messages/`, {
+      method: "POST",
+      body: { text },
     });
   },
   evidencePresign(disputeId: number, payload: PhotoPresignRequest) {
@@ -984,10 +1040,13 @@ export const disputesAPI = {
     });
   },
   evidenceComplete(disputeId: number, payload: DisputeEvidenceCompletePayload) {
-    return jsonFetch<PhotoCompleteResponse>(`/disputes/${disputeId}/evidence/complete/`, {
-      method: "POST",
-      body: payload,
-    });
+    return jsonFetch<DisputeEvidenceCompleteResponse>(
+      `/disputes/${disputeId}/evidence/complete/`,
+      {
+        method: "POST",
+        body: payload,
+      },
+    );
   },
 };
 

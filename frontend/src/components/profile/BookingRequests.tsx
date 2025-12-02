@@ -43,8 +43,11 @@ import {
   bookingsAPI,
   deriveDisplayRentalStatus,
   listingsAPI,
+  disputesAPI,
   type Booking,
   type BookingTotals,
+  type DisputeCase,
+  type DisputeStatus,
   type Listing,
 } from "@/lib/api";
 import { fetchConversations, type ConversationSummary } from "@/lib/chat";
@@ -72,6 +75,26 @@ const requestStatusLabel: Record<RequestStatus, string> = {
   pending: "pending",
   approved: "approved",
   denied: "denied",
+};
+
+const activeDisputeStatuses: DisputeStatus[] = [
+  "open",
+  "intake_missing_evidence",
+  "awaiting_rebuttal",
+  "under_review",
+];
+
+const formatDisputeStatusLabel = (status: DisputeStatus): string => {
+  switch (status) {
+    case "awaiting_rebuttal":
+      return "Dispute: Awaiting other party";
+    case "under_review":
+      return "Dispute: Under review";
+    case "intake_missing_evidence":
+      return "Dispute: Open (needs evidence)";
+    default:
+      return "Dispute: Open";
+  }
 };
 
 const bookingStatusToRequestStatus = (status: Booking["status"]): RequestStatus => {
@@ -209,6 +232,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     toolName: string;
     rentalPeriod: string;
   } | null>(null);
+  const [disputesByBookingId, setDisputesByBookingId] = useState<Record<number, DisputeCase | null>>({});
   const isMountedRef = useRef(true);
   const requestsRef = useRef<BookingRequestRow[]>([]);
   const afterFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -319,6 +343,39 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
 
   useEffect(() => {
     requestsRef.current = requests;
+  }, [requests]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadDisputes = async () => {
+      const disputed = requests.filter((row) => row.booking.is_disputed);
+      if (!disputed.length) {
+        setDisputesByBookingId({});
+        return;
+      }
+      const entries = await Promise.all(
+        disputed.map(async (row) => {
+          try {
+            const cases = await disputesAPI.list({ bookingId: row.booking.id });
+            const active =
+              cases.find((item) => activeDisputeStatuses.includes(item.status)) ||
+              cases[0] ||
+              null;
+            return [row.booking.id, active] as const;
+          } catch {
+            return [row.booking.id, null] as const;
+          }
+        }),
+      );
+      if (!isMountedRef.current || cancelled) {
+        return;
+      }
+      setDisputesByBookingId(Object.fromEntries(entries));
+    };
+    void loadDisputes();
+    return () => {
+      cancelled = true;
+    };
   }, [requests]);
 
   useEffect(() => {
@@ -867,7 +924,19 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                         </div>
                       </TableCell>
                       <TableCell>{dateRange}</TableCell>
-                      <TableCell>{getBookingStatusBadge(row.booking)}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-col gap-1">
+                          {getBookingStatusBadge(row.booking)}
+                          {disputesByBookingId[row.booking.id] && (
+                            <Badge variant="outline" className="text-xs font-normal">
+                              {formatDisputeStatusLabel(
+                                (disputesByBookingId[row.booking.id]?.status ||
+                                  "open") as DisputeStatus,
+                              )}
+                            </Badge>
+                          )}
+                        </div>
+                      </TableCell>
                       <TableCell className="text-right text-green-600">{amountLabel}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-2">

@@ -41,6 +41,8 @@ class IsDisputeParticipant(permissions.BasePermission):
 class DisputeMessageSerializer(serializers.ModelSerializer):
     """Serialize dispute conversation messages."""
 
+    text = serializers.CharField(max_length=4000)
+
     class Meta:
         model = DisputeMessage
         fields = ["id", "dispute", "author", "role", "text", "created_at"]
@@ -92,6 +94,7 @@ class DisputeCaseSerializer(serializers.ModelSerializer):
             "deposit_capture_amount_cents",
             "filed_at",
             "rebuttal_due_at",
+            "auto_rebuttal_timeout",
             "review_started_at",
             "resolved_at",
             "deposit_locked",
@@ -107,6 +110,8 @@ class DisputeCaseSerializer(serializers.ModelSerializer):
             "opened_by_role",
             "status",
             "filed_at",
+            "rebuttal_due_at",
+            "auto_rebuttal_timeout",
             "deposit_locked",
             "created_at",
             "updated_at",
@@ -206,6 +211,9 @@ class DisputeCaseViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = DisputeCase.objects.select_related("booking", "opened_by")
         user = self.request.user
+        booking_filter = self.request.query_params.get("booking")
+        if booking_filter:
+            qs = qs.filter(booking_id=booking_filter)
         if user and user.is_staff:
             return qs
         return qs.filter(models.Q(booking__owner_id=user.id) | models.Q(booking__renter_id=user.id))

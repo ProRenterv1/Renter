@@ -12,6 +12,7 @@ from core.redis import push_event
 from notifications import tasks as notification_tasks
 
 from .models import DisputeCase, DisputeEvidence
+from .tasks import start_rebuttal_window
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ def update_dispute_intake_status(dispute_id: int) -> Optional[DisputeCase]:
             now = timezone.now()
             new_rebuttal_due_at = dispute.rebuttal_due_at
             status_changed = False
+            trigger_rebuttal_task = False
 
             if not minimum_met:
                 new_status = DisputeCase.Status.INTAKE_MISSING_EVIDENCE
@@ -96,7 +98,9 @@ def update_dispute_intake_status(dispute_id: int) -> Optional[DisputeCase]:
                     new_rebuttal_due_at = filed_at + timedelta(hours=24)
             else:
                 new_status = DisputeCase.Status.AWAITING_REBUTTAL
-                if new_rebuttal_due_at is None:
+                if dispute.status != DisputeCase.Status.AWAITING_REBUTTAL:
+                    new_rebuttal_due_at = now + timedelta(hours=24)
+                elif new_rebuttal_due_at is None:
                     new_rebuttal_due_at = now + timedelta(hours=24)
 
             update_fields: list[str] = []
@@ -104,6 +108,8 @@ def update_dispute_intake_status(dispute_id: int) -> Optional[DisputeCase]:
                 dispute.status = new_status
                 update_fields.append("status")
                 status_changed = True
+                if new_status == DisputeCase.Status.AWAITING_REBUTTAL:
+                    trigger_rebuttal_task = True
             if new_rebuttal_due_at and dispute.rebuttal_due_at != new_rebuttal_due_at:
                 dispute.rebuttal_due_at = new_rebuttal_due_at
                 update_fields.append("rebuttal_due_at")
@@ -141,6 +147,9 @@ def update_dispute_intake_status(dispute_id: int) -> Optional[DisputeCase]:
                             extra={"user_id": user_id, "dispute_id": dispute.id},
                             exc_info=True,
                         )
+
+            if trigger_rebuttal_task:
+                transaction.on_commit(lambda: start_rebuttal_window.delay(dispute.id))
 
             return dispute
     except Exception:

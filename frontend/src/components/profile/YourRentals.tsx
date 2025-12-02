@@ -15,10 +15,13 @@ import {
   getBookingChargeAmount,
   getBookingDamageDeposit,
   listingsAPI,
+  disputesAPI,
   type Booking,
   type BookingTotals,
   type BookingStatus,
   type DisplayRentalStatus,
+  type DisputeCase,
+  type DisputeStatus,
   type JsonError,
   type Listing,
 } from "@/lib/api";
@@ -46,6 +49,25 @@ import { PolicyConfirmationModal } from "../PolicyConfirmationModal";
 import { DisputeWizard } from "../disputes/DisputeWizard";
 
 type StatusFilter = "all" | "requested" | "waiting-payment" | "waiting-pickup" | "ongoing";
+const activeDisputeStatuses: DisputeStatus[] = [
+  "open",
+  "intake_missing_evidence",
+  "awaiting_rebuttal",
+  "under_review",
+];
+
+const formatDisputeStatusLabel = (status: DisputeStatus): string => {
+  switch (status) {
+    case "awaiting_rebuttal":
+      return "Dispute: Awaiting other party";
+    case "under_review":
+      return "Dispute: Under review";
+    case "intake_missing_evidence":
+      return "Dispute: Open (needs evidence)";
+    default:
+      return "Dispute: Open";
+  }
+};
 
 interface RentalRow {
   bookingId: number;
@@ -151,6 +173,12 @@ const extractJsonErrorMessage = (error: JsonError): string | null => {
 
 const placeholderImage = "https://placehold.co/200x200?text=Listing";
 const cancelableStatuses: BookingStatus[] = ["requested", "confirmed", "paid"];
+const activeDisputeStatuses: DisputeStatus[] = [
+  "open",
+  "intake_missing_evidence",
+  "awaiting_rebuttal",
+  "under_review",
+];
 
 const parseLocalDate = (isoDate: string) => {
   const [year, month, day] = isoDate.split("-").map(Number);
@@ -305,6 +333,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     toolName: string;
     rentalPeriod: string;
   } | null>(null);
+  const [disputesByBookingId, setDisputesByBookingId] = useState<Record<number, DisputeCase | null>>({});
   const currentUser = AuthStore.getCurrentUser();
   const currentUserId = currentUser?.id ?? null;
   const stripe = useStripe();
@@ -417,6 +446,39 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
       isMountedRef.current = false;
     };
   }, [reloadBookings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadDisputes = async () => {
+      const disputed = bookings.filter((booking) => booking.is_disputed);
+      if (!disputed.length) {
+        setDisputesByBookingId({});
+        return;
+      }
+      const entries = await Promise.all(
+        disputed.map(async (booking) => {
+          try {
+            const cases = await disputesAPI.list({ bookingId: booking.id });
+            const active =
+              cases.find((item) => activeDisputeStatuses.includes(item.status)) ||
+              cases[0] ||
+              null;
+            return [booking.id, active] as const;
+          } catch (err) {
+            return [booking.id, null] as const;
+          }
+        }),
+      );
+      if (!isMountedRef.current || cancelled) {
+        return;
+      }
+      setDisputesByBookingId(Object.fromEntries(entries));
+    };
+    void loadDisputes();
+    return () => {
+      cancelled = true;
+    };
+  }, [bookings]);
 
   useEffect(() => {
     if (!currentUserId) {
@@ -1297,17 +1359,27 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Badge
-                          variant={
-                            row.statusRaw === "completed"
-                              ? "secondary"
-                              : row.statusRaw === "canceled"
-                              ? "outline"
-                              : "default"
-                          }
-                        >
-                          {row.statusLabel}
-                        </Badge>
+                        <div className="flex flex-col gap-1">
+                          <Badge
+                            variant={
+                              row.statusRaw === "completed"
+                                ? "secondary"
+                                : row.statusRaw === "canceled"
+                                ? "outline"
+                                : "default"
+                            }
+                          >
+                            {row.statusLabel}
+                          </Badge>
+                          {disputesByBookingId[row.bookingId] && (
+                            <Badge variant="outline" className="text-xs font-normal">
+                              {formatDisputeStatusLabel(
+                                (disputesByBookingId[row.bookingId]?.status ||
+                                  "open") as DisputeStatus,
+                              )}
+                            </Badge>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-col gap-1">

@@ -83,6 +83,10 @@ class DisputeCase(models.Model):
     deposit_capture_amount_cents = models.PositiveIntegerField(null=True, blank=True)
     filed_at = models.DateTimeField(default=timezone.now)
     rebuttal_due_at = models.DateTimeField(null=True, blank=True)
+    auto_rebuttal_timeout = models.BooleanField(
+        default=False,
+        help_text="True when the rebuttal window expired without a response.",
+    )
     review_started_at = models.DateTimeField(null=True, blank=True)
     resolved_at = models.DateTimeField(null=True, blank=True)
     deposit_locked = models.BooleanField(

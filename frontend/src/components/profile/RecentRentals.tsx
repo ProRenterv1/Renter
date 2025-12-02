@@ -17,9 +17,12 @@ import {
   deriveRentalDirection,
   getBookingDamageDeposit,
   listingsAPI,
+  disputesAPI,
   type Booking,
   type Listing,
   type DisplayRentalStatus,
+  type DisputeCase,
+  type DisputeStatus,
   type RentalDirection,
 } from "@/lib/api";
 import { startEventStream, type EventEnvelope } from "@/lib/events";
@@ -39,6 +42,26 @@ interface RentalRow {
   statusRaw: Booking["status"];
   listingSlug: string | null;
 }
+
+const activeDisputeStatuses: DisputeStatus[] = [
+  "open",
+  "intake_missing_evidence",
+  "awaiting_rebuttal",
+  "under_review",
+];
+
+const formatDisputeStatusLabel = (status: DisputeStatus): string => {
+  switch (status) {
+    case "awaiting_rebuttal":
+      return "Dispute: Awaiting other party";
+    case "under_review":
+      return "Dispute: Under review";
+    case "intake_missing_evidence":
+      return "Dispute: Open (needs evidence)";
+    default:
+      return "Dispute: Open";
+  }
+};
 
 const parseLocalDate = (isoDate: string) => {
   const [year, month, day] = isoDate.split("-").map(Number);
@@ -80,6 +103,7 @@ export function RecentRentals() {
     toolName: string;
     rentalPeriod: string;
   } | null>(null);
+  const [disputesByBookingId, setDisputesByBookingId] = useState<Record<number, DisputeCase | null>>({});
   const currentUserId = AuthStore.getCurrentUser()?.id ?? null;
   const navigate = useNavigate();
   const listingCacheRef = useRef<Map<string, Listing | null>>(new Map());
@@ -119,6 +143,39 @@ export function RecentRentals() {
       isMountedRef.current = false;
     };
   }, [reloadRecentRentals]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadDisputes = async () => {
+      const disputed = bookings.filter((booking) => booking.is_disputed);
+      if (!disputed.length) {
+        setDisputesByBookingId({});
+        return;
+      }
+      const entries = await Promise.all(
+        disputed.map(async (booking) => {
+          try {
+            const cases = await disputesAPI.list({ bookingId: booking.id });
+            const active =
+              cases.find((item) => activeDisputeStatuses.includes(item.status)) ||
+              cases[0] ||
+              null;
+            return [booking.id, active] as const;
+          } catch {
+            return [booking.id, null] as const;
+          }
+        }),
+      );
+      if (!isMountedRef.current || cancelled) {
+        return;
+      }
+      setDisputesByBookingId(Object.fromEntries(entries));
+    };
+    void loadDisputes();
+    return () => {
+      cancelled = true;
+    };
+  }, [bookings]);
 
   useEffect(() => {
     if (!currentUserId) {
@@ -306,19 +363,29 @@ export function RecentRentals() {
                     <TableCell className="font-medium">{rental.toolName}</TableCell>
                     <TableCell>{rental.rentalPeriod}</TableCell>
                     <TableCell>
-                      <Badge
-                        variant={
-                          rental.status === "Completed"
-                            ? "secondary"
-                            : rental.status === "Canceled"
-                            ? "outline"
-                            : rental.status === "Denied"
-                            ? "outline"
-                            : "default"
-                        }
-                      >
-                        {rental.status}
-                      </Badge>
+                      <div className="flex flex-col gap-1">
+                        <Badge
+                          variant={
+                            rental.status === "Completed"
+                              ? "secondary"
+                              : rental.status === "Canceled"
+                              ? "outline"
+                              : rental.status === "Denied"
+                              ? "outline"
+                              : "default"
+                          }
+                        >
+                          {rental.status}
+                        </Badge>
+                        {disputesByBookingId[rental.id] && (
+                          <Badge variant="outline" className="text-xs font-normal">
+                            {formatDisputeStatusLabel(
+                              (disputesByBookingId[rental.id]?.status ||
+                                "open") as DisputeStatus,
+                            )}
+                          </Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex flex-col items-end gap-1">

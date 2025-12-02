@@ -199,6 +199,10 @@ CELERY_BEAT_SCHEDULE.update(
             "task": "bookings.auto_release_deposits",
             "schedule": crontab(minute=0),  # every hour on the hour
         },
+        "disputes_auto_flag_unanswered_rebuttals_hourly": {
+            "task": "disputes.auto_flag_unanswered_rebuttals",
+            "schedule": crontab(minute=0),  # every hour on the hour
+        },
         "listings_purge_soft_deleted_nightly": {
             "task": "listings.purge_soft_deleted_listings",
             "schedule": crontab(hour=4, minute=0),
