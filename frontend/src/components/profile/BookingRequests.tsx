@@ -58,8 +58,7 @@ import { ReviewModal } from "@/components/reviews/ReviewModal";
 import { startEventStream, type EventEnvelope } from "@/lib/events";
 import { DisputeWizard } from "@/components/disputes/DisputeWizard";
 
-type RequestStatus = "pending" | "approved" | "denied";
-type StatusFilter = "all" | RequestStatus;
+type StatusFilter = "all" | Booking["status"];
 
 interface BookingRequestRow {
   booking: Booking;
@@ -70,12 +69,6 @@ interface BookingRequestRow {
 export interface BookingRequestsProps {
   onPendingCountChange?: (count: number) => void;
 }
-
-const requestStatusLabel: Record<RequestStatus, string> = {
-  pending: "pending",
-  approved: "approved",
-  denied: "denied",
-};
 
 const activeDisputeStatuses: DisputeStatus[] = [
   "open",
@@ -94,19 +87,6 @@ const formatDisputeStatusLabel = (status: DisputeStatus): string => {
       return "Dispute: Open (needs evidence)";
     default:
       return "Dispute: Open";
-  }
-};
-
-const bookingStatusToRequestStatus = (status: Booking["status"]): RequestStatus => {
-  switch (status) {
-    case "confirmed":
-    case "completed":
-    case "paid":
-      return "approved";
-    case "canceled":
-      return "denied";
-    default:
-      return "pending";
   }
 };
 
@@ -430,7 +410,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     if (statusFilter === "all") {
       return requests;
     }
-    return requests.filter((row) => bookingStatusToRequestStatus(row.booking.status) === statusFilter);
+    return requests.filter((row) => row.booking.status === statusFilter);
   }, [requests, statusFilter]);
 
   const selectedRenterDetails = useMemo(() => {
@@ -690,10 +670,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   }, [onPendingCountChange]);
 
   const pendingRequests = useMemo(
-    () =>
-      requests.filter(
-        (row) => bookingStatusToRequestStatus(row.booking.status) === "pending",
-      ).length,
+    () => requests.filter((row) => row.booking.status === "requested").length,
     [requests],
   );
 
@@ -704,11 +681,13 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   }, [pendingRequests, onPendingCountChange]);
 
   const renderDialogActions = (booking: Booking) => {
-    const requestStatus = bookingStatusToRequestStatus(booking.status);
-    const canCancelAfterApproval = booking.status === "confirmed" || booking.status === "paid";
+    const requestStatusLabel = deriveDisplayRentalStatus(booking);
+    const requestStatus = (booking.status || "").toLowerCase();
+    const isPendingRequest = requestStatus === "requested";
+    const canCancelAfterApproval = requestStatus === "confirmed" || requestStatus === "paid";
     const returnPending = isReturnPending(booking as BookingWithReturnFields);
 
-    if (requestStatus === "pending") {
+    if (isPendingRequest) {
       return (
         <DialogFooter className="gap-2 sm:gap-0">
           <Button
@@ -788,9 +767,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
 
     return (
       <div className="text-center py-2">
-        <p className="text-muted-foreground">
-          This request has been {requestStatusLabel[requestStatus]}.
-        </p>
+        <p className="text-muted-foreground">This request is {requestStatusLabel}.</p>
       </div>
     );
   };
@@ -810,10 +787,12 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
             <SelectValue placeholder="Status" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Status</SelectItem>
-            <SelectItem value="pending">Pending</SelectItem>
-            <SelectItem value="approved">Approved</SelectItem>
-            <SelectItem value="denied">Denied</SelectItem>
+            <SelectItem value="all">All Statuses</SelectItem>
+            <SelectItem value="requested">Requested</SelectItem>
+            <SelectItem value="confirmed">Confirmed</SelectItem>
+            <SelectItem value="paid">Paid</SelectItem>
+            <SelectItem value="completed">Completed</SelectItem>
+            <SelectItem value="canceled">Canceled</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -889,7 +868,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
               )}
               {!loading &&
                 filteredRequests.map((row) => {
-                  const status = bookingStatusToRequestStatus(row.booking.status);
+                  const statusLabel = deriveDisplayRentalStatus(row.booking);
                   const totals: BookingTotals = row.booking.totals ?? {};
                   const amountRaw = Number(
                     totals.owner_payout ?? totals.rental_subtotal ?? totals.total_charge ?? 0,
@@ -925,17 +904,16 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                       </TableCell>
                       <TableCell>{dateRange}</TableCell>
                       <TableCell>
-                        <div className="flex flex-col gap-1">
-                          {getBookingStatusBadge(row.booking)}
-                          {disputesByBookingId[row.booking.id] && (
-                            <Badge variant="outline" className="text-xs font-normal">
-                              {formatDisputeStatusLabel(
-                                (disputesByBookingId[row.booking.id]?.status ||
-                                  "open") as DisputeStatus,
-                              )}
-                            </Badge>
-                          )}
-                        </div>
+                        {disputesByBookingId[row.booking.id] ? (
+                          <Badge variant="outline" className="text-xs font-normal">
+                            {formatDisputeStatusLabel(
+                              (disputesByBookingId[row.booking.id]?.status ||
+                                "open") as DisputeStatus,
+                            )}
+                          </Badge>
+                        ) : (
+                          getBookingStatusBadge(row.booking)
+                        )}
                       </TableCell>
                       <TableCell className="text-right text-green-600">{amountLabel}</TableCell>
                       <TableCell className="text-right">
@@ -950,7 +928,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                           >
                             Chat
                           </Button>
-                          {showDisputeButton && (
+                          {showDisputeButton && !disputesByBookingId[row.booking.id] && (
                             <Button
                               size="sm"
                               variant="outline"

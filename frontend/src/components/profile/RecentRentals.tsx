@@ -28,7 +28,7 @@ import {
 import { startEventStream, type EventEnvelope } from "@/lib/events";
 import { formatCurrency } from "@/lib/utils";
 
-type StatusFilter = "all" | "active" | "completed";
+type StatusFilter = "all" | Booking["status"];
 type TypeFilter = "all" | "earned" | "spent";
 
 interface RentalRow {
@@ -233,10 +233,8 @@ export function RecentRentals() {
 
   const filteredRentals = useMemo(() => {
     return rentals.filter((rental) => {
-      if (statusFilter === "completed") {
-        if (rental.statusRaw !== "completed" && rental.statusRaw !== "canceled") {
-          return false;
-        }
+      if (statusFilter !== "all" && rental.statusRaw !== statusFilter) {
+        return false;
       }
 
       if (typeFilter !== "all" && rental.type !== typeFilter) {
@@ -279,8 +277,12 @@ export function RecentRentals() {
               <SelectValue placeholder="Status" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Status</SelectItem>
+              <SelectItem value="all">All Statuses</SelectItem>
+              <SelectItem value="requested">Requested</SelectItem>
+              <SelectItem value="confirmed">Confirmed</SelectItem>
+              <SelectItem value="paid">Paid</SelectItem>
               <SelectItem value="completed">Completed</SelectItem>
+              <SelectItem value="canceled">Canceled</SelectItem>
             </SelectContent>
           </Select>
           <Select value={typeFilter} onValueChange={(value) => setTypeFilter(value as TypeFilter)}>
@@ -401,7 +403,7 @@ export function RecentRentals() {
                       </div>
                     </TableCell>
                     <TableCell className="text-right">
-                      {rental.type === "spent" ? (
+                      {rental.type === "spent" && !disputesByBookingId[rental.id] ? (
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button

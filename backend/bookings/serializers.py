@@ -252,6 +252,8 @@ class BookingSerializer(serializers.ModelSerializer):
             )
 
         if listing and start_date and end_date:
+            # Conflicts are checked only against confirmed/paid bookings;
+            # requested overlaps are allowed.
             ensure_no_conflict(listing, start_date, end_date)
 
         return attrs

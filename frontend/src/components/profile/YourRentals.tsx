@@ -48,7 +48,7 @@ import {
 import { PolicyConfirmationModal } from "../PolicyConfirmationModal";
 import { DisputeWizard } from "../disputes/DisputeWizard";
 
-type StatusFilter = "all" | "requested" | "waiting-payment" | "waiting-pickup" | "ongoing";
+type StatusFilter = "all" | BookingStatus;
 const activeDisputeStatuses: DisputeStatus[] = [
   "open",
   "intake_missing_evidence",
@@ -173,12 +173,6 @@ const extractJsonErrorMessage = (error: JsonError): string | null => {
 
 const placeholderImage = "https://placehold.co/200x200?text=Listing";
 const cancelableStatuses: BookingStatus[] = ["requested", "confirmed", "paid"];
-const activeDisputeStatuses: DisputeStatus[] = [
-  "open",
-  "intake_missing_evidence",
-  "awaiting_rebuttal",
-  "under_review",
-];
 
 const parseLocalDate = (isoDate: string) => {
   const [year, month, day] = isoDate.split("-").map(Number);
@@ -246,32 +240,8 @@ const startOfToday = () => {
 };
 
 const matchesStatusFilter = (row: RentalRow, filter: StatusFilter) => {
-  if (filter === "all") {
-    return true;
-  }
-  if (filter === "requested") {
-    return row.statusRaw === "requested";
-  }
-  if (filter === "waiting-payment") {
-    return row.statusRaw === "confirmed";
-  }
-  if (row.statusRaw !== "paid") {
-    return false;
-  }
-  try {
-    const today = startOfToday();
-    const startDate = parseLocalDate(row.startDate);
-    const endDate = parseLocalDate(row.endDate);
-    if (filter === "waiting-pickup") {
-      return today < startDate;
-    }
-    if (filter === "ongoing") {
-      return today >= startDate && today < endDate;
-    }
-  } catch {
-    return false;
-  }
-  return true;
+  if (filter === "all") return true;
+  return row.statusRaw === filter;
 };
 
 const hasReachedReturnWindow = (endDateRaw: string): boolean => {
@@ -1172,9 +1142,10 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
             <SelectContent>
               <SelectItem value="all">All statuses</SelectItem>
               <SelectItem value="requested">Requested</SelectItem>
-              <SelectItem value="waiting-payment">Waiting payment</SelectItem>
-              <SelectItem value="waiting-pickup">Waiting pickup</SelectItem>
-              <SelectItem value="ongoing">Ongoing</SelectItem>
+              <SelectItem value="confirmed">Confirmed</SelectItem>
+              <SelectItem value="paid">Paid</SelectItem>
+              <SelectItem value="completed">Completed</SelectItem>
+              <SelectItem value="canceled">Canceled</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -1441,7 +1412,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                                 {isRowActionLoading ? "Requesting..." : "Return rental"}
                               </Button>
                             )}
-                            {isInProgress && (
+                            {isInProgress && !disputesByBookingId[row.bookingId] && (
                               <Button
                                 size="sm"
                                 variant="outline"
