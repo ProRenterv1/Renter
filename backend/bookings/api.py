@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.conf import settings
@@ -587,8 +588,14 @@ class BookingViewSet(viewsets.ModelViewSet):
         except ValidationError as exc:
             return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
 
+        now = timezone.now()
+        update_fields = ["status", "updated_at"]
         booking.status = Booking.Status.COMPLETED
-        booking.save(update_fields=["status", "updated_at"])
+        if booking.dispute_window_expires_at is None:
+            booking.dispute_window_expires_at = now + timedelta(hours=24)
+            update_fields.insert(1, "dispute_window_expires_at")
+
+        booking.save(update_fields=update_fields)
         create_system_message(
             booking,
             ChatMessage.SYSTEM_BOOKING_COMPLETED,

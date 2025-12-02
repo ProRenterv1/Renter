@@ -430,9 +430,33 @@ def test_complete_booking_owner_only(booking_factory, owner_user, renter_user):
     assert renter_resp.status_code == 403
 
     owner_client = auth(owner_user)
+    window_check_start = timezone.now()
     owner_resp = owner_client.post(f"/api/bookings/{booking.id}/complete/")
     assert owner_resp.status_code == 200
     assert owner_resp.data["status"] == Booking.Status.COMPLETED
+    booking.refresh_from_db()
+    assert booking.dispute_window_expires_at is not None
+    assert window_check_start < booking.dispute_window_expires_at
+    assert booking.dispute_window_expires_at < window_check_start + timedelta(hours=25)
+
+
+def test_complete_does_not_override_existing_dispute_window(booking_factory, owner_user):
+    start = date.today() + timedelta(days=5)
+    end = start + timedelta(days=3)
+    existing_window = timezone.now() + timedelta(hours=6)
+    booking = booking_factory(
+        start_date=start,
+        end_date=end,
+        status=Booking.Status.CONFIRMED,
+        dispute_window_expires_at=existing_window,
+    )
+
+    owner_client = auth(owner_user)
+    resp = owner_client.post(f"/api/bookings/{booking.id}/complete/")
+    assert resp.status_code == 200
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.COMPLETED
+    assert booking.dispute_window_expires_at == existing_window
 
 
 def test_confirm_pickup_sets_timestamp_when_allowed(booking_factory, owner_user):

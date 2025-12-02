@@ -43,6 +43,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { PolicyConfirmationModal } from "../PolicyConfirmationModal";
+import { DisputeWizard } from "../disputes/DisputeWizard";
 
 type StatusFilter = "all" | "requested" | "waiting-payment" | "waiting-pickup" | "ongoing";
 
@@ -297,6 +298,12 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
   const [renterReviewTarget, setRenterReviewTarget] = useState<{
     bookingId: number;
     ownerName: string;
+  } | null>(null);
+  const [disputeWizardOpen, setDisputeWizardOpen] = useState(false);
+  const [disputeContext, setDisputeContext] = useState<{
+    bookingId: number;
+    toolName: string;
+    rentalPeriod: string;
   } | null>(null);
   const currentUser = AuthStore.getCurrentUser();
   const currentUserId = currentUser?.id ?? null;
@@ -1366,7 +1373,15 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                               <Button
                                 size="sm"
                                 variant="outline"
-                                onClick={(event) => event.stopPropagation()}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setDisputeContext({
+                                    bookingId: row.bookingId,
+                                    toolName: row.toolName,
+                                    rentalPeriod: row.rentalPeriod,
+                                  });
+                                  setDisputeWizardOpen(true);
+                                }}
                               >
                                 Report an Issue
                               </Button>
@@ -1410,6 +1425,19 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
         </CardContent>
       </Card>
       </div>
+      <DisputeWizard
+        open={disputeWizardOpen}
+        onOpenChange={(open) => {
+          setDisputeWizardOpen(open);
+          if (!open) {
+            setDisputeContext(null);
+          }
+        }}
+        bookingId={disputeContext?.bookingId ?? null}
+        role="renter"
+        toolName={disputeContext?.toolName}
+        rentalPeriodLabel={disputeContext?.rentalPeriod}
+      />
       <Dialog
         open={Boolean(cancelDialog)}
         onOpenChange={(open) => {

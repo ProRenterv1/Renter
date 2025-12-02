@@ -607,3 +607,11 @@ def send_promotion_payment_receipt_email(user_id: int, promotion_slot_id: int):
         user.email,
         attachments=attachments or None,
     )
+
+
+@shared_task(queue="emails")
+def send_dispute_missing_evidence_email(dispute_id: int):
+    """
+    Placeholder for notifying filers to complete dispute evidence intake.
+    """
+    logger.info("notifications: dispute %s missing evidence email placeholder", dispute_id)

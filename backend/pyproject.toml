@@ -23,4 +23,4 @@ skip = ["migrations", ".venv", ".git", "build", "dist"]
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "renter.settings.test"
 python_files = ["tests.py", "test_*.py", "*_tests.py"]
-addopts = "--cov=. --cov-report=term-missing"
+

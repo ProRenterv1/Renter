@@ -353,6 +353,7 @@ def _finalize_dispute_evidence_record(
     filename = meta.get("filename") or ""
     content_type = meta.get("content_type") or ""
     size = _coerce_int(meta.get("size"))
+    kind_value = meta.get("kind") or DisputeEvidence.Kind.PHOTO
 
     av_status = (
         DisputeEvidence.AVStatus.CLEAN if verdict == "clean" else DisputeEvidence.AVStatus.INFECTED
@@ -370,6 +371,10 @@ def _finalize_dispute_evidence_record(
             s3_key=key,
         )
 
+    if getattr(evidence, "kind", None):
+        kind_value = meta.get("kind") or evidence.kind
+
+    evidence.kind = kind_value
     evidence.filename = filename
     evidence.content_type = content_type
     evidence.size = size

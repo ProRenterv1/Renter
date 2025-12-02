@@ -9,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { AuthStore } from "@/lib/auth";
+import { DisputeWizard } from "@/components/disputes/DisputeWizard";
 import {
   bookingsAPI,
   deriveDisplayRentalStatus,
@@ -73,6 +74,12 @@ export function RecentRentals() {
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const [disputeWizardOpen, setDisputeWizardOpen] = useState(false);
+  const [disputeContext, setDisputeContext] = useState<{
+    bookingId: number;
+    toolName: string;
+    rentalPeriod: string;
+  } | null>(null);
   const currentUserId = AuthStore.getCurrentUser()?.id ?? null;
   const navigate = useNavigate();
   const listingCacheRef = useRef<Map<string, Listing | null>>(new Map());
@@ -327,24 +334,33 @@ export function RecentRentals() {
                       </div>
                     </TableCell>
                     <TableCell className="text-right">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              alert("Issue reporting will be available after 24 hours from booking end.");
-                            }}
-                            onKeyDown={(event) => event.stopPropagation()}
-                          >
-                            Report an Issue
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side="top">
-                          Issue can be reported only 24 hours after the end of booking.
-                        </TooltipContent>
-                      </Tooltip>
+                      {rental.type === "spent" ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setDisputeContext({
+                                  bookingId: rental.id,
+                                  toolName: rental.toolName,
+                                  rentalPeriod: rental.rentalPeriod,
+                                });
+                                setDisputeWizardOpen(true);
+                              }}
+                              onKeyDown={(event) => event.stopPropagation()}
+                            >
+                              Report an Issue
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top">
+                            You can raise an issue within the dispute window after return.
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">No actions</span>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -352,6 +368,19 @@ export function RecentRentals() {
           </Table>
         </CardContent>
       </Card>
+      <DisputeWizard
+        open={disputeWizardOpen}
+        onOpenChange={(open) => {
+          setDisputeWizardOpen(open);
+          if (!open) {
+            setDisputeContext(null);
+          }
+        }}
+        bookingId={disputeContext?.bookingId ?? null}
+        role="renter"
+        toolName={disputeContext?.toolName}
+        rentalPeriodLabel={disputeContext?.rentalPeriod}
+      />
     </div>
   );
 }

@@ -15,6 +15,7 @@ from bookings.models import Booking
 from storage.s3 import booking_object_key, guess_content_type, presign_put
 from storage.tasks import scan_and_finalize_dispute_evidence
 
+from .intake import update_dispute_intake_status
 from .models import DisputeCase, DisputeEvidence, DisputeMessage
 
 
@@ -121,15 +122,55 @@ class DisputeCaseSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data: dict[str, Any]) -> DisputeCase:
         request = self.context.get("request")
-        user = getattr(request, "user", None)
+        user = validated_data.pop("opened_by", getattr(request, "user", None))
         booking: Booking = validated_data["booking"]
+        damage_flow_kind = validated_data.get(
+            "damage_flow_kind", DisputeCase.DamageFlowKind.GENERIC
+        )
 
-        has_deposit_hold = bool(getattr(booking, "deposit_hold_id", ""))
-        opened_by_role = DisputeCase.OpenedByRole.RENTER
-        if booking.owner_id == getattr(user, "id", None):
+        if not user or not getattr(user, "is_authenticated", False):
+            raise serializers.ValidationError({"non_field_errors": ["Authentication required."]})
+
+        if getattr(user, "is_staff", False):
+            opened_by_role = DisputeCase.OpenedByRole.OWNER
+        elif booking.owner_id == getattr(user, "id", None):
             opened_by_role = DisputeCase.OpenedByRole.OWNER
         elif booking.renter_id == getattr(user, "id", None):
             opened_by_role = DisputeCase.OpenedByRole.RENTER
+        else:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["You are not allowed to file disputes for this booking."]}
+            )
+
+        if (
+            opened_by_role == DisputeCase.OpenedByRole.RENTER
+            and damage_flow_kind == DisputeCase.DamageFlowKind.BROKE_DURING_USE
+        ):
+            validated_data["category"] = DisputeCase.Category.DAMAGE
+        elif damage_flow_kind == DisputeCase.DamageFlowKind.BROKE_DURING_USE:
+            validated_data["damage_flow_kind"] = DisputeCase.DamageFlowKind.GENERIC
+
+        category = validated_data.get("category")
+        if not user.is_staff:
+            if booking.status not in {Booking.Status.PAID, Booking.Status.COMPLETED}:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            "Disputes can only be filed for paid or recently completed bookings."
+                        ]
+                    }
+                )
+
+            is_safety_fraud = category == DisputeCase.Category.SAFETY_OR_FRAUD
+            if booking.status == Booking.Status.COMPLETED and not is_safety_fraud:
+                expires_at = booking.dispute_window_expires_at
+                now = timezone.now()
+                if expires_at is None or now > expires_at:
+                    raise serializers.ValidationError(
+                        {"non_field_errors": ["Dispute window expired for this booking."]}
+                    )
+
+        has_deposit_hold = bool(getattr(booking, "deposit_hold_id", ""))
 
         dispute = DisputeCase.objects.create(
             **validated_data,
@@ -150,6 +191,8 @@ class DisputeCaseSerializer(serializers.ModelSerializer):
         if updated_fields:
             updated_fields.append("updated_at")
             booking.save(update_fields=updated_fields)
+
+        update_dispute_intake_status(dispute.id)
 
         return dispute
 
@@ -320,6 +363,7 @@ class DisputeCaseViewSet(viewsets.ModelViewSet):
             "filename": filename,
             "content_type": content_type,
             "size": size_int,
+            "kind": kind,
         }
         scan_and_finalize_dispute_evidence.delay(
             key=key,
@@ -327,5 +371,7 @@ class DisputeCaseViewSet(viewsets.ModelViewSet):
             uploaded_by_id=user.id,
             meta=meta,
         )
+
+        update_dispute_intake_status(dispute.id)
 
         return Response({"status": "queued", "key": key}, status=status.HTTP_202_ACCEPTED)

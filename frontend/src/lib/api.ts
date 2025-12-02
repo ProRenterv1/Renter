@@ -366,6 +366,9 @@ export interface Booking {
   totals: BookingTotals | null;
   charge_payment_intent_id?: string;
   deposit_hold_id: string;
+  deposit_locked?: boolean;
+  is_disputed?: boolean;
+  dispute_window_expires_at?: string | null;
   pickup_confirmed_at?: string | null;
   before_photos_required?: boolean | null;
   before_photos_uploaded_at?: string | null;
@@ -530,6 +533,53 @@ export interface PhotoCompletePayload {
 export interface PhotoCompleteResponse {
   status: string;
   key: string;
+}
+
+export type DisputeCategory =
+  | "damage"
+  | "missing_item"
+  | "not_as_described"
+  | "late_return"
+  | "incorrect_charges"
+  | "safety_or_fraud";
+
+export type DisputeDamageFlowKind = "generic" | "broke_during_use";
+
+export type DisputeStatus =
+  | "open"
+  | "intake_missing_evidence"
+  | "awaiting_rebuttal"
+  | "under_review"
+  | "resolved_renter"
+  | "resolved_owner"
+  | "resolved_partial"
+  | "closed_auto";
+
+export interface DisputeCase {
+  id: number;
+  booking: number;
+  category: DisputeCategory;
+  damage_flow_kind: DisputeDamageFlowKind;
+  description: string;
+  status: DisputeStatus;
+  filed_at?: string;
+  rebuttal_due_at?: string | null;
+}
+
+export interface DisputeCreatePayload {
+  booking: number;
+  category: DisputeCategory;
+  damage_flow_kind?: DisputeDamageFlowKind;
+  description: string;
+}
+
+export interface DisputeEvidenceCompletePayload {
+  key: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  etag: string;
+  kind: "photo" | "video" | "other";
 }
 
 export type UpdateProfilePayload = Partial<
@@ -917,6 +967,27 @@ export const bookingsAPI = {
         body: payload,
       },
     );
+  },
+};
+
+export const disputesAPI = {
+  create(payload: DisputeCreatePayload) {
+    return jsonFetch<DisputeCase>("/disputes/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  evidencePresign(disputeId: number, payload: PhotoPresignRequest) {
+    return jsonFetch<PhotoPresignResponse>(`/disputes/${disputeId}/evidence/presign/`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+  evidenceComplete(disputeId: number, payload: DisputeEvidenceCompletePayload) {
+    return jsonFetch<PhotoCompleteResponse>(`/disputes/${disputeId}/evidence/complete/`, {
+      method: "POST",
+      body: payload,
+    });
   },
 };
 

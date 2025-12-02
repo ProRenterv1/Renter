@@ -57,10 +57,191 @@ def _create_booking_with_deposit(booking_factory, *, owner=None, renter=None) ->
         renter=renter,
         start_date=today,
         end_date=today + timedelta(days=1),
-        status=Booking.Status.CONFIRMED,
+        status=Booking.Status.PAID,
         deposit_hold_id="pi_test_hold",
+        dispute_window_expires_at=timezone.now() + timedelta(hours=1),
         totals={"damage_deposit": "50.00"},
     )
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        Booking.Status.REQUESTED,
+        Booking.Status.CONFIRMED,
+        Booking.Status.CANCELED,
+    ],
+)
+@pytest.mark.parametrize("actor", ["renter", "owner"])
+def test_dispute_rejected_when_booking_not_paid_or_completed(
+    api_client, booking_factory, renter_user, owner_user, status, actor
+):
+    today = timezone.localdate()
+    booking = booking_factory(
+        renter=renter_user,
+        owner=owner_user,
+        start_date=today,
+        end_date=today + timedelta(days=1),
+        status=status,
+        dispute_window_expires_at=timezone.now() + timedelta(hours=1),
+    )
+    user = renter_user if actor == "renter" else owner_user
+    api_client.force_authenticate(user)
+
+    resp = api_client.post(
+        "/api/disputes/",
+        {
+            "booking": booking.id,
+            "category": DisputeCase.Category.DAMAGE,
+            "description": "Invalid status",
+        },
+        format="json",
+    )
+
+    assert resp.status_code == 400
+    assert "paid or recently completed" in "".join(resp.json().get("non_field_errors", []))
+
+
+@pytest.mark.parametrize("status", [Booking.Status.PAID, Booking.Status.COMPLETED])
+def test_dispute_allowed_for_paid_or_completed_inside_window(
+    api_client, booking_factory, renter_user, status
+):
+    today = timezone.localdate()
+    booking = booking_factory(
+        renter=renter_user,
+        start_date=today,
+        end_date=today + timedelta(days=1),
+        status=status,
+        dispute_window_expires_at=timezone.now() + timedelta(hours=2),
+    )
+    api_client.force_authenticate(renter_user)
+
+    resp = api_client.post(
+        "/api/disputes/",
+        {
+            "booking": booking.id,
+            "category": DisputeCase.Category.DAMAGE,
+            "description": "Valid dispute",
+        },
+        format="json",
+    )
+
+    assert resp.status_code == 201
+    assert DisputeCase.objects.filter(booking=booking, opened_by=renter_user).count() == 1
+
+
+def test_dispute_rejected_when_window_expired_non_safety(api_client, booking_factory, renter_user):
+    today = timezone.localdate()
+    booking = booking_factory(
+        renter=renter_user,
+        start_date=today,
+        end_date=today + timedelta(days=1),
+        status=Booking.Status.COMPLETED,
+        dispute_window_expires_at=timezone.now() - timedelta(hours=1),
+    )
+    api_client.force_authenticate(renter_user)
+
+    resp = api_client.post(
+        "/api/disputes/",
+        {
+            "booking": booking.id,
+            "category": DisputeCase.Category.DAMAGE,
+            "description": "Too late",
+        },
+        format="json",
+    )
+
+    assert resp.status_code == 400
+    assert "Dispute window expired" in "".join(resp.json().get("non_field_errors", []))
+
+
+def test_dispute_allowed_when_safety_or_fraud_even_if_expired(
+    api_client, booking_factory, renter_user
+):
+    today = timezone.localdate()
+    booking = booking_factory(
+        renter=renter_user,
+        start_date=today,
+        end_date=today + timedelta(days=1),
+        status=Booking.Status.PAID,
+        dispute_window_expires_at=timezone.now() - timedelta(hours=1),
+    )
+    api_client.force_authenticate(renter_user)
+
+    resp = api_client.post(
+        "/api/disputes/",
+        {
+            "booking": booking.id,
+            "category": DisputeCase.Category.SAFETY_OR_FRAUD,
+            "description": "Safety report",
+        },
+        format="json",
+    )
+
+    assert resp.status_code == 201
+    assert DisputeCase.objects.filter(booking=booking, opened_by=renter_user).count() == 1
+
+
+def test_dispute_sets_booking_is_disputed_and_deposit_locked(
+    api_client, booking_factory, renter_user
+):
+    today = timezone.localdate()
+    booking = booking_factory(
+        renter=renter_user,
+        start_date=today,
+        end_date=today + timedelta(days=1),
+        status=Booking.Status.PAID,
+        dispute_window_expires_at=timezone.now() + timedelta(hours=1),
+        deposit_hold_id="pi_deposit_test",
+        deposit_locked=False,
+        totals={"damage_deposit": "15.00"},
+    )
+    api_client.force_authenticate(renter_user)
+
+    resp = api_client.post(
+        "/api/disputes/",
+        {
+            "booking": booking.id,
+            "category": DisputeCase.Category.DAMAGE,
+            "description": "Damage with deposit",
+        },
+        format="json",
+    )
+
+    assert resp.status_code == 201
+    dispute = DisputeCase.objects.get(id=resp.json()["id"])
+    booking.refresh_from_db()
+    assert booking.is_disputed is True
+    assert booking.deposit_locked is True
+    assert dispute.deposit_locked is True
+
+
+def test_staff_can_file_dispute_outside_window(
+    api_client, booking_factory, staff_user, renter_user, owner_user
+):
+    today = timezone.localdate()
+    booking = booking_factory(
+        renter=renter_user,
+        owner=owner_user,
+        start_date=today,
+        end_date=today + timedelta(days=1),
+        status=Booking.Status.PAID,
+        dispute_window_expires_at=timezone.now() - timedelta(hours=2),
+    )
+    api_client.force_authenticate(staff_user)
+
+    resp = api_client.post(
+        "/api/disputes/",
+        {
+            "booking": booking.id,
+            "category": DisputeCase.Category.DAMAGE,
+            "description": "Staff override",
+        },
+        format="json",
+    )
+
+    assert resp.status_code == 201
+    assert DisputeCase.objects.filter(booking=booking, opened_by=staff_user).count() == 1
 
 
 def test_dispute_creation_sets_flags_renter(api_client, booking_factory, renter_user):
@@ -81,7 +262,11 @@ def test_dispute_creation_sets_flags_renter(api_client, booking_factory, renter_
     dispute = DisputeCase.objects.get(id=dispute_id)
     assert dispute.opened_by_id == renter_user.id
     assert dispute.opened_by_role == DisputeCase.OpenedByRole.RENTER
-    assert dispute.status == DisputeCase.Status.OPEN
+    assert dispute.status in {
+        DisputeCase.Status.OPEN,
+        DisputeCase.Status.INTAKE_MISSING_EVIDENCE,
+        DisputeCase.Status.AWAITING_REBUTTAL,
+    }
     assert dispute.deposit_locked is True
 
     booking.refresh_from_db()
@@ -106,7 +291,11 @@ def test_dispute_creation_sets_flags_owner(api_client, booking_factory, owner_us
     dispute = DisputeCase.objects.get(id=resp.json()["id"])
     assert dispute.opened_by_id == owner_user.id
     assert dispute.opened_by_role == DisputeCase.OpenedByRole.OWNER
-    assert dispute.status == DisputeCase.Status.OPEN
+    assert dispute.status in {
+        DisputeCase.Status.OPEN,
+        DisputeCase.Status.INTAKE_MISSING_EVIDENCE,
+        DisputeCase.Status.AWAITING_REBUTTAL,
+    }
 
     booking.refresh_from_db()
     assert booking.is_disputed is True
