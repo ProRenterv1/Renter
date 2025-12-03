@@ -15,10 +15,13 @@ import {
   getBookingChargeAmount,
   getBookingDamageDeposit,
   listingsAPI,
+  disputesAPI,
   type Booking,
   type BookingTotals,
   type BookingStatus,
   type DisplayRentalStatus,
+  type DisputeCase,
+  type DisputeStatus,
   type JsonError,
   type Listing,
 } from "@/lib/api";
@@ -43,8 +46,28 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { PolicyConfirmationModal } from "../PolicyConfirmationModal";
+import { DisputeWizard } from "../disputes/DisputeWizard";
 
-type StatusFilter = "all" | "requested" | "waiting-payment" | "waiting-pickup" | "ongoing";
+type StatusFilter = "all" | BookingStatus;
+const activeDisputeStatuses: DisputeStatus[] = [
+  "open",
+  "intake_missing_evidence",
+  "awaiting_rebuttal",
+  "under_review",
+];
+
+const formatDisputeStatusLabel = (status: DisputeStatus): string => {
+  switch (status) {
+    case "awaiting_rebuttal":
+      return "Dispute: Awaiting other party";
+    case "under_review":
+      return "Dispute: Under review";
+    case "intake_missing_evidence":
+      return "Dispute: Open (needs evidence)";
+    default:
+      return "Dispute: Open";
+  }
+};
 
 interface RentalRow {
   bookingId: number;
@@ -217,32 +240,8 @@ const startOfToday = () => {
 };
 
 const matchesStatusFilter = (row: RentalRow, filter: StatusFilter) => {
-  if (filter === "all") {
-    return true;
-  }
-  if (filter === "requested") {
-    return row.statusRaw === "requested";
-  }
-  if (filter === "waiting-payment") {
-    return row.statusRaw === "confirmed";
-  }
-  if (row.statusRaw !== "paid") {
-    return false;
-  }
-  try {
-    const today = startOfToday();
-    const startDate = parseLocalDate(row.startDate);
-    const endDate = parseLocalDate(row.endDate);
-    if (filter === "waiting-pickup") {
-      return today < startDate;
-    }
-    if (filter === "ongoing") {
-      return today >= startDate && today < endDate;
-    }
-  } catch {
-    return false;
-  }
-  return true;
+  if (filter === "all") return true;
+  return row.statusRaw === filter;
 };
 
 const hasReachedReturnWindow = (endDateRaw: string): boolean => {
@@ -298,6 +297,13 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     bookingId: number;
     ownerName: string;
   } | null>(null);
+  const [disputeWizardOpen, setDisputeWizardOpen] = useState(false);
+  const [disputeContext, setDisputeContext] = useState<{
+    bookingId: number;
+    toolName: string;
+    rentalPeriod: string;
+  } | null>(null);
+  const [disputesByBookingId, setDisputesByBookingId] = useState<Record<number, DisputeCase | null>>({});
   const currentUser = AuthStore.getCurrentUser();
   const currentUserId = currentUser?.id ?? null;
   const stripe = useStripe();
@@ -410,6 +416,39 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
       isMountedRef.current = false;
     };
   }, [reloadBookings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadDisputes = async () => {
+      const disputed = bookings.filter((booking) => booking.is_disputed);
+      if (!disputed.length) {
+        setDisputesByBookingId({});
+        return;
+      }
+      const entries = await Promise.all(
+        disputed.map(async (booking) => {
+          try {
+            const cases = await disputesAPI.list({ bookingId: booking.id });
+            const active =
+              cases.find((item) => activeDisputeStatuses.includes(item.status)) ||
+              cases[0] ||
+              null;
+            return [booking.id, active] as const;
+          } catch (err) {
+            return [booking.id, null] as const;
+          }
+        }),
+      );
+      if (!isMountedRef.current || cancelled) {
+        return;
+      }
+      setDisputesByBookingId(Object.fromEntries(entries));
+    };
+    void loadDisputes();
+    return () => {
+      cancelled = true;
+    };
+  }, [bookings]);
 
   useEffect(() => {
     if (!currentUserId) {
@@ -1103,9 +1142,10 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
             <SelectContent>
               <SelectItem value="all">All statuses</SelectItem>
               <SelectItem value="requested">Requested</SelectItem>
-              <SelectItem value="waiting-payment">Waiting payment</SelectItem>
-              <SelectItem value="waiting-pickup">Waiting pickup</SelectItem>
-              <SelectItem value="ongoing">Ongoing</SelectItem>
+              <SelectItem value="confirmed">Confirmed</SelectItem>
+              <SelectItem value="paid">Paid</SelectItem>
+              <SelectItem value="completed">Completed</SelectItem>
+              <SelectItem value="canceled">Canceled</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -1290,17 +1330,27 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Badge
-                          variant={
-                            row.statusRaw === "completed"
-                              ? "secondary"
-                              : row.statusRaw === "canceled"
-                              ? "outline"
-                              : "default"
-                          }
-                        >
-                          {row.statusLabel}
-                        </Badge>
+                        <div className="flex flex-col gap-1">
+                          <Badge
+                            variant={
+                              row.statusRaw === "completed"
+                                ? "secondary"
+                                : row.statusRaw === "canceled"
+                                ? "outline"
+                                : "default"
+                            }
+                          >
+                            {row.statusLabel}
+                          </Badge>
+                          {disputesByBookingId[row.bookingId] && (
+                            <Badge variant="outline" className="text-xs font-normal">
+                              {formatDisputeStatusLabel(
+                                (disputesByBookingId[row.bookingId]?.status ||
+                                  "open") as DisputeStatus,
+                              )}
+                            </Badge>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-col gap-1">
@@ -1362,11 +1412,19 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                                 {isRowActionLoading ? "Requesting..." : "Return rental"}
                               </Button>
                             )}
-                            {isInProgress && (
+                            {isInProgress && !disputesByBookingId[row.bookingId] && (
                               <Button
                                 size="sm"
                                 variant="outline"
-                                onClick={(event) => event.stopPropagation()}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setDisputeContext({
+                                    bookingId: row.bookingId,
+                                    toolName: row.toolName,
+                                    rentalPeriod: row.rentalPeriod,
+                                  });
+                                  setDisputeWizardOpen(true);
+                                }}
                               >
                                 Report an Issue
                               </Button>
@@ -1410,6 +1468,19 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
         </CardContent>
       </Card>
       </div>
+      <DisputeWizard
+        open={disputeWizardOpen}
+        onOpenChange={(open) => {
+          setDisputeWizardOpen(open);
+          if (!open) {
+            setDisputeContext(null);
+          }
+        }}
+        bookingId={disputeContext?.bookingId ?? null}
+        role="renter"
+        toolName={disputeContext?.toolName}
+        rentalPeriodLabel={disputeContext?.rentalPeriod}
+      />
       <Dialog
         open={Boolean(cancelDialog)}
         onOpenChange={(open) => {

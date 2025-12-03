@@ -430,9 +430,33 @@ def test_complete_booking_owner_only(booking_factory, owner_user, renter_user):
     assert renter_resp.status_code == 403
 
     owner_client = auth(owner_user)
+    window_check_start = timezone.now()
     owner_resp = owner_client.post(f"/api/bookings/{booking.id}/complete/")
     assert owner_resp.status_code == 200
     assert owner_resp.data["status"] == Booking.Status.COMPLETED
+    booking.refresh_from_db()
+    assert booking.dispute_window_expires_at is not None
+    assert window_check_start < booking.dispute_window_expires_at
+    assert booking.dispute_window_expires_at < window_check_start + timedelta(hours=25)
+
+
+def test_complete_does_not_override_existing_dispute_window(booking_factory, owner_user):
+    start = date.today() + timedelta(days=5)
+    end = start + timedelta(days=3)
+    existing_window = timezone.now() + timedelta(hours=6)
+    booking = booking_factory(
+        start_date=start,
+        end_date=end,
+        status=Booking.Status.CONFIRMED,
+        dispute_window_expires_at=existing_window,
+    )
+
+    owner_client = auth(owner_user)
+    resp = owner_client.post(f"/api/bookings/{booking.id}/complete/")
+    assert resp.status_code == 200
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.COMPLETED
+    assert booking.dispute_window_expires_at == existing_window
 
 
 def test_confirm_pickup_sets_timestamp_when_allowed(booking_factory, owner_user):
@@ -881,7 +905,21 @@ def test_pending_requests_count_ignores_unpaid_bookings_for_other_owners(
     assert resp.data["unpaid_bookings"] == 0
 
 
-def test_availability_returns_active_bookings_for_listing(
+def test_requested_booking_does_not_block_availability(booking_factory, listing):
+    start = date.today() + timedelta(days=10)
+    booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.REQUESTED,
+    )
+
+    client = APIClient()
+    resp = client.get(f"/api/bookings/availability/?listing={listing.id}")
+    assert resp.status_code == 200
+    assert resp.data == []
+
+
+def test_availability_returns_blocking_bookings_for_listing(
     booking_factory,
     listing,
     other_user,
@@ -924,7 +962,6 @@ def test_availability_returns_active_bookings_for_listing(
     resp = client.get(f"/api/bookings/availability/?listing={listing.id}")
     assert resp.status_code == 200
     assert resp.data == [
-        {"start_date": start.isoformat(), "end_date": (start + timedelta(days=2)).isoformat()},
         {
             "start_date": (start + timedelta(days=5)).isoformat(),
             "end_date": (start + timedelta(days=7)).isoformat(),
@@ -968,6 +1005,45 @@ def test_availability_returns_404_for_inactive_listing(listing):
     client = APIClient()
     resp = client.get(f"/api/bookings/availability/?listing={listing.id}")
     assert resp.status_code == 404
+
+
+def test_overlapping_requested_bookings_allowed_but_confirm_conflicts_blocked(
+    booking_factory,
+    listing,
+    other_user,
+    owner_user,
+):
+    start = date.today() + timedelta(days=6)
+    end = start + timedelta(days=3)
+    booking_factory(
+        start_date=start,
+        end_date=end,
+        status=Booking.Status.REQUESTED,
+    )
+
+    other_client = auth(other_user)
+    resp = other_client.post("/api/bookings/", booking_payload(listing, start, end), format="json")
+
+    assert resp.status_code == 201, resp.data
+    assert resp.data["status"] == Booking.Status.REQUESTED
+
+    blocking_start = date.today() + timedelta(days=20)
+    blocking_end = blocking_start + timedelta(days=4)
+    booking_factory(
+        start_date=blocking_start,
+        end_date=blocking_end,
+        status=Booking.Status.CONFIRMED,
+    )
+    overlap_booking = booking_factory(
+        start_date=blocking_start + timedelta(days=1),
+        end_date=blocking_end + timedelta(days=1),
+        status=Booking.Status.REQUESTED,
+    )
+
+    owner_client = auth(owner_user)
+    conflict_resp = owner_client.post(f"/api/bookings/{overlap_booking.id}/confirm/")
+    assert conflict_resp.status_code == 400
+    assert "not available" in conflict_resp.data["non_field_errors"][0]
 
 
 def test_mark_late_charges_extra_days_and_logs_ledgers(

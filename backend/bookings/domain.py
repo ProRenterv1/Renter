@@ -12,8 +12,9 @@ from listings.models import Listing
 
 from .models import Booking, BookingPhoto
 
+# Statuses that block dates for availability and conflict detection.
+# Plain requested bookings remain allowed to overlap.
 ACTIVE_BOOKING_STATUSES = (
-    Booking.Status.REQUESTED,
     Booking.Status.CONFIRMED,
     Booking.Status.PAID,
 )

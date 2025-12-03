@@ -607,3 +607,166 @@ def send_promotion_payment_receipt_email(user_id: int, promotion_slot_id: int):
         user.email,
         attachments=attachments or None,
     )
+
+
+@shared_task(queue="emails")
+def send_dispute_missing_evidence_email(dispute_id: int):
+    """
+    Placeholder for notifying filers to complete dispute evidence intake.
+    """
+    logger.info("notifications: dispute %s missing evidence email placeholder", dispute_id)
+
+
+@shared_task(queue="emails")
+def send_dispute_rebuttal_started_email(dispute_id: int, recipient_id: int):
+    """Notify a participant that a dispute rebuttal window has started."""
+    user = _get_user(recipient_id)
+    if not user or not getattr(user, "email", None):
+        return
+
+    try:
+        from disputes.models import DisputeCase
+
+        dispute = (
+            DisputeCase.objects.select_related("booking", "booking__listing", "opened_by")
+            .filter(pk=dispute_id)
+            .first()
+        )
+    except Exception:
+        logger.exception(
+            "notifications: failed loading dispute %s for rebuttal started email", dispute_id
+        )
+        return
+
+    if not dispute or not dispute.booking:
+        logger.warning("notifications: dispute %s missing booking for rebuttal started", dispute_id)
+        return
+
+    booking = dispute.booking
+    listing_title = getattr(booking.listing, "title", "your rental")
+    start_display, end_display, date_range_display = _format_booking_date_range(
+        getattr(booking, "start_date", None),
+        getattr(booking, "end_date", None),
+    )
+    frontend_origin = (getattr(settings, "FRONTEND_ORIGIN", "") or "").rstrip("/")
+    if recipient_id == getattr(booking, "owner_id", None):
+        cta_url = f"{frontend_origin}/profile?tab=booking-requests" if frontend_origin else ""
+    elif recipient_id == getattr(booking, "renter_id", None):
+        cta_url = f"{frontend_origin}/profile?tab=rentals" if frontend_origin else ""
+    else:
+        cta_url = frontend_origin or ""
+
+    context = {
+        "user": user,
+        "recipient_name": _display_name(user),
+        "booking": booking,
+        "dispute": dispute,
+        "listing_title": listing_title,
+        "start_date_display": start_display,
+        "end_date_display": end_display,
+        "date_range_display": date_range_display,
+        "cta_url": cta_url,
+    }
+    _send_email(
+        f"Dispute opened on booking #{booking.id}",
+        "dispute_rebuttal_started.txt",
+        context,
+        getattr(user, "email", None),
+    )
+
+
+@shared_task(queue="sms")
+def send_dispute_rebuttal_started_sms(dispute_id: int, recipient_id: int):
+    """SMS alert that a rebuttal window has started."""
+    user = _get_user(recipient_id)
+    to_number = getattr(user, "phone", None) if user else None
+    if not user or not to_number:
+        return
+
+    try:
+        from disputes.models import DisputeCase
+
+        dispute = (
+            DisputeCase.objects.select_related("booking", "booking__listing")
+            .filter(pk=dispute_id)
+            .first()
+        )
+    except Exception:
+        logger.exception(
+            "notifications: failed loading dispute %s for rebuttal started sms", dispute_id
+        )
+        return
+
+    if not dispute or not dispute.booking:
+        logger.warning(
+            "notifications: dispute %s missing booking for rebuttal started sms", dispute_id
+        )
+        return
+
+    booking = dispute.booking
+    listing_title = getattr(booking.listing, "title", "your rental")
+    context = {
+        "user": user,
+        "recipient_name": _display_name(user),
+        "booking": booking,
+        "listing_title": listing_title,
+    }
+    _send_sms("dispute_rebuttal_started.txt", context, to_number)
+
+
+@shared_task(queue="emails")
+def send_dispute_rebuttal_ended_email(dispute_id: int, recipient_id: int):
+    """Notify a participant that the rebuttal window has ended."""
+    user = _get_user(recipient_id)
+    if not user or not getattr(user, "email", None):
+        return
+
+    try:
+        from disputes.models import DisputeCase
+
+        dispute = (
+            DisputeCase.objects.select_related("booking", "booking__listing", "opened_by")
+            .filter(pk=dispute_id)
+            .first()
+        )
+    except Exception:
+        logger.exception(
+            "notifications: failed loading dispute %s for rebuttal ended email", dispute_id
+        )
+        return
+
+    if not dispute or not dispute.booking:
+        logger.warning("notifications: dispute %s missing booking for rebuttal ended", dispute_id)
+        return
+
+    booking = dispute.booking
+    listing_title = getattr(booking.listing, "title", "your rental")
+    start_display, end_display, date_range_display = _format_booking_date_range(
+        getattr(booking, "start_date", None),
+        getattr(booking, "end_date", None),
+    )
+    frontend_origin = (getattr(settings, "FRONTEND_ORIGIN", "") or "").rstrip("/")
+    if recipient_id == getattr(booking, "owner_id", None):
+        cta_url = f"{frontend_origin}/profile?tab=booking-requests" if frontend_origin else ""
+    elif recipient_id == getattr(booking, "renter_id", None):
+        cta_url = f"{frontend_origin}/profile?tab=rentals" if frontend_origin else ""
+    else:
+        cta_url = frontend_origin or ""
+
+    context = {
+        "user": user,
+        "recipient_name": _display_name(user),
+        "booking": booking,
+        "dispute": dispute,
+        "listing_title": listing_title,
+        "start_date_display": start_display,
+        "end_date_display": end_display,
+        "date_range_display": date_range_display,
+        "cta_url": cta_url,
+    }
+    _send_email(
+        f"Rebuttal window ended for booking #{booking.id}",
+        "dispute_rebuttal_ended.txt",
+        context,
+        getattr(user, "email", None),
+    )

@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     "anymail",
     "bookings.apps.BookingsConfig",
     "payments.apps.PaymentsConfig",
+    "disputes",
     "chat.apps.ChatConfig",
     "identity",
     "users",
@@ -196,6 +197,10 @@ CELERY_BEAT_SCHEDULE.update(
         },
         "bookings_auto_release_deposits_hourly": {
             "task": "bookings.auto_release_deposits",
+            "schedule": crontab(minute=0),  # every hour on the hour
+        },
+        "disputes_auto_flag_unanswered_rebuttals_hourly": {
+            "task": "disputes.auto_flag_unanswered_rebuttals",
             "schedule": crontab(minute=0),  # every hour on the hour
         },
         "listings_purge_soft_deleted_nightly": {

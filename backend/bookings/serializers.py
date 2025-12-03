@@ -91,6 +91,8 @@ class BookingSerializer(serializers.ModelSerializer):
             "deposit_release_scheduled_at",
             "deposit_released_at",
             "dispute_window_expires_at",
+            "deposit_locked",
+            "is_disputed",
             "listing",
             "listing_title",
             "listing_owner_first_name",
@@ -131,6 +133,8 @@ class BookingSerializer(serializers.ModelSerializer):
             "deposit_release_scheduled_at",
             "deposit_released_at",
             "dispute_window_expires_at",
+            "deposit_locked",
+            "is_disputed",
             "owner",
             "renter",
             "totals",
@@ -248,6 +252,8 @@ class BookingSerializer(serializers.ModelSerializer):
             )
 
         if listing and start_date and end_date:
+            # Conflicts are checked only against confirmed/paid bookings;
+            # requested overlaps are allowed.
             ensure_no_conflict(listing, start_date, end_date)
 
         return attrs

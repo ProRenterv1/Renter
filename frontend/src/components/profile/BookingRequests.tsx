@@ -43,8 +43,11 @@ import {
   bookingsAPI,
   deriveDisplayRentalStatus,
   listingsAPI,
+  disputesAPI,
   type Booking,
   type BookingTotals,
+  type DisputeCase,
+  type DisputeStatus,
   type Listing,
 } from "@/lib/api";
 import { fetchConversations, type ConversationSummary } from "@/lib/chat";
@@ -53,9 +56,9 @@ import { PolicyConfirmationModal } from "../PolicyConfirmationModal";
 import { VerifiedAvatar } from "@/components/VerifiedAvatar";
 import { ReviewModal } from "@/components/reviews/ReviewModal";
 import { startEventStream, type EventEnvelope } from "@/lib/events";
+import { DisputeWizard } from "@/components/disputes/DisputeWizard";
 
-type RequestStatus = "pending" | "approved" | "denied";
-type StatusFilter = "all" | RequestStatus;
+type StatusFilter = "all" | Booking["status"];
 
 interface BookingRequestRow {
   booking: Booking;
@@ -67,22 +70,23 @@ export interface BookingRequestsProps {
   onPendingCountChange?: (count: number) => void;
 }
 
-const requestStatusLabel: Record<RequestStatus, string> = {
-  pending: "pending",
-  approved: "approved",
-  denied: "denied",
-};
+const activeDisputeStatuses: DisputeStatus[] = [
+  "open",
+  "intake_missing_evidence",
+  "awaiting_rebuttal",
+  "under_review",
+];
 
-const bookingStatusToRequestStatus = (status: Booking["status"]): RequestStatus => {
+const formatDisputeStatusLabel = (status: DisputeStatus): string => {
   switch (status) {
-    case "confirmed":
-    case "completed":
-    case "paid":
-      return "approved";
-    case "canceled":
-      return "denied";
+    case "awaiting_rebuttal":
+      return "Dispute: Awaiting other party";
+    case "under_review":
+      return "Dispute: Under review";
+    case "intake_missing_evidence":
+      return "Dispute: Open (needs evidence)";
     default:
-      return "pending";
+      return "Dispute: Open";
   }
 };
 
@@ -202,6 +206,13 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     bookingId: number;
     renterName: string;
   } | null>(null);
+  const [disputeWizardOpen, setDisputeWizardOpen] = useState(false);
+  const [disputeContext, setDisputeContext] = useState<{
+    bookingId: number;
+    toolName: string;
+    rentalPeriod: string;
+  } | null>(null);
+  const [disputesByBookingId, setDisputesByBookingId] = useState<Record<number, DisputeCase | null>>({});
   const isMountedRef = useRef(true);
   const requestsRef = useRef<BookingRequestRow[]>([]);
   const afterFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -315,6 +326,39 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   }, [requests]);
 
   useEffect(() => {
+    let cancelled = false;
+    const loadDisputes = async () => {
+      const disputed = requests.filter((row) => row.booking.is_disputed);
+      if (!disputed.length) {
+        setDisputesByBookingId({});
+        return;
+      }
+      const entries = await Promise.all(
+        disputed.map(async (row) => {
+          try {
+            const cases = await disputesAPI.list({ bookingId: row.booking.id });
+            const active =
+              cases.find((item) => activeDisputeStatuses.includes(item.status)) ||
+              cases[0] ||
+              null;
+            return [row.booking.id, active] as const;
+          } catch {
+            return [row.booking.id, null] as const;
+          }
+        }),
+      );
+      if (!isMountedRef.current || cancelled) {
+        return;
+      }
+      setDisputesByBookingId(Object.fromEntries(entries));
+    };
+    void loadDisputes();
+    return () => {
+      cancelled = true;
+    };
+  }, [requests]);
+
+  useEffect(() => {
     return () => {
       afterPhotosFiles.forEach((upload) => URL.revokeObjectURL(upload.previewUrl));
     };
@@ -366,7 +410,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     if (statusFilter === "all") {
       return requests;
     }
-    return requests.filter((row) => bookingStatusToRequestStatus(row.booking.status) === statusFilter);
+    return requests.filter((row) => row.booking.status === statusFilter);
   }, [requests, statusFilter]);
 
   const selectedRenterDetails = useMemo(() => {
@@ -626,10 +670,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   }, [onPendingCountChange]);
 
   const pendingRequests = useMemo(
-    () =>
-      requests.filter(
-        (row) => bookingStatusToRequestStatus(row.booking.status) === "pending",
-      ).length,
+    () => requests.filter((row) => row.booking.status === "requested").length,
     [requests],
   );
 
@@ -640,11 +681,13 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   }, [pendingRequests, onPendingCountChange]);
 
   const renderDialogActions = (booking: Booking) => {
-    const requestStatus = bookingStatusToRequestStatus(booking.status);
-    const canCancelAfterApproval = booking.status === "confirmed" || booking.status === "paid";
+    const requestStatusLabel = deriveDisplayRentalStatus(booking);
+    const requestStatus = (booking.status || "").toLowerCase();
+    const isPendingRequest = requestStatus === "requested";
+    const canCancelAfterApproval = requestStatus === "confirmed" || requestStatus === "paid";
     const returnPending = isReturnPending(booking as BookingWithReturnFields);
 
-    if (requestStatus === "pending") {
+    if (isPendingRequest) {
       return (
         <DialogFooter className="gap-2 sm:gap-0">
           <Button
@@ -724,9 +767,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
 
     return (
       <div className="text-center py-2">
-        <p className="text-muted-foreground">
-          This request has been {requestStatusLabel[requestStatus]}.
-        </p>
+        <p className="text-muted-foreground">This request is {requestStatusLabel}.</p>
       </div>
     );
   };
@@ -746,10 +787,12 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
             <SelectValue placeholder="Status" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Status</SelectItem>
-            <SelectItem value="pending">Pending</SelectItem>
-            <SelectItem value="approved">Approved</SelectItem>
-            <SelectItem value="denied">Denied</SelectItem>
+            <SelectItem value="all">All Statuses</SelectItem>
+            <SelectItem value="requested">Requested</SelectItem>
+            <SelectItem value="confirmed">Confirmed</SelectItem>
+            <SelectItem value="paid">Paid</SelectItem>
+            <SelectItem value="completed">Completed</SelectItem>
+            <SelectItem value="canceled">Canceled</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -825,7 +868,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
               )}
               {!loading &&
                 filteredRequests.map((row) => {
-                  const status = bookingStatusToRequestStatus(row.booking.status);
+                  const statusLabel = deriveDisplayRentalStatus(row.booking);
                   const totals: BookingTotals = row.booking.totals ?? {};
                   const amountRaw = Number(
                     totals.owner_payout ?? totals.rental_subtotal ?? totals.total_charge ?? 0,
@@ -833,6 +876,16 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                   const amountLabel = formatCurrency(amountRaw, "CAD");
                   const dateRange = formatDateRange(row.booking.start_date, row.booking.end_date);
                   const returnPending = isReturnPending(row.booking as BookingWithReturnFields);
+                  const disputeWindowExpiresAt = row.booking.dispute_window_expires_at
+                    ? new Date(row.booking.dispute_window_expires_at)
+                    : null;
+                  const now = new Date();
+                  const withinDisputeWindow = disputeWindowExpiresAt
+                    ? now < disputeWindowExpiresAt
+                    : false;
+                  const showDisputeButton =
+                    withinDisputeWindow &&
+                    (row.booking.status === "completed" || row.booking.status === "canceled");
 
                   return (
                     <TableRow key={row.booking.id} className="hover:bg-muted/50">
@@ -850,7 +903,18 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                         </div>
                       </TableCell>
                       <TableCell>{dateRange}</TableCell>
-                      <TableCell>{getBookingStatusBadge(row.booking)}</TableCell>
+                      <TableCell>
+                        {disputesByBookingId[row.booking.id] ? (
+                          <Badge variant="outline" className="text-xs font-normal">
+                            {formatDisputeStatusLabel(
+                              (disputesByBookingId[row.booking.id]?.status ||
+                                "open") as DisputeStatus,
+                            )}
+                          </Badge>
+                        ) : (
+                          getBookingStatusBadge(row.booking)
+                        )}
+                      </TableCell>
                       <TableCell className="text-right text-green-600">{amountLabel}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-2">
@@ -864,6 +928,23 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                           >
                             Chat
                           </Button>
+                          {showDisputeButton && !disputesByBookingId[row.booking.id] && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setDisputeContext({
+                                  bookingId: row.booking.id,
+                                  toolName: row.booking.listing_title,
+                                  rentalPeriod: dateRange,
+                                });
+                                setDisputeWizardOpen(true);
+                              }}
+                            >
+                              Report issue
+                            </Button>
+                          )}
                           {canConfirmPickup(row.booking) && (
                             <Button
                               size="sm"
@@ -915,6 +996,20 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
           </Table>
         </CardContent>
       </Card>
+
+      <DisputeWizard
+        open={disputeWizardOpen}
+        onOpenChange={(open) => {
+          setDisputeWizardOpen(open);
+          if (!open) {
+            setDisputeContext(null);
+          }
+        }}
+        bookingId={disputeContext?.bookingId ?? null}
+        role="owner"
+        toolName={disputeContext?.toolName}
+        rentalPeriodLabel={disputeContext?.rentalPeriod}
+      />
 
       <Dialog open={Boolean(selectedRequest)} onOpenChange={(open) => !open && setSelectedRequest(null)}>
         <DialogContent className="sm:max-w-lg">

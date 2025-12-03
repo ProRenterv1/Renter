@@ -366,6 +366,9 @@ export interface Booking {
   totals: BookingTotals | null;
   charge_payment_intent_id?: string;
   deposit_hold_id: string;
+  deposit_locked?: boolean;
+  is_disputed?: boolean;
+  dispute_window_expires_at?: string | null;
   pickup_confirmed_at?: string | null;
   before_photos_required?: boolean | null;
   before_photos_uploaded_at?: string | null;
@@ -531,6 +534,91 @@ export interface PhotoCompleteResponse {
   status: string;
   key: string;
 }
+
+export type DisputeCategory =
+  | "damage"
+  | "missing_item"
+  | "not_as_described"
+  | "late_return"
+  | "incorrect_charges"
+  | "safety_or_fraud";
+
+export type DisputeDamageFlowKind = "generic" | "broke_during_use";
+
+export type DisputeStatus =
+  | "open"
+  | "intake_missing_evidence"
+  | "awaiting_rebuttal"
+  | "under_review"
+  | "resolved_renter"
+  | "resolved_owner"
+  | "resolved_partial"
+  | "closed_auto";
+
+export type DisputeRole = "renter" | "owner" | "admin" | "system";
+
+export interface DisputeMessage {
+  id: number;
+  dispute: number;
+  author: number | null;
+  role: DisputeRole;
+  text: string;
+  created_at: string;
+}
+
+export interface DisputeEvidence {
+  id: number;
+  dispute: number;
+  uploaded_by: number;
+  kind: "photo" | "video" | "other";
+  s3_key: string;
+  filename: string;
+  content_type: string;
+  size: number | null;
+  etag: string;
+  av_status: "pending" | "clean" | "infected" | "failed";
+  created_at: string;
+}
+
+export interface DisputeCase {
+  id: number;
+  booking: number;
+  opened_by?: number;
+  opened_by_role: "renter" | "owner";
+  category: DisputeCategory;
+  damage_flow_kind: DisputeDamageFlowKind;
+  description: string;
+  status: DisputeStatus;
+  filed_at?: string;
+  rebuttal_due_at?: string | null;
+  auto_rebuttal_timeout?: boolean;
+  review_started_at?: string | null;
+  resolved_at?: string | null;
+  messages?: DisputeMessage[];
+  evidence?: DisputeEvidence[];
+}
+
+export interface DisputeCreatePayload {
+  booking: number;
+  category: DisputeCategory;
+  damage_flow_kind?: DisputeDamageFlowKind;
+  description: string;
+}
+
+export interface DisputeEvidenceCompletePayload {
+  key: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  etag: string;
+  kind: "photo" | "video" | "other";
+}
+
+export type DisputeEvidenceCompleteResponse = {
+  status: string;
+  key: string;
+  id?: number;
+};
 
 export type UpdateProfilePayload = Partial<
   Pick<
@@ -912,6 +1000,48 @@ export const bookingsAPI = {
   afterPhotosComplete(id: number, payload: PhotoCompletePayload) {
     return jsonFetch<PhotoCompleteResponse>(
       `/bookings/${id}/after-photos/complete/`,
+      {
+        method: "POST",
+        body: payload,
+      },
+    );
+  },
+};
+
+export const disputesAPI = {
+  list(params?: { bookingId?: number }) {
+    const search = new URLSearchParams();
+    if (params?.bookingId) {
+      search.set("booking", String(params.bookingId));
+    }
+    const query = search.toString();
+    const suffix = query ? `?${query}` : "";
+    return jsonFetch<DisputeCase[]>(`/disputes/${suffix}`, { method: "GET" });
+  },
+  retrieve(disputeId: number) {
+    return jsonFetch<DisputeCase>(`/disputes/${disputeId}/`, { method: "GET" });
+  },
+  create(payload: DisputeCreatePayload) {
+    return jsonFetch<DisputeCase>("/disputes/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  createMessage(disputeId: number, text: string) {
+    return jsonFetch<DisputeMessage>(`/disputes/${disputeId}/messages/`, {
+      method: "POST",
+      body: { text },
+    });
+  },
+  evidencePresign(disputeId: number, payload: PhotoPresignRequest) {
+    return jsonFetch<PhotoPresignResponse>(`/disputes/${disputeId}/evidence/presign/`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+  evidenceComplete(disputeId: number, payload: DisputeEvidenceCompletePayload) {
+    return jsonFetch<DisputeEvidenceCompleteResponse>(
+      `/disputes/${disputeId}/evidence/complete/`,
       {
         method: "POST",
         body: payload,
