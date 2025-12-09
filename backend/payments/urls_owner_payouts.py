@@ -12,4 +12,6 @@ urlpatterns = [
         api.owner_payouts_start_onboarding,
         name="owner_payouts_start_onboarding",
     ),
+    path("bank-details/", api.owner_payouts_update_bank_details, name="owner_payouts_bank_details"),
+    path("instant-payout/", api.owner_payouts_instant_payout, name="owner_payouts_instant_payout"),
 ]

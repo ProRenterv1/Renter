@@ -325,6 +325,77 @@ export interface PromotionPaymentResponse {
   slot: PromotionSlot;
 }
 
+export interface PaymentMethod {
+  id: number;
+  brand: string;
+  last4: string;
+  exp_month: number | null;
+  exp_year: number | null;
+  is_default: boolean;
+  stripe_payment_method_id: string;
+  created_at: string;
+}
+
+export interface OwnerPayoutBalances {
+  lifetime_gross_earnings: string;
+  lifetime_refunds: string;
+  lifetime_deposit_captured: string;
+  lifetime_deposit_released: string;
+  net_earnings: string;
+  last_30_days_net: string;
+}
+
+export interface OwnerPayoutConnect {
+  has_account: boolean;
+  stripe_account_id: string | null;
+  payouts_enabled: boolean;
+  charges_enabled: boolean;
+  is_fully_onboarded: boolean;
+  requirements_due: {
+    currently_due: string[];
+    eventually_due: string[];
+    past_due: string[];
+    disabled_reason: string | null;
+  };
+  bank_details: {
+    transit_number: string;
+    institution_number: string;
+    account_last4: string;
+  } | null;
+}
+
+export interface OwnerPayoutSummary {
+  connect: OwnerPayoutConnect;
+  balances: OwnerPayoutBalances;
+}
+
+export interface OwnerPayoutHistoryRow {
+  id: number;
+  created_at: string;
+  kind: string;
+  amount: string;
+  currency: string;
+  booking_id: number | null;
+  booking_status: string | null;
+  listing_title: string | null;
+  direction: "credit" | "debit";
+}
+
+export interface OwnerPayoutHistoryResponse {
+  results: OwnerPayoutHistoryRow[];
+  count: number;
+  next_offset: number | null;
+}
+
+export interface InstantPayoutResponse {
+  executed: boolean;
+  currency: string;
+  amount_before_fee: string;
+  amount_after_fee: string;
+  ok?: boolean;
+  stripe_payout_id?: string;
+}
+
 export type BookingStatus = "requested" | "confirmed" | "paid" | "canceled" | "completed";
 
 export interface BookingTotals {
@@ -1079,6 +1150,63 @@ export const promotionsAPI = {
     return jsonFetch<PromotionPaymentResponse>("/promotions/pay/", {
       method: "POST",
       body: payload,
+    });
+  },
+};
+
+export const paymentsAPI = {
+  listPaymentMethods() {
+    return jsonFetch<PaymentMethod[]>("/payments/methods/", { method: "GET" });
+  },
+  addPaymentMethod(payload: { stripe_payment_method_id: string }) {
+    return jsonFetch<PaymentMethod>("/payments/methods/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  removePaymentMethod(id: number) {
+    return jsonFetch<void>(`/payments/methods/${id}/`, {
+      method: "DELETE",
+    });
+  },
+  setDefaultPaymentMethod(id: number) {
+    return jsonFetch<PaymentMethod>(`/payments/methods/${id}/set-default/`, {
+      method: "POST",
+      body: {},
+    });
+  },
+  ownerPayoutsSummary() {
+    return jsonFetch<OwnerPayoutSummary>("/owner/payouts/summary/", { method: "GET" });
+  },
+  ownerPayoutsHistory(params: { kind?: string; limit?: number; offset?: number } = {}) {
+    const search = new URLSearchParams();
+    if (params.kind) search.set("kind", params.kind);
+    if (params.limit !== undefined) search.set("limit", String(params.limit));
+    if (params.offset !== undefined) search.set("offset", String(params.offset));
+    const query = search.toString();
+    const path = `/owner/payouts/history/${query ? `?${query}` : ""}`;
+    return jsonFetch<OwnerPayoutHistoryResponse>(path, { method: "GET" });
+  },
+  updateBankDetails(payload: {
+    transit_number: string;
+    institution_number: string;
+    account_number: string;
+  }) {
+    return jsonFetch<OwnerPayoutSummary>("/owner/payouts/bank-details/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  instantPayoutPreview() {
+    return jsonFetch<InstantPayoutResponse>("/owner/payouts/instant-payout/", {
+      method: "POST",
+      body: {},
+    });
+  },
+  instantPayoutExecute() {
+    return jsonFetch<InstantPayoutResponse>("/owner/payouts/instant-payout/", {
+      method: "POST",
+      body: { confirm: true },
     });
   },
 };

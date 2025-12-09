@@ -62,6 +62,20 @@ const isValidTab = (value: string | null): value is Tab => {
   return typeof value === "string" && (TAB_KEYS as readonly string[]).includes(value);
 };
 
+const ACTIVE_DISPUTE_STATUSES = [
+  "open",
+  "intake_missing_evidence",
+  "awaiting_rebuttal",
+  "under_review",
+] as const;
+
+type ActiveDisputeStatus = (typeof ACTIVE_DISPUTE_STATUSES)[number];
+
+const countActiveDisputes = (items: DisputeCase[]) =>
+  items.filter((item) =>
+    ACTIVE_DISPUTE_STATUSES.includes(item.status as ActiveDisputeStatus),
+  ).length;
+
 export default function UserProfile() {
   const location = useLocation();
   const [activeTab, setActiveTab] = useState<Tab>(() => {
@@ -137,6 +151,37 @@ export default function UserProfile() {
 
     return () => {
       subscribed = false;
+      window.clearInterval(intervalId);
+    };
+  }, [profile?.id]);
+
+  useEffect(() => {
+    if (!profile?.id) {
+      setActiveDisputeCount(0);
+      return;
+    }
+
+    let cancelled = false;
+    const POLL_INTERVAL_MS = 15000;
+
+    const fetchActiveDisputes = async () => {
+      try {
+        const data = await disputesAPI.list();
+        if (cancelled) return;
+        const nextCount = countActiveDisputes(data || []);
+        setActiveDisputeCount((current) => (current === nextCount ? current : nextCount));
+      } catch (error) {
+        if (import.meta.env.DEV) {
+          console.warn("Failed to fetch dispute sidebar counter", error);
+        }
+      }
+    };
+
+    void fetchActiveDisputes();
+    const intervalId = window.setInterval(fetchActiveDisputes, POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
       window.clearInterval(intervalId);
     };
   }, [profile?.id]);
@@ -430,13 +475,6 @@ const statusLabels: Record<string, string> = {
   closed_auto: "Closed",
 };
 
-const activeDisputeStatuses = [
-  "open",
-  "intake_missing_evidence",
-  "awaiting_rebuttal",
-  "under_review",
-] as const;
-
 function DisputesPanel({ onCountChange }: { onCountChange?: (count: number) => void }) {
   const [disputes, setDisputes] = useState<DisputeCase[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -452,9 +490,7 @@ function DisputesPanel({ onCountChange }: { onCountChange?: (count: number) => v
         const data = await disputesAPI.list();
         if (cancelled) return;
         setDisputes(data || []);
-        const activeCount = (data || []).filter((item) =>
-          activeDisputeStatuses.includes(item.status as (typeof activeDisputeStatuses)[number]),
-        ).length;
+        const activeCount = countActiveDisputes(data || []);
         onCountChange?.(activeCount);
         if (!selectedId && data.length > 0) {
           setSelectedId(data[0].id);

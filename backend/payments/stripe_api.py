@@ -313,6 +313,50 @@ def create_connect_onboarding_link(user: User) -> str:
     return link_url
 
 
+def create_instant_payout(
+    *,
+    user: User,
+    payout_account: OwnerPayoutAccount,
+    amount_cents: int,
+    metadata: dict[str, Any] | None = None,
+) -> Any:
+    """
+    Create an instant payout from the owner's Stripe Connect account balance
+    to their default external bank account.
+
+    amount_cents: integer amount in cents AFTER fee (the amount going to owner).
+    """
+    if amount_cents <= 0:
+        raise StripeConfigurationError("Instant payout amount must be positive.")
+
+    if not payout_account.stripe_account_id:
+        raise StripeConfigurationError("Owner is missing a Stripe Connect account id.")
+
+    stripe.api_key = _get_stripe_api_key()
+
+    base_metadata = {
+        "kind": "instant_payout",
+        "user_id": str(user.id),
+        "stripe_account_id": payout_account.stripe_account_id,
+        "env": getattr(settings, "STRIPE_ENV", "dev") or "dev",
+    }
+    if metadata:
+        base_metadata.update(metadata)
+
+    try:
+        payout = stripe.Payout.create(
+            amount=amount_cents,
+            currency="cad",
+            metadata=base_metadata,
+            stripe_account=payout_account.stripe_account_id,
+            # You can add a statement_descriptor if desired.
+        )
+    except stripe.error.StripeError as exc:
+        _handle_stripe_error(exc)
+
+    return payout
+
+
 def _handle_connect_account_updated_event(account_payload: Any) -> None:
     """Sync OwnerPayoutAccount rows based on Stripe account.updated data."""
     stripe_account_id = _account_object_value(account_payload, "id", "")
@@ -731,6 +775,32 @@ def _ensure_payment_method_for_customer(payment_method_id: str, customer_id: str
         stripe.PaymentMethod.attach(payment_method_id, customer=customer_id)
     except stripe.error.StripeError as exc:
         _handle_stripe_error(exc)
+
+
+def fetch_payment_method_details(payment_method_id: str) -> dict[str, object]:
+    """Return brand/last4/exp_month/exp_year for a Stripe PaymentMethod."""
+    if not payment_method_id:
+        raise StripePaymentError("payment_method_id is required.")
+
+    stripe.api_key = _get_stripe_api_key()
+    try:
+        pm = stripe.PaymentMethod.retrieve(payment_method_id)
+    except stripe.error.StripeError as exc:
+        _handle_stripe_error(exc)
+
+    card = getattr(pm, "card", None) or getattr(pm, "card", {}) or {}
+    if hasattr(card, "get"):
+        card_dict = card
+    else:
+        # stripe objects behave like dicts
+        card_dict = dict(card)
+
+    return {
+        "brand": (card_dict.get("brand") or "").upper(),
+        "last4": card_dict.get("last4") or "",
+        "exp_month": card_dict.get("exp_month"),
+        "exp_year": card_dict.get("exp_year"),
+    }
 
 
 def charge_promotion_payment(
