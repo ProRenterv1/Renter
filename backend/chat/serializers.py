@@ -12,8 +12,9 @@ from identity.models import is_user_identity_verified
 class ConversationSerializer(serializers.ModelSerializer):
     """Summarize a conversation for list views."""
 
-    booking_id = serializers.IntegerField(source="booking.id", read_only=True)
-    listing_title = serializers.CharField(source="booking.listing.title", read_only=True)
+    booking_id = serializers.SerializerMethodField()
+    listing_id = serializers.SerializerMethodField()
+    listing_title = serializers.SerializerMethodField()
     other_party_name = serializers.SerializerMethodField()
     other_party_avatar_url = serializers.SerializerMethodField()
     other_party_identity_verified = serializers.SerializerMethodField()
@@ -26,15 +27,32 @@ class ConversationSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "booking_id",
+            "listing_id",
             "listing_title",
             "other_party_name",
-            "is_active",
             "other_party_avatar_url",
             "other_party_identity_verified",
+            "is_active",
             "last_message",
             "last_message_at",
             "unread_count",
         ]
+
+    def _get_listing(self, obj: Conversation):
+        if obj.booking and getattr(obj.booking, "listing", None):
+            return obj.booking.listing
+        return getattr(obj, "listing", None)
+
+    def get_booking_id(self, obj: Conversation) -> int | None:
+        return obj.booking_id
+
+    def get_listing_id(self, obj: Conversation) -> int | None:
+        listing = self._get_listing(obj)
+        return getattr(listing, "id", None) if listing else None
+
+    def get_listing_title(self, obj: Conversation) -> str:
+        listing = self._get_listing(obj)
+        return getattr(listing, "title", "") if listing else ""
 
     def _get_identity_cache(self) -> dict[int, bool]:
         cache = getattr(self, "_identity_cache", None)
@@ -160,11 +178,49 @@ class ConversationDetailSerializer(serializers.ModelSerializer):
     """Detailed representation of a single conversation."""
 
     booking = BookingSerializer(read_only=True)
+    listing_id = serializers.SerializerMethodField()
+    listing_title = serializers.SerializerMethodField()
+    listing_primary_photo_url = serializers.SerializerMethodField()
     messages = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
-        fields = ["id", "booking", "is_active", "messages"]
+        fields = [
+            "id",
+            "booking",
+            "listing_id",
+            "listing_title",
+            "listing_primary_photo_url",
+            "is_active",
+            "messages",
+        ]
+
+    def _get_listing(self, obj: Conversation):
+        if obj.booking and getattr(obj.booking, "listing", None):
+            return obj.booking.listing
+        return getattr(obj, "listing", None)
+
+    def get_listing_id(self, obj: Conversation):
+        listing = self._get_listing(obj)
+        return getattr(listing, "id", None) if listing else None
+
+    def get_listing_title(self, obj: Conversation):
+        listing = self._get_listing(obj)
+        return getattr(listing, "title", "") if listing else ""
+
+    def get_listing_primary_photo_url(self, obj: Conversation):
+        listing = self._get_listing(obj)
+        if not listing:
+            return None
+        photo = (
+            listing.photos.filter(
+                status=listing.photos.model.Status.ACTIVE,  # type: ignore[attr-defined]
+                av_status=listing.photos.model.AVStatus.CLEAN,  # type: ignore[attr-defined]
+            )
+            .order_by("id")
+            .first()
+        )
+        return photo.url if photo else None
 
     def get_messages(self, obj: Conversation):
         serializer = MessageSerializer(

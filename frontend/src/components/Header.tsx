@@ -128,7 +128,7 @@ export function Header() {
     }
     const handle = startEventStream<{
       conversation_id: number;
-      booking_id: number;
+      booking_id: number | null;
       message: ChatEventMessage;
     }>({
       onEvents: (events) => {
