@@ -216,6 +216,7 @@ class ProfileSerializer(serializers.ModelSerializer):
             except (StripeConfigurationError, StripeTransientError, StripePaymentError) as exc:
                 logger.warning(
                     "connect_sync_profile_failed",
+                    exc_info=True,
                     extra={"user_id": updated.id, "error": str(exc)},
                 )
         return updated

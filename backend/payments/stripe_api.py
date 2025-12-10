@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
@@ -25,6 +25,7 @@ from promotions.models import PromotedSlot
 logger = logging.getLogger(__name__)
 IDEMPOTENCY_VERSION = "v2"
 AUTOMATIC_PAYMENT_METHODS_CONFIG = {"enabled": True, "allow_redirects": "never"}
+CONNECT_ACCOUNT_EXPAND = ["individual", "external_accounts"]
 User = get_user_model()
 
 
@@ -158,6 +159,117 @@ def _serialize_account_requirements(account_data: Any) -> dict[str, Any]:
     }
 
 
+def _extract_primary_bank_account(account_data: Any) -> Any | None:
+    """Return the default bank account entry from a Stripe account payload."""
+    external_accounts = _account_object_value(account_data, "external_accounts", {}) or {}
+    accounts_list: list[Any] = []
+    if isinstance(external_accounts, dict):
+        accounts_list = external_accounts.get("data") or []
+    elif hasattr(external_accounts, "data"):
+        accounts_list = getattr(external_accounts, "data", []) or []
+    else:
+        try:
+            accounts_list = list(external_accounts)
+        except TypeError:
+            accounts_list = []
+
+    primary = None
+    for acct in accounts_list:
+        if _account_object_value(acct, "object", "") != "bank_account":
+            continue
+        if _account_object_value(acct, "default_for_currency", False):
+            primary = acct
+            break
+        if primary is None:
+            primary = acct
+    return primary
+
+
+def _sync_owner_profile_from_stripe(user: User, account_data: Any) -> None:
+    """Update local profile fields from Stripe Connect individual details."""
+    individual = _account_object_value(account_data, "individual", {}) or {}
+    if not individual:
+        return
+
+    updated_fields: list[str] = []
+
+    phone_raw = str(_account_object_value(individual, "phone", "") or "").strip()
+    if phone_raw:
+        normalized = phone_raw
+        try:
+            from users.serializers import normalize_phone
+
+            normalized = normalize_phone(phone_raw)
+        except Exception:
+            normalized = phone_raw
+        if normalized and normalized != getattr(user, "phone", None):
+            if not User.objects.exclude(pk=user.pk).filter(phone=normalized).exists():
+                user.phone = normalized
+                updated_fields.append("phone")
+
+    dob_data = _account_object_value(individual, "dob", {}) or {}
+    dob_day = _account_object_value(dob_data, "day", None)
+    dob_month = _account_object_value(dob_data, "month", None)
+    dob_year = _account_object_value(dob_data, "year", None)
+    if dob_day and dob_month and dob_year:
+        try:
+            dob_date = date(int(dob_year), int(dob_month), int(dob_day))
+        except (TypeError, ValueError):
+            dob_date = None
+        if dob_date and dob_date != getattr(user, "birth_date", None):
+            user.birth_date = dob_date
+            updated_fields.append("birth_date")
+
+    address = _account_object_value(individual, "address", {}) or {}
+    line1 = str(_account_object_value(address, "line1", "") or "").strip()
+    city = str(_account_object_value(address, "city", "") or "").strip()
+    state = str(_account_object_value(address, "state", "") or "").strip()
+    postal = str(_account_object_value(address, "postal_code", "") or "").strip()
+
+    if line1 and line1 != getattr(user, "street_address", ""):
+        user.street_address = line1
+        updated_fields.append("street_address")
+    if city and city != getattr(user, "city", ""):
+        user.city = city
+        updated_fields.append("city")
+
+    province = state.upper() if state else ""
+    if province and province != getattr(user, "province", ""):
+        user.province = province
+        updated_fields.append("province")
+
+    postal_clean = postal.upper() if postal else ""
+    if postal_clean and postal_clean != getattr(user, "postal_code", ""):
+        user.postal_code = postal_clean
+        updated_fields.append("postal_code")
+
+    if updated_fields:
+        user.save(update_fields=updated_fields)
+
+
+def _sync_bank_details_from_stripe(
+    payout_account: OwnerPayoutAccount,
+    account_data: Any,
+) -> None:
+    """Copy the default external bank account details onto the payout_account record."""
+    bank_account = _extract_primary_bank_account(account_data)
+    if bank_account is None:
+        return
+
+    routing_number = str(_account_object_value(bank_account, "routing_number", "") or "").replace(
+        " ",
+        "",
+    )
+    if routing_number:
+        if len(routing_number) >= 8:
+            payout_account.institution_number = routing_number[:3]
+            payout_account.transit_number = routing_number[3:8]
+
+    last4 = str(_account_object_value(bank_account, "last4", "") or "").strip()
+    if last4:
+        payout_account.account_number = last4
+
+
 def _sync_payout_account_from_stripe(
     payout_account: OwnerPayoutAccount,
     account_data: Any,
@@ -177,9 +289,17 @@ def _sync_payout_account_from_stripe(
     payout_account.is_fully_onboarded = bool(
         charges_enabled and payouts_enabled and not disabled_reason
     )
+    _sync_bank_details_from_stripe(payout_account, account_data)
+    _sync_owner_profile_from_stripe(payout_account.user, account_data)
     payout_account.last_synced_at = timezone.now()
     payout_account.save()
     return payout_account
+
+
+def _retrieve_account_with_expand(account_id: str) -> Any:
+    """Fetch a Stripe Connect account with needed nested fields expanded."""
+    stripe.api_key = _get_stripe_api_key()
+    return stripe.Account.retrieve(account_id, expand=CONNECT_ACCOUNT_EXPAND)
 
 
 def _sanitize_business_url(raw_url: str) -> str:
@@ -195,6 +315,7 @@ def _sanitize_business_url(raw_url: str) -> str:
 def ensure_connect_account(user: User) -> OwnerPayoutAccount:
     """Ensure the owner has a Stripe Connect Express account and sync it locally."""
     stripe.api_key = _get_stripe_api_key()
+    job_title = getattr(settings, "CONNECT_JOB_TITLE", "") or "Renter"
 
     try:
         payout_account = user.payout_account
@@ -206,7 +327,7 @@ def ensure_connect_account(user: User) -> OwnerPayoutAccount:
     account_data: Any | None = None
     if existing_account_id:
         try:
-            account_data = stripe.Account.retrieve(existing_account_id)
+            account_data = _retrieve_account_with_expand(existing_account_id)
         except stripe.error.InvalidRequestError as exc:
             if getattr(exc, "code", "") == "resource_missing":
                 logger.info(
@@ -236,6 +357,7 @@ def ensure_connect_account(user: User) -> OwnerPayoutAccount:
         individual["last_name"] = user.last_name
     if user.email:
         individual["email"] = user.email
+    individual["relationship"] = {"title": job_title}
 
     if account_data is None:
         try:
@@ -248,14 +370,40 @@ def ensure_connect_account(user: User) -> OwnerPayoutAccount:
                 },
                 "business_type": "individual",
                 "business_profile": business_profile,
-                "metadata": {"user_id": str(user.id), "job_title": "Renter"},
+                "metadata": {"user_id": str(user.id), "job_title": job_title},
             }
             if individual:
                 account_params["individual"] = individual
 
             account_data = stripe.Account.create(**account_params)
+            try:
+                account_data = _retrieve_account_with_expand(
+                    _account_object_value(account_data, "id", "")
+                )
+            except stripe.error.StripeError as exc:  # noqa: PERF203
+                _handle_stripe_error(exc)
         except stripe.error.StripeError as exc:
             _handle_stripe_error(exc)
+    else:
+        existing_metadata = _account_object_value(account_data, "metadata", {}) or {}
+        if isinstance(existing_metadata, dict):
+            metadata_dict = dict(existing_metadata)
+        elif hasattr(existing_metadata, "items"):
+            metadata_dict = dict(existing_metadata.items())
+        else:
+            metadata_dict = {}
+        desired_metadata = {"user_id": str(user.id), "job_title": job_title}
+        metadata_needs_update = any(
+            metadata_dict.get(key) != value for key, value in desired_metadata.items()
+        )
+        if metadata_needs_update and existing_account_id:
+            try:
+                stripe.Account.modify(
+                    existing_account_id,
+                    metadata={**metadata_dict, **desired_metadata},
+                )
+            except stripe.error.StripeError as exc:
+                _handle_stripe_error(exc)
 
     if payout_account is None:
         payout_account = OwnerPayoutAccount(
@@ -269,6 +417,7 @@ def ensure_connect_account(user: User) -> OwnerPayoutAccount:
 def sync_connect_account_personal_info(user: User) -> None:
     """Push the user's personal details to Stripe Connect."""
     payout_account = ensure_connect_account(user)
+    stripe.api_key = _get_stripe_api_key()
     individual: dict[str, Any] = {}
 
     if user.first_name:
@@ -310,6 +459,13 @@ def sync_connect_account_personal_info(user: User) -> None:
             payout_account.stripe_account_id,
             individual=individual,
         )
+    except stripe.error.PermissionError:
+        logger.warning(
+            "connect_sync_profile_permission_denied",
+            extra={"user_id": user.id, "account_id": payout_account.stripe_account_id},
+            exc_info=True,
+        )
+        return
     except stripe.error.StripeError as exc:
         _handle_stripe_error(exc)
 
@@ -448,6 +604,7 @@ def create_connect_onboarding_link(user: User) -> str:
             type="account_onboarding",
             refresh_url=refresh_url,
             return_url=return_url,
+            collect="eventually_due",
         )
     except stripe.error.StripeError as exc:
         _handle_stripe_error(exc)
@@ -583,6 +740,17 @@ def _handle_connect_account_updated_event(account_payload: Any) -> None:
     stripe_account_id = _account_object_value(account_payload, "id", "")
     if not stripe_account_id:
         return
+
+    needs_expand = not _account_object_value(
+        account_payload, "individual", None
+    ) or not _account_object_value(  # noqa: E501
+        account_payload, "external_accounts", None
+    )
+    if needs_expand:
+        try:
+            account_payload = _retrieve_account_with_expand(stripe_account_id)
+        except Exception:  # Defensive: best-effort sync without failing webhook
+            pass
 
     payout_account = OwnerPayoutAccount.objects.filter(
         stripe_account_id=stripe_account_id,
@@ -1094,8 +1262,7 @@ def stripe_webhook(request):
     account_data: Any | None = None
     if account_id:
         try:
-            stripe.api_key = _get_stripe_api_key()
-            account_data = stripe.Account.retrieve(account_id)
+            account_data = _retrieve_account_with_expand(account_id)
             _handle_connect_account_updated_event(account_data)
         except StripeConfigurationError:
             logger.warning("stripe_webhook: missing Stripe config for account sync")

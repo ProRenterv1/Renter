@@ -39,10 +39,30 @@ def test_signup_creates_connect_account(monkeypatch, settings):
 
     monkeypatch.setattr(stripe_api, "_get_stripe_api_key", lambda: "sk_test_key")
 
+    base_payload = {
+        "id": "acct_123",
+        "charges_enabled": False,
+        "payouts_enabled": False,
+        "requirements": {
+            "currently_due": [],
+            "eventually_due": [],
+            "past_due": [],
+            "disabled_reason": "",
+        },
+        "individual": {},
+        "external_accounts": {"data": []},
+    }
+
     def fake_create(**kwargs):
         created_calls.append(kwargs)
-        return {"id": "acct_123", "charges_enabled": False, "payouts_enabled": False}
+        return base_payload
 
+    monkeypatch.setattr(
+        stripe_api,
+        "_retrieve_account_with_expand",
+        lambda _account_id: base_payload,
+    )
+    monkeypatch.setattr(stripe.Account, "modify", staticmethod(lambda *a, **k: base_payload))
     monkeypatch.setattr(stripe.Account, "create", staticmethod(fake_create))
 
     client = APIClient()
@@ -177,3 +197,138 @@ def test_identity_start_returns_error(monkeypatch):
     resp = client.post("/api/identity/start/")
     assert resp.status_code == 400
     assert "Stripe Connect onboarding" in resp.data["detail"]
+
+
+def test_account_updated_syncs_profile_and_bank_details():
+    user = User.objects.create_user(
+        username="kyc-sync",
+        email="sync@example.com",
+        password="StrongPass123!",
+        can_list=True,
+        can_rent=True,
+    )
+    payout_account = OwnerPayoutAccount.objects.create(
+        user=user,
+        stripe_account_id="acct_sync",
+    )
+
+    account_payload = {
+        "id": "acct_sync",
+        "charges_enabled": True,
+        "payouts_enabled": True,
+        "requirements": {
+            "currently_due": [],
+            "eventually_due": [],
+            "past_due": [],
+            "disabled_reason": None,
+        },
+        "individual": {
+            "phone": "+15555550123",
+            "dob": {"day": 2, "month": 3, "year": 1990},
+            "address": {
+                "line1": "123 King St",
+                "city": "Toronto",
+                "state": "on",
+                "postal_code": "m5v 0e9",
+            },
+        },
+        "external_accounts": {
+            "data": [
+                {
+                    "object": "bank_account",
+                    "default_for_currency": True,
+                    "routing_number": "00412345",
+                    "last4": "6789",
+                }
+            ]
+        },
+    }
+
+    stripe_api._handle_connect_account_updated_event(account_payload)
+
+    user.refresh_from_db()
+    payout_account.refresh_from_db()
+    assert user.phone == "+15555550123"
+    assert user.birth_date.isoformat() == "1990-03-02"
+    assert user.street_address == "123 King St"
+    assert user.city == "Toronto"
+    assert user.province == "ON"
+    assert user.postal_code == "M5V 0E9"
+    assert payout_account.institution_number == "004"
+    assert payout_account.transit_number == "12345"
+    assert payout_account.account_number == "6789"
+    assert payout_account.last_synced_at is not None
+
+
+def test_account_updated_fetches_expanded_account(monkeypatch):
+    user = User.objects.create_user(
+        username="kyc-expand",
+        email="expand@example.com",
+        password="StrongPass123!",
+        can_list=True,
+        can_rent=True,
+    )
+    OwnerPayoutAccount.objects.create(
+        user=user,
+        stripe_account_id="acct_expand",
+    )
+
+    # Payload missing nested fields to force a re-fetch with expand
+    incoming_payload = {"id": "acct_expand"}
+
+    monkeypatch.setattr(stripe_api, "_get_stripe_api_key", lambda: "sk_test_key")
+
+    fetched_payload = {
+        "id": "acct_expand",
+        "charges_enabled": True,
+        "payouts_enabled": True,
+        "requirements": {
+            "currently_due": [],
+            "eventually_due": [],
+            "past_due": [],
+            "disabled_reason": "",
+        },
+        "individual": {
+            "phone": "+12223334444",
+            "dob": {"day": 5, "month": 6, "year": 1985},
+            "address": {
+                "line1": "789 Queen St",
+                "city": "Vancouver",
+                "state": "BC",
+                "postal_code": "v5k 0a1",
+            },
+        },
+        "external_accounts": {
+            "data": [
+                {
+                    "object": "bank_account",
+                    "default_for_currency": True,
+                    "routing_number": "123456789",
+                    "last4": "1111",
+                }
+            ]
+        },
+    }
+
+    retrieve_calls: list[dict] = []
+
+    def fake_retrieve(account_id, expand=None):
+        retrieve_calls.append({"account_id": account_id, "expand": expand})
+        return fetched_payload
+
+    monkeypatch.setattr(stripe_api.stripe.Account, "retrieve", staticmethod(fake_retrieve))
+
+    stripe_api._handle_connect_account_updated_event(incoming_payload)
+
+    user.refresh_from_db()
+    payout = OwnerPayoutAccount.objects.get(user=user)
+
+    assert retrieve_calls, "Should fetch expanded account when payload is incomplete"
+    assert user.phone == "+12223334444"
+    assert user.birth_date.isoformat() == "1985-06-05"
+    assert user.city == "Vancouver"
+    assert user.province == "BC"
+    assert user.postal_code == "V5K 0A1"
+    assert payout.transit_number == "45678"
+    assert payout.institution_number == "123"
+    assert payout.account_number == "1111"
