@@ -304,9 +304,10 @@ export interface PromotionPaymentPayload {
   promotion_end: string;
   base_price_cents: number;
   gst_cents: number;
-  stripe_payment_method_id: string;
+  stripe_payment_method_id?: string;
   stripe_customer_id?: string;
   save_payment_method?: boolean;
+  pay_with_earnings?: boolean;
 }
 
 export interface PromotionSlot {
@@ -343,6 +344,7 @@ export interface OwnerPayoutBalances {
   lifetime_deposit_released: string;
   net_earnings: string;
   last_30_days_net: string;
+  available_earnings: string;
 }
 
 export interface OwnerPayoutConnect {
@@ -351,6 +353,7 @@ export interface OwnerPayoutConnect {
   payouts_enabled: boolean;
   charges_enabled: boolean;
   is_fully_onboarded: boolean;
+  lifetime_instant_payouts: string;
   requirements_due: {
     currently_due: string[];
     eventually_due: string[];
@@ -379,6 +382,7 @@ export interface OwnerPayoutHistoryRow {
   booking_status: string | null;
   listing_title: string | null;
   direction: "credit" | "debit";
+  stripe_id?: string | null;
 }
 
 export interface OwnerPayoutHistoryResponse {
@@ -1208,6 +1212,12 @@ export const paymentsAPI = {
       method: "POST",
       body: { confirm: true },
     });
+  },
+  ownerPayoutsStartOnboarding() {
+    return jsonFetch<{ onboarding_url: string; stripe_account_id: string | null }>(
+      "/owner/payouts/start-onboarding/",
+      { method: "POST" },
+    );
   },
 };
 

@@ -47,6 +47,7 @@ def test_owner_payouts_endpoints_require_authentication(method, url):
 
 
 def test_owner_payouts_summary_returns_balances(owner_user, booking_factory, monkeypatch):
+    OwnerPayoutAccount.objects.filter(user=owner_user).delete()
     booking = booking_factory(
         start_date=date.today(),
         end_date=date.today() + timedelta(days=3),
@@ -178,6 +179,7 @@ def test_owner_payouts_history_returns_paginated_results(owner_user, booking_fac
 
 
 def test_owner_payouts_start_onboarding_returns_link(owner_user, monkeypatch):
+    OwnerPayoutAccount.objects.filter(user=owner_user).delete()
     payout_account = OwnerPayoutAccount.objects.create(
         user=owner_user,
         stripe_account_id="acct_onboard_123",
@@ -201,6 +203,7 @@ def test_owner_payouts_start_onboarding_returns_link(owner_user, monkeypatch):
 
 
 def test_owner_payouts_start_onboarding_handles_errors(owner_user, monkeypatch):
+    OwnerPayoutAccount.objects.filter(user=owner_user).delete()
     payout_account = OwnerPayoutAccount.objects.create(
         user=owner_user,
         stripe_account_id="acct_onboard_err",
@@ -222,11 +225,17 @@ def test_owner_payouts_start_onboarding_handles_errors(owner_user, monkeypatch):
 
 
 def test_owner_payouts_update_bank_details(owner_user, monkeypatch):
+    OwnerPayoutAccount.objects.filter(user=owner_user).delete()
     payout_account = OwnerPayoutAccount.objects.create(
         user=owner_user,
         stripe_account_id="acct_bank_123",
     )
     monkeypatch.setattr(payments_api, "ensure_connect_account", lambda user: payout_account)
+    monkeypatch.setattr(
+        payments_api,
+        "update_connect_bank_account",
+        lambda **kwargs: {"id": "ba_test", "last4": "4567"},
+    )
 
     client = _auth_client(owner_user)
     resp = client.post(
@@ -243,7 +252,7 @@ def test_owner_payouts_update_bank_details(owner_user, monkeypatch):
     payout_account.refresh_from_db()
     assert payout_account.transit_number == "10010"
     assert payout_account.institution_number == "004"
-    assert payout_account.account_number == "1234567"
+    assert payout_account.account_number == "4567"
     connect = resp.data["connect"]
     assert connect["bank_details"]["account_last4"] == "4567"
     assert connect["bank_details"]["transit_number"] == "10010"
@@ -251,6 +260,7 @@ def test_owner_payouts_update_bank_details(owner_user, monkeypatch):
 
 
 def test_owner_payouts_update_bank_details_requires_fields(owner_user, monkeypatch):
+    OwnerPayoutAccount.objects.filter(user=owner_user).delete()
     payout_account = OwnerPayoutAccount.objects.create(
         user=owner_user,
         stripe_account_id="acct_bank_req",
@@ -267,6 +277,7 @@ def test_owner_payouts_update_bank_details_requires_fields(owner_user, monkeypat
 
 
 def test_owner_payouts_instant_payout_preview(owner_user, booking_factory, monkeypatch):
+    OwnerPayoutAccount.objects.filter(user=owner_user).delete()
     booking = booking_factory(
         start_date=date.today(),
         end_date=date.today() + timedelta(days=2),
@@ -301,6 +312,7 @@ def test_owner_payouts_instant_payout_preview(owner_user, booking_factory, monke
 
 
 def test_owner_payouts_instant_payout_requires_bank_details(owner_user, monkeypatch):
+    OwnerPayoutAccount.objects.filter(user=owner_user).delete()
     payout_account = OwnerPayoutAccount.objects.create(
         user=owner_user,
         stripe_account_id="acct_instant_missing",
@@ -318,6 +330,7 @@ def test_owner_payouts_instant_payout_requires_bank_details(owner_user, monkeypa
 
 
 def test_owner_payouts_instant_payout_executes_and_logs(owner_user, booking_factory, monkeypatch):
+    OwnerPayoutAccount.objects.filter(user=owner_user).delete()
     booking = booking_factory(
         start_date=date.today(),
         end_date=date.today() + timedelta(days=1),
@@ -357,18 +370,18 @@ def test_owner_payouts_instant_payout_executes_and_logs(owner_user, booking_fact
     assert resp.status_code == 202, resp.data
     assert resp.data["executed"] is True
     assert resp.data["stripe_payout_id"] == "po_test_123"
-    assert resp.data["amount_before_fee"] == "150.00"
-    assert resp.data["amount_after_fee"] == "145.50"
-    assert captured_call["amount_cents"] == 14550
-    assert captured_call["metadata"]["amount_before_fee"] == "150.00"
+    assert resp.data["amount_before_fee"] == "200.00"
+    assert resp.data["amount_after_fee"] == "194.00"
+    assert captured_call["amount_cents"] == 19400
+    assert captured_call["metadata"]["amount_before_fee"] == "200.00"
     assert captured_call["user"] == owner_user
     assert captured_call["payout_account"] == payout_account
 
     payout_account.refresh_from_db()
-    assert payout_account.lifetime_instant_payouts == Decimal("200.00")
+    assert payout_account.lifetime_instant_payouts == Decimal("250.00")
 
     earnings = Transaction.objects.filter(user=owner_user, kind=Transaction.Kind.OWNER_EARNING)
     assert earnings.filter(amount=Decimal("200.00")).exists()
-    assert earnings.filter(amount=Decimal("-150.00")).exists()
+    assert earnings.filter(amount=Decimal("-200.00")).exists()
     fee_txn = Transaction.objects.get(user=owner_user, kind=Transaction.Kind.PLATFORM_FEE)
-    assert fee_txn.amount == Decimal("4.50")
+    assert fee_txn.amount == Decimal("6.00")

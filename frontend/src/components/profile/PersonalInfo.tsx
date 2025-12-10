@@ -17,6 +17,7 @@ type PersonalInfoForm = {
   city: string;
   province: string;
   postal_code: string;
+  birth_date: string;
 };
 
 type ContactChannel = "email" | "phone";
@@ -53,6 +54,7 @@ const emptyForm: PersonalInfoForm = {
   city: "",
   province: "",
   postal_code: "",
+  birth_date: "",
 };
 
 const mapProfileToForm = (profile?: Profile | null): PersonalInfoForm => ({
@@ -63,6 +65,7 @@ const mapProfileToForm = (profile?: Profile | null): PersonalInfoForm => ({
   city: profile?.city ?? "",
   province: profile?.province ?? "",
   postal_code: profile?.postal_code ?? "",
+  birth_date: profile?.birth_date ?? "",
 });
 
 const parseFieldErrors = (data: unknown): Record<string, string> => {
@@ -379,6 +382,7 @@ export function PersonalInfo({ onProfileUpdate }: PersonalInfoProps = {}) {
         city: form.city.trim(),
         province: form.province.trim(),
         postal_code: form.postal_code.trim(),
+        birth_date: form.birth_date || null,
       };
       const updated = await authAPI.updateProfile(payload);
       setProfile(updated);
@@ -526,6 +530,21 @@ export function PersonalInfo({ onProfileUpdate }: PersonalInfoProps = {}) {
                       <p className="text-xs text-red-500">{errors.last_name}</p>
                     )}
                   </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="birthDate">Birth date</Label>
+                  <Input
+                    id="birthDate"
+                    type="date"
+                    value={form.birth_date}
+                    disabled={inputsDisabled}
+                    className="h-11"
+                    onChange={(event) => handleFieldChange("birth_date", event.target.value)}
+                  />
+                  {errors.birth_date && (
+                    <p className="text-xs text-red-500">{errors.birth_date}</p>
+                  )}
                 </div>
 
                 <div className="space-y-2">

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import timedelta
 from typing import Optional, Tuple
@@ -25,6 +26,8 @@ PHONE_CLEAN_RE = re.compile(r"\D+")
 GENERIC_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\s\.'-]{0,63}$")
 PROVINCE_RE = re.compile(r"^[A-Za-z][A-Za-z\s\.'-]{0,63}$")
 POSTAL_CODE_RE = re.compile(r"^[A-Z0-9][A-Z0-9\s-]{2,15}$")
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_phone(raw_phone: Optional[str]) -> Optional[str]:
@@ -97,6 +100,7 @@ class ProfileSerializer(serializers.ModelSerializer):
             "city",
             "province",
             "postal_code",
+            "birth_date",
             "can_rent",
             "can_list",
             "email_verified",
@@ -165,6 +169,13 @@ class ProfileSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Enter a valid postal or ZIP code.")
         return cleaned
 
+    def validate_birth_date(self, value):
+        if value is None:
+            return value
+        if value > timezone.localdate():
+            raise serializers.ValidationError("Birth date cannot be in the future.")
+        return value
+
     def get_avatar_url(self, obj: User) -> str:
         return obj.avatar_url
 
@@ -190,7 +201,24 @@ class ProfileSerializer(serializers.ModelSerializer):
             new_phone = validated_data.get("phone")
             if new_phone != instance.phone:
                 instance.phone_verified = False
-        return super().update(instance, validated_data)
+        updated = super().update(instance, validated_data)
+        # Sync updated personal info to Stripe Connect for owners.
+        if updated.can_list:
+            try:
+                from payments.stripe_api import (
+                    StripeConfigurationError,
+                    StripePaymentError,
+                    StripeTransientError,
+                    sync_connect_account_personal_info,
+                )
+
+                sync_connect_account_personal_info(updated)
+            except (StripeConfigurationError, StripeTransientError, StripePaymentError) as exc:
+                logger.warning(
+                    "connect_sync_profile_failed",
+                    extra={"user_id": updated.id, "error": str(exc)},
+                )
+        return updated
 
 
 class PublicProfileSerializer(serializers.ModelSerializer):
@@ -329,6 +357,22 @@ class SignupSerializer(serializers.ModelSerializer):
         if not validated_data.get("username"):
             validated_data["username"] = self._generate_username(validated_data)
         user = User.objects.create_user(password=password, **validated_data)
+        if user.can_list:
+            from payments.stripe_api import (
+                StripeConfigurationError,
+                StripePaymentError,
+                StripeTransientError,
+                ensure_connect_account,
+            )
+
+            try:
+                ensure_connect_account(user)
+            except (StripeConfigurationError, StripeTransientError, StripePaymentError) as exc:
+                logger.warning(
+                    "Stripe Connect account creation skipped during signup for user %s: %s",
+                    user.id,
+                    exc,
+                )
         return user
 
     def _generate_username(self, data: dict) -> str:

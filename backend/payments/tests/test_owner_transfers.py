@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+import json
+from datetime import date, timedelta
+from decimal import Decimal
+from unittest.mock import patch
+
+import pytest
+from django.contrib.auth import get_user_model
+from rest_framework.test import APIClient
+
+from bookings.models import Booking
+from listings.models import Listing
+from listings.services import compute_booking_totals
+from payments.models import OwnerPayoutAccount, Transaction
+
+User = get_user_model()
+
+
+@pytest.fixture
+def owner_user(db):
+    return User.objects.create_user(username="owner", email="owner@example.com", password="pass123")
+
+
+@pytest.fixture
+def renter_user(db):
+    return User.objects.create_user(
+        username="renter", email="renter@example.com", password="pass123"
+    )
+
+
+@pytest.fixture
+def listing(owner_user):
+    return Listing.objects.create(
+        owner=owner_user,
+        title="Test Listing",
+        description="For payout tests",
+        daily_price_cad=Decimal("120.00"),
+        replacement_value_cad=Decimal("500.00"),
+        damage_deposit_cad=Decimal("50.00"),
+        city="Edmonton",
+        postal_code="T5A 0A1",
+        is_active=True,
+        is_available=True,
+    )
+
+
+@pytest.fixture
+def booking_with_totals(settings, owner_user, renter_user, listing):
+    settings.BOOKING_RENTER_FEE_RATE = Decimal("0.10")
+    settings.BOOKING_OWNER_FEE_RATE = Decimal("0.05")
+    settings.STRIPE_SECRET_KEY = "sk_test_key"
+    settings.STRIPE_WEBHOOK_SECRET = "whsec_test"
+
+    start = date(2025, 1, 1)
+    end = start + timedelta(days=3)
+    totals = compute_booking_totals(listing=listing, start_date=start, end_date=end)
+    booking = Booking.objects.create(
+        listing=listing,
+        owner=listing.owner,
+        renter=renter_user,
+        start_date=start,
+        end_date=end,
+        status=Booking.Status.CONFIRMED,
+        totals=totals,
+        charge_payment_intent_id="",
+    )
+    owner_payout = Decimal(totals["owner_payout"])
+    return booking, owner_payout
+
+
+def _webhook_payload(booking: Booking) -> dict:
+    return {
+        "type": "payment_intent.succeeded",
+        "data": {
+            "object": {
+                "id": "pi_test_123",
+                "metadata": {
+                    "kind": "booking_charge",
+                    "booking_id": str(booking.id),
+                    "listing_id": str(booking.listing_id),
+                    "env": "dev",
+                },
+            }
+        },
+    }
+
+
+@pytest.mark.django_db
+@patch("payments.stripe_api.stripe.Transfer.create")
+@patch("payments.stripe_api.ensure_connect_account")
+def test_owner_transfer_created_on_webhook(
+    mock_ensure_connect_account,
+    mock_transfer_create,
+    booking_with_totals,
+    owner_user,
+    settings,
+    monkeypatch,
+):
+    booking, owner_payout = booking_with_totals
+    payout_account = OwnerPayoutAccount(
+        user=owner_user,
+        stripe_account_id="acct_test_owner",
+        payouts_enabled=True,
+        charges_enabled=True,
+    )
+    mock_ensure_connect_account.return_value = payout_account
+    mock_transfer_create.return_value = {"id": "tr_test_123"}
+
+    event_payload = _webhook_payload(booking)
+    monkeypatch.setattr(
+        "payments.stripe_api.stripe.Webhook.construct_event",
+        lambda payload, sig_header, secret: event_payload,
+    )
+
+    client = APIClient()
+    response = client.post(
+        "/api/payments/stripe/webhook/",
+        data=json.dumps(event_payload),
+        content_type="application/json",
+        HTTP_STRIPE_SIGNATURE="test_sig",
+    )
+    assert response.status_code == 200
+
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.PAID
+    assert booking.charge_payment_intent_id == "pi_test_123"
+
+    tx = Transaction.objects.get(
+        user=booking.listing.owner,
+        booking=booking,
+        kind=Transaction.Kind.OWNER_EARNING,
+    )
+    assert Decimal(tx.amount) == owner_payout
+    assert tx.stripe_id == "tr_test_123"
+
+    mock_transfer_create.assert_called_once()
+    _, kwargs = mock_transfer_create.call_args
+    assert kwargs["amount"] == int((owner_payout * 100).quantize(Decimal("1")))
+    assert kwargs["currency"] == "cad"
+    assert kwargs["destination"] == payout_account.stripe_account_id
+    assert kwargs["metadata"]["kind"] == "owner_payout"
+    assert kwargs["metadata"]["booking_id"] == str(booking.id)
+
+
+@pytest.mark.django_db
+@patch("payments.stripe_api.stripe.Transfer.create")
+@patch("payments.stripe_api.ensure_connect_account")
+def test_owner_transfer_webhook_idempotent(
+    mock_ensure_connect_account,
+    mock_transfer_create,
+    booking_with_totals,
+    owner_user,
+    settings,
+    monkeypatch,
+):
+    booking, owner_payout = booking_with_totals
+    payout_account = OwnerPayoutAccount(
+        user=owner_user,
+        stripe_account_id="acct_test_owner",
+        payouts_enabled=True,
+        charges_enabled=True,
+    )
+    mock_ensure_connect_account.return_value = payout_account
+    mock_transfer_create.return_value = {"id": "tr_test_123"}
+
+    event_payload = _webhook_payload(booking)
+    monkeypatch.setattr(
+        "payments.stripe_api.stripe.Webhook.construct_event",
+        lambda payload, sig_header, secret: event_payload,
+    )
+
+    client = APIClient()
+    for _ in range(2):
+        response = client.post(
+            "/api/payments/stripe/webhook/",
+            data=json.dumps(event_payload),
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="test_sig",
+        )
+        assert response.status_code == 200
+
+    txs = Transaction.objects.filter(
+        user=booking.listing.owner,
+        booking=booking,
+        kind=Transaction.Kind.OWNER_EARNING,
+    )
+    assert txs.count() == 1
+    assert Decimal(txs.first().amount) == owner_payout
+
+    mock_transfer_create.assert_called_once()

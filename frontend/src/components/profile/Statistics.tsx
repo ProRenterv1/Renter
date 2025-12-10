@@ -18,7 +18,7 @@ import {
   type OwnerPayoutHistoryRow,
   type OwnerPayoutSummary,
 } from "@/lib/api";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, parseMoney } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Skeleton } from "../ui/skeleton";
@@ -29,6 +29,7 @@ export function Statistics() {
   const [activeListings, setActiveListings] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const completedStatusLabels = useMemo(() => ["completed", "disputed"], []);
 
   useEffect(() => {
     let cancelled = false;
@@ -39,7 +40,7 @@ export function Statistics() {
       try {
         const [summaryRes, historyRes, listingsRes] = await Promise.all([
           paymentsAPI.ownerPayoutsSummary(),
-          paymentsAPI.ownerPayoutsHistory({ kind: "OWNER_EARNING", limit: 500 }),
+          paymentsAPI.ownerPayoutsHistory({ limit: 500 }),
           listingsAPI.mine(),
         ]);
 
@@ -77,35 +78,31 @@ export function Statistics() {
 
   const unpaidSinceLastPayout = useMemo(() => {
     if (!summary) return 0;
-    return Number(summary.balances.net_earnings || "0");
+    return parseMoney(summary.balances.available_earnings || "0");
   }, [summary]);
 
   const totalPayoutsAllTime = useMemo(() => {
-    if (history.length) {
-      return history.reduce((sum, row) => {
-        if (row.kind !== "OWNER_EARNING") {
-          return sum;
-        }
-        const amt = Number(row.amount || "0");
-        const signed = row.direction === "debit" ? amt * -1 : amt;
-        return sum + signed;
-      }, 0);
-    }
-    if (summary) {
-      return Number(summary.balances.net_earnings || "0");
+    if (summary?.connect?.lifetime_instant_payouts !== undefined) {
+      return parseMoney(summary.connect.lifetime_instant_payouts);
     }
     return 0;
   }, [history, summary]);
 
-  const rentalsLast30Days = useMemo(() => {
-    if (!history.length) return 0;
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - 30);
-    return history.filter((row) => {
-      const dt = new Date(row.created_at);
-      return dt >= cutoff && Number(row.amount || "0") > 0;
-    }).length;
-  }, [history]);
+  const totalCompletedRentals = useMemo(() => {
+    const seen = new Set<number>();
+    history.forEach((row) => {
+      if (
+        row.booking_id &&
+        row.booking_status &&
+        completedStatusLabels.some((label) =>
+          row.booking_status?.toLowerCase().includes(label),
+        )
+      ) {
+        seen.add(row.booking_id);
+      }
+    });
+    return seen.size;
+  }, [history, completedStatusLabels]);
 
   const { monthlyData, rentalData } = useMemo(() => {
     const now = new Date();
@@ -121,6 +118,9 @@ export function Statistics() {
     const incomeByMonth = new Map<string, { profit: number; count: number }>();
     months.forEach((m) => incomeByMonth.set(m.key, { profit: 0, count: 0 }));
 
+    const bookingCountByMonth = new Map<string, Set<number>>();
+    months.forEach((m) => bookingCountByMonth.set(m.key, new Set<number>()));
+
     for (const row of history) {
       const dt = new Date(row.created_at);
       const key = `${dt.getFullYear()}-${dt.getMonth()}`;
@@ -128,11 +128,25 @@ export function Statistics() {
 
       const bucket = incomeByMonth.get(key)!;
       const amt = Number(row.amount || "0");
-      const signed = row.direction === "debit" ? amt * -1 : amt;
+
+      let signed = amt;
+      if (row.kind === "PROMOTION_CHARGE" && row.stripe_id) {
+        // Card-paid promotion shouldn't affect profit
+        signed = 0;
+      }
+
       bucket.profit += signed;
 
-      if (row.kind === "OWNER_EARNING" && signed > 0) {
-        bucket.count += 1;
+      if (
+        row.booking_id &&
+        row.booking_status &&
+        completedStatusLabels.some((label) => row.booking_status?.toLowerCase().includes(label)) &&
+        row.kind === "OWNER_EARNING"
+      ) {
+        const set = bookingCountByMonth.get(key);
+        if (set) {
+          set.add(row.booking_id);
+        }
       }
     }
 
@@ -143,7 +157,7 @@ export function Statistics() {
       })),
       rentalData: months.map((m) => ({
         month: m.label,
-        count: incomeByMonth.get(m.key)?.count || 0,
+        count: bookingCountByMonth.get(m.key)?.size || 0,
       })),
     };
   }, [history]);
@@ -175,7 +189,7 @@ export function Statistics() {
               {loading ? <Skeleton className="h-6 w-20" /> : formatCurrency(unpaidSinceLastPayout)}
             </div>
             <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-              Unpaid earnings since your last payout
+              Earnings available after last payout (net of deposits/promo spend)
             </p>
           </CardContent>
         </Card>
@@ -190,7 +204,7 @@ export function Statistics() {
               {loading ? <Skeleton className="h-6 w-20" /> : formatCurrency(totalPayoutsAllTime)}
             </div>
             <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-              Owner earnings paid out (credits)
+              Paid out to your bank account
             </p>
           </CardContent>
         </Card>
@@ -215,10 +229,10 @@ export function Statistics() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl">
-              {loading ? <Skeleton className="h-6 w-10" /> : rentalsLast30Days}
+              {loading ? <Skeleton className="h-6 w-10" /> : totalCompletedRentals}
             </div>
             <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-              Rentals in last 30 days
+              Total completed rentals
             </p>
           </CardContent>
         </Card>

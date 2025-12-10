@@ -9,6 +9,7 @@ import {
   type PaymentMethod,
   type OwnerPayoutHistoryRow,
   type OwnerPayoutSummary,
+  type JsonError,
 } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -51,6 +52,7 @@ export function Payments() {
     institution_number: "",
     account_number: "",
   });
+  const [bankErrors, setBankErrors] = useState<Record<string, string>>({});
   const [savingBank, setSavingBank] = useState(false);
   const [instantOpen, setInstantOpen] = useState(false);
   const [instantLoading, setInstantLoading] = useState(false);
@@ -163,10 +165,13 @@ export function Payments() {
     }
   };
 
-  const bankDetails = summary?.connect?.bank_details;
+  const connect = summary?.connect;
+  const bankDetails = connect?.bank_details;
+  const hasConnectAccount = connect?.has_account;
 
   const handleBankSubmit = async () => {
     setSavingBank(true);
+    setBankErrors({});
     try {
       const updated = await paymentsAPI.updateBankDetails(bankForm);
       setSummary(updated);
@@ -176,8 +181,31 @@ export function Payments() {
         account_number: "",
       }));
       toast.success("Bank details updated.");
-    } catch {
-      toast.error("Unable to save bank details right now.");
+    } catch (err) {
+      let detailMessage: string | null = null;
+      if (err && typeof err === "object" && "data" in err) {
+        const data = (err as JsonError).data as any;
+        if (data && typeof data === "object" && !Array.isArray(data)) {
+          const fieldMessages: Record<string, string> = {};
+          for (const key of ["transit_number", "institution_number", "account_number"]) {
+            const value = (data as Record<string, unknown>)[key];
+            if (Array.isArray(value) && value.length) {
+              fieldMessages[key] = String(value[0]);
+              if (!detailMessage) {
+                detailMessage = fieldMessages[key];
+              }
+            }
+          }
+          if (Object.keys(fieldMessages).length) {
+            setBankErrors(fieldMessages);
+          }
+          const possibleDetail = (data as Record<string, unknown>).detail;
+          if (typeof possibleDetail === "string") {
+            detailMessage = possibleDetail;
+          }
+        }
+      }
+      toast.error(detailMessage || "Unable to save bank details right now.");
     } finally {
       setSavingBank(false);
     }
@@ -253,10 +281,13 @@ export function Payments() {
         description = "Deposit captured";
       } else if (txn.kind === "DAMAGE_DEPOSIT_RELEASE") {
         description = "Deposit released";
+      } else if (txn.kind === "PROMOTION_CHARGE") {
+        description = "Promotion payment";
       }
 
       const amountNumber = Number(txn.amount || "0");
-      const signed = txn.direction === "debit" ? amountNumber * -1 : amountNumber;
+      const signed =
+        txn.kind === "PROMOTION_CHARGE" ? -Math.abs(amountNumber) : amountNumber;
 
       return {
         id: txn.id,
@@ -378,14 +409,19 @@ export function Payments() {
                 <p>Bank Account</p>
                 {loading ? (
                   <Skeleton className="h-4 w-48 mt-2" />
-                ) : bankDetails ? (
+                ) : !hasConnectAccount ? (
+                  <p className="text-sm mt-1 text-yellow-700">
+                    Finish identity verification in Security → Identity Verification to enable
+                    payouts.
+                  </p>
+                ) : bankDetails && bankDetails.account_last4 ? (
                   <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>
                     Transit {bankDetails.transit_number}, Institution {bankDetails.institution_number}
                     , Account ending in {bankDetails.account_last4 || "--"}
                   </p>
                 ) : (
                   <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>
-                    No payout method on file yet.
+                    No bank account on file yet.
                   </p>
                 )}
               </div>
@@ -394,7 +430,12 @@ export function Payments() {
               <Button variant="outline" size="sm" onClick={() => setBankDialogOpen(true)}>
                 Update
               </Button>
-              <Button variant="outline" size="sm" onClick={handleOpenInstantPayout}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleOpenInstantPayout}
+                disabled={!hasConnectAccount || !bankDetails}
+              >
                 Instant payout
               </Button>
             </div>
@@ -435,17 +476,21 @@ export function Payments() {
                     <TableCell className="font-mono text-sm">{txn.id}</TableCell>
                     <TableCell>{txn.date}</TableCell>
                     <TableCell>{txn.description}</TableCell>
-                    <TableCell>
-                      <Badge variant="secondary">{txn.status}</Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <span className={txn.amount > 0 ? "text-green-600" : ""}>
-                        {txn.amount > 0 ? "+" : ""}
-                        {formatCurrency(Math.abs(txn.amount), txn.currency || "CAD")}
-                      </span>
-                    </TableCell>
-                  </TableRow>
-                ))
+                <TableCell>
+                  <Badge variant="secondary">{txn.status}</Badge>
+                </TableCell>
+                <TableCell className="text-right">
+                  <span
+                    className={
+                      txn.amount > 0 ? "text-green-600" : txn.amount < 0 ? "text-destructive" : ""
+                    }
+                  >
+                    {txn.amount > 0 ? "+" : ""}
+                    {formatCurrency(Math.abs(txn.amount), txn.currency || "CAD")}
+                  </span>
+                </TableCell>
+              </TableRow>
+            ))
               ) : (
                 <TableRow>
                   <TableCell colSpan={5} className="text-center" style={{ color: "var(--text-muted)" }}>
@@ -539,6 +584,9 @@ export function Payments() {
                 value={bankForm.transit_number}
                 onChange={(e) => setBankForm((prev) => ({ ...prev, transit_number: e.target.value }))}
               />
+              {bankErrors.transit_number && (
+                <p className="text-xs text-red-600">{bankErrors.transit_number}</p>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="institution_number">Institution number</Label>
@@ -549,6 +597,9 @@ export function Payments() {
                   setBankForm((prev) => ({ ...prev, institution_number: e.target.value }))
                 }
               />
+              {bankErrors.institution_number && (
+                <p className="text-xs text-red-600">{bankErrors.institution_number}</p>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="account_number">Account number</Label>
@@ -557,6 +608,9 @@ export function Payments() {
                 value={bankForm.account_number}
                 onChange={(e) => setBankForm((prev) => ({ ...prev, account_number: e.target.value }))}
               />
+              {bankErrors.account_number && (
+                <p className="text-xs text-red-600">{bankErrors.account_number}</p>
+              )}
             </div>
           </div>
           <DialogFooter className="gap-2">

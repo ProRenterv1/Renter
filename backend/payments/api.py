@@ -13,12 +13,18 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .ledger import compute_owner_balances, get_owner_earnings_queryset, log_transaction
+from .ledger import (
+    compute_owner_available_balance,
+    compute_owner_balances,
+    get_owner_history_queryset,
+    log_transaction,
+)
 from .models import OwnerPayoutAccount, Transaction
 from .stripe_api import (
     create_connect_onboarding_link,
     create_instant_payout,
     ensure_connect_account,
+    update_connect_bank_account,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,6 +79,7 @@ def _connect_payload(payout_account: OwnerPayoutAccount | None) -> dict:
             "is_fully_onboarded": False,
             "requirements_due": _default_requirements(),
             "bank_details": None,
+            "lifetime_instant_payouts": "0.00",
         }
     requirements = _normalize_requirements(payout_account.requirements_due or {})
     acct_last4 = (payout_account.account_number or "")[-4:]
@@ -83,6 +90,9 @@ def _connect_payload(payout_account: OwnerPayoutAccount | None) -> dict:
         "charges_enabled": payout_account.charges_enabled,
         "is_fully_onboarded": payout_account.is_fully_onboarded,
         "requirements_due": requirements,
+        "lifetime_instant_payouts": _format_money(
+            getattr(payout_account, "lifetime_instant_payouts", Decimal("0.00")) or Decimal("0.00")
+        ),
         "bank_details": {
             "transit_number": payout_account.transit_number or "",
             "institution_number": payout_account.institution_number or "",
@@ -140,6 +150,8 @@ def owner_payouts_summary(request):
         else:
             raise
     balances = compute_owner_balances(user)
+    available = compute_owner_available_balance(user)
+    balances["available_earnings"] = _format_money(available)
     return Response(
         {
             "connect": _connect_payload(payout_account),
@@ -158,7 +170,7 @@ def _history_direction(amount: Decimal) -> str:
 @permission_classes([IsAuthenticated])
 def owner_payouts_history(request):
     """Return paginated ledger rows for owner earnings."""
-    qs = get_owner_earnings_queryset(request.user).select_related("booking__listing")
+    qs = get_owner_history_queryset(request.user).select_related("booking__listing")
     kind_param = request.query_params.get("kind")
     if kind_param:
         qs = qs.filter(kind=kind_param)
@@ -177,6 +189,10 @@ def owner_payouts_history(request):
         booking = getattr(tx, "booking", None)
         listing = getattr(booking, "listing", None) if booking else None
         amount = Decimal(tx.amount)
+        direction = _history_direction(amount)
+        if tx.kind == Transaction.Kind.PROMOTION_CHARGE and amount > 0:
+            direction = "debit"
+            amount = -amount
         results.append(
             {
                 "id": tx.id,
@@ -187,7 +203,8 @@ def owner_payouts_history(request):
                 "booking_id": getattr(booking, "id", None),
                 "booking_status": getattr(booking, "status", None),
                 "listing_title": getattr(listing, "title", None),
-                "direction": _history_direction(amount),
+                "direction": direction,
+                "stripe_id": getattr(tx, "stripe_id", None),
             }
         )
 
@@ -274,9 +291,35 @@ def owner_payouts_update_bank_details(request):
             )
         raise
 
+    try:
+        bank_obj = update_connect_bank_account(
+            payout_account=payout_account,
+            transit_number=transit,
+            institution_number=institution,
+            account_number=account,
+        )
+    except Exception as exc:
+        if _is_stripe_api_error(exc):
+            return Response(
+                {
+                    "detail": (
+                        "Unable to validate bank account. Please check your details and try again."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        raise
+
+    last4 = ""
+    if hasattr(bank_obj, "get"):
+        last4 = str(bank_obj.get("last4") or "")
+    elif hasattr(bank_obj, "last4"):
+        last4 = str(bank_obj.last4 or "")
+
     payout_account.transit_number = transit
     payout_account.institution_number = institution
-    payout_account.account_number = account
+    payout_account.account_number = last4 or (account[-4:] if account else "")
+    payout_account.last_synced_at = timezone.now()
     payout_account.save(
         update_fields=[
             "transit_number",
@@ -334,27 +377,24 @@ def owner_payouts_instant_payout(request):
 
     # 2) Require local bank details to be present in payout_account
     if not (
-        getattr(payout_account, "transit_number", "")
-        and getattr(payout_account, "institution_number", "")
-        and getattr(payout_account, "account_number", "")
+        payout_account.transit_number
+        and payout_account.institution_number
+        and payout_account.account_number
     ):
         return Response(
             {"detail": "Add your bank details before requesting an instant payout."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # 3) Compute available balance using ledger net_earnings minus already paid out
-    balances = compute_owner_balances(user)
+    # 3) Compute available balance directly from the ledger
     try:
-        gross_total = Decimal(balances.get("net_earnings", "0.00"))
-    except (InvalidOperation, TypeError):
+        available = compute_owner_available_balance(user)
+    except (InvalidOperation, Exception):
         return Response(
             {"detail": "Unable to compute available balance for instant payout."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
-    already_paid = Decimal(getattr(payout_account, "lifetime_instant_payouts", "0.00") or "0.00")
-    available = gross_total - already_paid
     if available <= Decimal("0.00"):
         return Response(
             {"detail": "No earnings available for instant payout."},
@@ -412,6 +452,7 @@ def owner_payouts_instant_payout(request):
         stripe_payout_id = payout.get("id")  # type: ignore[arg-type]
 
     # Update cumulative instant payout tracking
+    already_paid = Decimal(getattr(payout_account, "lifetime_instant_payouts", "0.00") or "0.00")
     payout_account.lifetime_instant_payouts = (already_paid + available).quantize(
         Decimal("0.01"),
         rounding=ROUND_HALF_UP,

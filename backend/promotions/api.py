@@ -14,7 +14,7 @@ from rest_framework.response import Response
 
 from listings.models import Listing
 from notifications import tasks as notification_tasks
-from payments.ledger import log_transaction
+from payments.ledger import compute_owner_available_balance, log_transaction
 from payments.models import Transaction
 from payments.stripe_api import (
     StripeConfigurationError,
@@ -103,6 +103,7 @@ def promotion_pricing(request):
 def pay_for_promotion(request):
     """Charge the owner for a promotion and activate the slot."""
     data = request.data or {}
+    pay_with_earnings = bool(data.get("pay_with_earnings") or data.get("use_earnings_balance"))
     try:
         listing_id = _parse_int(data.get("listing_id"), "listing_id")
         start_date = _parse_iso_date(data.get("promotion_start"), "promotion_start")
@@ -115,14 +116,6 @@ def pay_for_promotion(request):
     if end_date < start_date:
         return Response(
             {"detail": "promotion_end must be on or after promotion_start."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    payment_method_id = (data.get("stripe_payment_method_id") or "").strip()
-    provided_customer_id = (data.get("stripe_customer_id") or "").strip()
-    if not payment_method_id:
-        return Response(
-            {"detail": "stripe_payment_method_id is required."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -164,6 +157,53 @@ def pay_for_promotion(request):
     starts_at = _combine_date(start_date)
     ends_at = starts_at + timedelta(days=duration_days)
 
+    if pay_with_earnings:
+        return _pay_for_promotion_with_earnings(
+            request=request,
+            listing=listing,
+            starts_at=starts_at,
+            ends_at=ends_at,
+            duration_days=duration_days,
+            price_per_day_cents=price_per_day_cents,
+            base_cents=expected_base_cents,
+            gst_cents=expected_gst_cents,
+            total_price_cents=total_price_cents,
+        )
+
+    return _pay_for_promotion_with_card(
+        request=request,
+        listing=listing,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        duration_days=duration_days,
+        price_per_day_cents=price_per_day_cents,
+        base_cents=expected_base_cents,
+        gst_cents=expected_gst_cents,
+        total_price_cents=total_price_cents,
+    )
+
+
+def _pay_for_promotion_with_card(
+    *,
+    request,
+    listing,
+    starts_at,
+    ends_at,
+    duration_days: int,
+    price_per_day_cents: int,
+    base_cents: int,
+    gst_cents: int,
+    total_price_cents: int,
+):
+    data = request.data or {}
+    payment_method_id = (data.get("stripe_payment_method_id") or "").strip()
+    provided_customer_id = (data.get("stripe_customer_id") or "").strip()
+    if not payment_method_id:
+        return Response(
+            {"detail": "stripe_payment_method_id is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     try:
         customer_id = ensure_stripe_customer(
             request.user,
@@ -198,8 +238,8 @@ def pay_for_promotion(request):
                 "promotion_start": starts_at.isoformat(),
                 "promotion_end": ends_at.isoformat(),
                 "duration_days": str(duration_days),
-                "base_price_cents": str(expected_base_cents),
-                "gst_cents": str(expected_gst_cents),
+                "base_price_cents": str(base_cents),
+                "gst_cents": str(gst_cents),
                 "total_price_cents": str(total_price_cents),
             },
         )
@@ -225,8 +265,8 @@ def pay_for_promotion(request):
         listing=listing,
         owner=request.user,
         price_per_day_cents=price_per_day_cents,
-        base_price_cents=expected_base_cents,
-        gst_cents=expected_gst_cents,
+        base_price_cents=base_cents,
+        gst_cents=gst_cents,
         total_price_cents=total_price_cents,
         starts_at=starts_at,
         ends_at=ends_at,
@@ -260,6 +300,86 @@ def pay_for_promotion(request):
             exc_info=True,
         )
 
+    return _slot_response(slot, duration_days)
+
+
+def _pay_for_promotion_with_earnings(
+    *,
+    request,
+    listing,
+    starts_at,
+    ends_at,
+    duration_days: int,
+    price_per_day_cents: int,
+    base_cents: int,
+    gst_cents: int,
+    total_price_cents: int,
+):
+    total_amount = (Decimal(total_price_cents) / Decimal("100")).quantize(Decimal("0.01"))
+    available = compute_owner_available_balance(request.user)
+    if available < total_amount:
+        return Response(
+            {
+                "detail": "Not enough earnings to pay for this promotion.",
+                "available_earnings": f"{available.quantize(Decimal('0.01'))}",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    slot = PromotedSlot.objects.create(
+        listing=listing,
+        owner=request.user,
+        price_per_day_cents=price_per_day_cents,
+        base_price_cents=base_cents,
+        gst_cents=gst_cents,
+        total_price_cents=total_price_cents,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        active=True,
+        stripe_session_id="",
+    )
+    synthetic_id = f"earnings:{slot.id}"
+
+    try:
+        log_transaction(
+            user=request.user,
+            promotion_slot=slot,
+            booking=None,
+            kind=Transaction.Kind.PROMOTION_CHARGE,
+            amount=total_amount,
+            currency="cad",
+            stripe_id=slot.stripe_session_id or synthetic_id,
+        )
+        log_transaction(
+            user=request.user,
+            promotion_slot=slot,
+            booking=None,
+            kind=Transaction.Kind.OWNER_EARNING,
+            amount=-total_amount,
+            currency="cad",
+            stripe_id=f"promo_earnings_{slot.id}",
+        )
+    except Exception:
+        logger.exception(
+            "Could not log promotion transaction",
+            extra={"user_id": request.user.id, "slot_id": slot.id},
+        )
+
+    try:
+        notification_tasks.send_promotion_payment_receipt_email.delay(
+            request.user.id,
+            slot.id,
+        )
+    except Exception:
+        logger.info(
+            "notifications: could not queue send_promotion_payment_receipt_email",
+            exc_info=True,
+        )
+
+    return _slot_response(slot, duration_days)
+
+
+def _slot_response(slot: PromotedSlot, duration_days: int) -> Response:
     return Response(
         {
             "slot": {
