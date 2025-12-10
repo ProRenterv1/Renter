@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import Optional
 
 from django.contrib.auth import get_user_model
+from django.db.models import Sum
 from django.utils import timezone
 
 from .models import Transaction
@@ -32,9 +33,6 @@ def log_transaction(
 
     This is a thin helper; no complex business logic here yet.
     """
-    if booking is None and promotion_slot is None:
-        raise ValueError("booking or promotion_slot is required to log a transaction.")
-
     return Transaction.objects.create(
         user=user,
         booking=booking,
@@ -54,11 +52,28 @@ def get_owner_earnings_queryset(user: User):
     ).order_by("-created_at")
 
 
+def get_owner_history_queryset(user: User):
+    """Return the queryset of owner-facing transactions including promotion charges."""
+    return Transaction.objects.filter(
+        user=user,
+        kind__in=OWNER_EARNING_KINDS + [Transaction.Kind.PROMOTION_CHARGE],
+    ).order_by("-created_at")
+
+
+def compute_owner_available_balance(user: User) -> Decimal:
+    """Return the owner's spendable balance based purely on ledger transactions."""
+    total = get_owner_earnings_queryset(user).aggregate(total=Sum("amount")).get(
+        "total"
+    ) or Decimal("0.00")
+    return Decimal(total).quantize(TWO_PLACES)
+
+
 def compute_owner_balances(user: User) -> dict[str, str]:
     """Compute lifetime and recent earnings figures for an owner."""
     queryset = get_owner_earnings_queryset(user)
 
     lifetime_gross = Decimal("0.00")
+    owner_earnings_total = Decimal("0.00")
     lifetime_refunds = Decimal("0.00")
     lifetime_deposit_captured = Decimal("0.00")
     lifetime_deposit_released = Decimal("0.00")
@@ -67,8 +82,10 @@ def compute_owner_balances(user: User) -> dict[str, str]:
 
     for tx in queryset:
         amount = Decimal(tx.amount)
-        if tx.kind == Transaction.Kind.OWNER_EARNING and amount > 0:
-            lifetime_gross += amount
+        if tx.kind == Transaction.Kind.OWNER_EARNING:
+            if amount > 0:
+                lifetime_gross += amount
+            owner_earnings_total += amount
         elif tx.kind == Transaction.Kind.REFUND:
             lifetime_refunds += amount
         elif tx.kind == Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE and amount > 0:
@@ -79,9 +96,10 @@ def compute_owner_balances(user: User) -> dict[str, str]:
         if tx.created_at >= cutoff:
             last_30_days_net += amount
 
-    net_earnings = (
-        lifetime_gross + lifetime_deposit_captured + lifetime_deposit_released + lifetime_refunds
-    )
+    net_earnings = owner_earnings_total
+    net_earnings += lifetime_deposit_captured
+    net_earnings += lifetime_deposit_released
+    net_earnings += lifetime_refunds
 
     def _format(value: Decimal) -> str:
         return f"{value.quantize(TWO_PLACES)}"

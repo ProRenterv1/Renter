@@ -569,6 +569,18 @@ class ContactVerificationVerifyView(generics.GenericAPIView):
             if not user.phone_verified:
                 user.phone_verified = True
                 user.save(update_fields=["phone_verified"])
+                if user.can_list:
+                    try:
+                        from payments.stripe_api import (
+                            StripeConfigurationError,
+                            StripePaymentError,
+                            StripeTransientError,
+                            sync_connect_account_personal_info,
+                        )
+
+                        sync_connect_account_personal_info(user)
+                    except (StripeConfigurationError, StripeTransientError, StripePaymentError):
+                        logger.warning("connect_sync_phone_failed", extra={"user_id": user.id})
 
         profile = ProfileSerializer(user, context={"request": request}).data
         return Response(

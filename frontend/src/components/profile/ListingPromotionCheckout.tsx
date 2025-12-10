@@ -5,9 +5,15 @@ import type { StripeCardElementOptions } from "@stripe/stripe-js";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
-import { promotionsAPI, type Listing, type PromotionSlot } from "@/lib/api";
+import {
+  paymentsAPI,
+  promotionsAPI,
+  type Listing,
+  type OwnerPayoutSummary,
+  type PromotionSlot,
+} from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, parseMoney } from "@/lib/utils";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
@@ -25,6 +31,7 @@ interface ListingPromotionCheckoutProps {
 const formatCents = (value: number) => formatCurrency(value / 100, "CAD");
 
 type Step = "schedule" | "payment" | "success";
+type PaymentMode = "card" | "earnings";
 
 interface PromotionQuote {
   startDate: string;
@@ -82,6 +89,10 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [successSlot, setSuccessSlot] = useState<PromotionSlot | null>(null);
+  const [payoutSummary, setPayoutSummary] = useState<OwnerPayoutSummary | null>(null);
+  const [availableEarningsCents, setAvailableEarningsCents] = useState<number | null>(null);
+  const [paymentMode, setPaymentMode] = useState<PaymentMode>("card");
+  const [earningsError, setEarningsError] = useState<string | null>(null);
   const currentUser = AuthStore.getCurrentUser();
 
   const loadPricing = useCallback(async () => {
@@ -127,6 +138,18 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
   const promotionStart = dateRange.from ? format(dateRange.from, "yyyy-MM-dd") : "";
   const promotionEnd = dateRange.to ? format(dateRange.to, "yyyy-MM-dd") : "";
 
+  const fallbackAvailableString = payoutSummary?.balances?.available_earnings;
+  const availableEarningsAmount =
+    availableEarningsCents !== null
+      ? availableEarningsCents / 100
+      : fallbackAvailableString !== undefined
+        ? parseMoney(fallbackAvailableString)
+        : null;
+  const availableEarningsDisplay =
+    availableEarningsAmount !== null ? formatCurrency(availableEarningsAmount, "CAD") : null;
+  const availableEarningsCentsForCheck =
+    availableEarningsAmount !== null ? Math.round(availableEarningsAmount * 100) : null;
+
   const handleRangeSelect = (range: { from?: Date; to?: Date } | undefined) => {
     if (!range) {
       setDateRange({ from: undefined, to: undefined });
@@ -143,6 +166,9 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
       setPricingError("Please select a valid date range to continue.");
       return;
     }
+    setPaymentMode("card");
+    setAvailableEarningsCents(null);
+    setEarningsError(null);
     setPricingError(null);
     setCheckoutSummary({
       startDate: promotionStart,
@@ -161,8 +187,68 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
     setPaymentForm((prev) => ({ ...prev, [name]: value }));
   };
 
+  useEffect(() => {
+    if (step !== "payment") {
+      return;
+    }
+    let cancelled = false;
+    const loadAvailableEarnings = async () => {
+      try {
+        const summary = await paymentsAPI.ownerPayoutsSummary();
+        if (cancelled) return;
+        setPayoutSummary(summary);
+        const raw = summary.balances?.available_earnings ?? "0.00";
+        const amount = parseMoney(raw);
+        setAvailableEarningsCents(Math.round(amount * 100));
+        setEarningsError(null);
+      } catch {
+        if (!cancelled) {
+          setPayoutSummary(null);
+          setAvailableEarningsCents(null);
+          setEarningsError("Unable to load your available earnings balance.");
+        }
+      }
+    };
+    void loadAvailableEarnings();
+    return () => {
+      cancelled = true;
+    };
+  }, [step]);
+
   const handlePayment = async () => {
     if (!checkoutSummary) return;
+
+    if (paymentMode === "earnings") {
+      setPaymentError(null);
+      setPaymentLoading(true);
+      try {
+        const payload = {
+          listing_id: listing.id,
+          promotion_start: checkoutSummary.startDate,
+          promotion_end: checkoutSummary.endDate,
+          base_price_cents: checkoutSummary.baseCents,
+          gst_cents: checkoutSummary.gstCents,
+          pay_with_earnings: true,
+        };
+        const response = await promotionsAPI.payPromotion(payload);
+        setSuccessSlot(response.slot);
+        toast.success("Promotion scheduled using your earnings.");
+        setStep("success");
+      } catch (err: any) {
+        const message =
+          (err?.data &&
+            typeof err.data === "object" &&
+            "detail" in err.data &&
+            typeof err.data.detail === "string" &&
+            err.data.detail) ||
+          "Unable to use your earnings for this promotion. Please try again or use a card.";
+        setPaymentError(message);
+      } finally {
+        setPaymentLoading(false);
+      }
+      return;
+    }
+
     if (!stripe || !elements) {
       setPaymentError("Payment form is still loading. Please try again.");
       return;
@@ -205,6 +291,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
         stripe_payment_method_id: paymentMethod.id,
         stripe_customer_id: currentUser?.stripe_customer_id || undefined,
         save_payment_method: savePaymentMethod,
+        pay_with_earnings: false,
       };
       const response = await promotionsAPI.payPromotion(payload);
       setSuccessSlot(response.slot);
@@ -339,6 +426,9 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
   const renderPaymentStep = () => {
     if (!checkoutSummary) return null;
     const chargeAmount = checkoutSummary.baseCents + checkoutSummary.gstCents;
+    const canPayWithEarnings =
+      availableEarningsCentsForCheck !== null && availableEarningsCentsForCheck >= chargeAmount;
+    const cardDisabled = paymentMode === "earnings";
 
     return (
       <>
@@ -352,9 +442,65 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
           <div className="space-y-6 lg:col-span-2">
             <Card>
               <CardHeader>
+                <CardTitle>How would you like to pay?</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 text-sm">
+                <div className="flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentMode("card");
+                      setPaymentError(null);
+                    }}
+                    disabled={paymentLoading}
+                    className={`rounded-xl border px-4 py-3 text-left transition ${
+                      paymentMode === "card"
+                        ? "border-primary bg-primary/5 text-foreground"
+                        : "border-border bg-background text-foreground/80"
+                    } ${paymentLoading ? "pointer-events-none opacity-60" : ""}`}
+                  >
+                    Pay with card
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentMode("earnings");
+                      setPaymentError(null);
+                    }}
+                    disabled={!canPayWithEarnings || paymentLoading}
+                    className={`rounded-xl border px-4 py-3 text-left transition ${
+                      paymentMode === "earnings"
+                        ? "border-primary bg-primary/5 text-foreground"
+                        : "border-border bg-background text-foreground/80"
+                    } ${(!canPayWithEarnings || paymentLoading) ? "opacity-60" : ""}`}
+                  >
+                    <div className="flex flex-col gap-1">
+                      <span>Pay with earnings</span>
+                      {availableEarningsDisplay && (
+                        <span className="text-xs text-muted-foreground">
+                          Available {availableEarningsDisplay}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                </div>
+                {!canPayWithEarnings && availableEarningsDisplay && (
+                  <p className="text-xs text-muted-foreground">
+                    You currently have {availableEarningsDisplay} in earnings,
+                    which is not enough to cover this promotion.
+                  </p>
+                )}
+                {earningsError && <p className="text-xs text-destructive">{earningsError}</p>}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
                 <CardTitle>Payment method</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent
+                className={`space-y-4 ${cardDisabled ? "opacity-60 pointer-events-none" : ""}`}
+              >
                 <div className="space-y-2">
                   <Label htmlFor="cardholderName">Cardholder name</Label>
                   <Input
@@ -379,7 +525,9 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
               <CardHeader>
                 <CardTitle>Billing address</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent
+                className={`space-y-4 ${cardDisabled ? "opacity-60 pointer-events-none" : ""}`}
+              >
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
                     <Label htmlFor="city">City</Label>
@@ -477,7 +625,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
                   onClick={handlePayment}
                   className="w-full rounded-full"
                   size="lg"
-                  disabled={paymentLoading}
+                  disabled={paymentLoading || (paymentMode === "earnings" && !canPayWithEarnings)}
                 >
                   {paymentLoading ? "Processing..." : "Complete payment"}
                 </Button>

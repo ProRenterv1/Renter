@@ -23,6 +23,7 @@ import { addDays, format } from "date-fns";
 import { useNavigate } from "react-router-dom";
 import { bookingsAPI, usersAPI, type Listing as ApiListing, type PublicProfile } from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
+import { startConversationForListing } from "@/lib/chat";
 import { cn, formatCurrency, parseMoney } from "@/lib/utils";
 import { VerifiedAvatar } from "@/components/VerifiedAvatar";
 
@@ -279,6 +280,7 @@ export default function Booking({
       return fallbackJoinedDate;
     }
   })();
+  const isOwner = Boolean(currentUser && listing && currentUser.id === listing.owner);
   const handleViewOwnerProfile = () => {
     navigate(`/users/${listing.owner}`);
   };
@@ -363,6 +365,28 @@ export default function Booking({
       return false;
     }
     return true;
+  };
+
+  const handleMessageOwner = async () => {
+    if (!listing) return;
+
+    if (!AuthStore.getTokens()) {
+      requireLogin();
+      return;
+    }
+
+    if (isOwner) {
+      return;
+    }
+
+    try {
+      setSubmitError(null);
+      const conversation = await startConversationForListing(listing.id);
+      navigate(`/messages?conversation=${conversation.id}`);
+    } catch (error) {
+      console.error("Failed to start conversation for listing", error);
+      setSubmitError("Unable to start chat right now. Please try again.");
+    }
   };
 
   async function handleRequestBooking() {
@@ -850,9 +874,16 @@ export default function Booking({
                     <span>Joined {ownerJoinedDate}</span>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-3">
-                    <Button variant="outline" className="rounded-full">
-                      Contact Owner
-                    </Button>
+                    {!isOwner && (
+                      <Button
+                        variant="outline"
+                        className="rounded-full"
+                        type="button"
+                        onClick={handleMessageOwner}
+                      >
+                        Message
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       className="rounded-full"

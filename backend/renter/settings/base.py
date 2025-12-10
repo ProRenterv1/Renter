@@ -230,11 +230,23 @@ BOOKING_OWNER_FEE_RATE = Decimal(
     env("BOOKING_OWNER_FEE_RATE", default="0.05")
 )  # 5% owner payout fee
 
+# Instant payout fee: percentage of available balance charged for instant payouts
+INSTANT_PAYOUT_FEE_RATE = Decimal(
+    env("INSTANT_PAYOUT_FEE_RATE", default="0.03")
+)  # 3% default instant payout fee
+
 # --- Stripe ---
 STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY", default="")
 STRIPE_ENV = env("STRIPE_ENV", default="dev")
 STRIPE_PUBLISHABLE_KEY = env("STRIPE_PUBLISHABLE_KEY", default="")
 STRIPE_WEBHOOK_SECRET = env("STRIPE_WEBHOOK_SECRET", default="")
+CONNECT_BUSINESS_NAME = env("CONNECT_BUSINESS_NAME", default="Renter")
+CONNECT_BUSINESS_URL = env("CONNECT_BUSINESS_URL", default=FRONTEND_ORIGIN)
+CONNECT_BUSINESS_PRODUCT_DESCRIPTION = env(
+    "CONNECT_BUSINESS_PRODUCT_DESCRIPTION",
+    default="Peer-to-peer rentals platform",
+)
+CONNECT_BUSINESS_MCC = env("CONNECT_BUSINESS_MCC", default="7399")
 
 # --- Identity / verification limits ---
 UNVERIFIED_MAX_REPLACEMENT_CAD = Decimal(

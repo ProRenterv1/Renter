@@ -1,7 +1,6 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { AlertCircle, CheckCircle2, Eye, EyeOff, Loader2, IdCard } from "lucide-react";
 import { toast } from "sonner";
-import { loadStripe, type Stripe } from "@stripe/stripe-js";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
@@ -27,6 +26,7 @@ import {
   identityAPI,
   type IdentityVerificationStatus,
   type IdentityStatusLatest,
+  paymentsAPI,
 } from "@/lib/api";
 
 type SecurityProps = {
@@ -187,7 +187,6 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
   const [identityLoading, setIdentityLoading] = useState<boolean>(false);
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [showKycFlow, setShowKycFlow] = useState(false);
-  const [stripe, setStripe] = useState<Stripe | null>(null);
   const phoneVerified = profile?.phone_verified ?? false;
   const emailVerified = profile?.email_verified ?? false;
   const switchesDisabled = twoFactorLoading || twoFactorSaving;
@@ -282,35 +281,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function initStripe() {
-      try {
-        const publishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY as
-          | string
-          | undefined;
-        if (!publishableKey) {
-          console.warn("Missing VITE_STRIPE_PUBLISHABLE_KEY for Stripe Identity.");
-          return;
-        }
-        const instance = await loadStripe(publishableKey);
-        if (!cancelled) {
-          setStripe(instance);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          console.error("Failed to initialize Stripe:", error);
-        }
-      }
-    }
-
-    void initStripe();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+ 
 
   const updateIdentityState = useCallback(
     (status: IdentityVerificationStatus | "none", latest: IdentityStatusLatest | null) => {
@@ -530,7 +501,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
         return (
           <span className={`${baseClass} bg-[var(--info-bg)] text-[var(--info-text)]`}>
             <Loader2 className="h-3 w-3 animate-spin" />
-            In review
+            Pending
           </span>
         );
       case "failed":
@@ -551,44 +522,21 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
     }
   };
 
-  const handleStartIdentityVerification = async () => {
+  const handleStartConnectKyc = async () => {
     setIdentityError(null);
     setIdentityLoading(true);
 
     try {
-      const response = await identityAPI.start();
-
-      if (response.already_verified) {
-        toast.success("Your identity is already verified.");
-        await refreshIdentityStatus();
+      const response = await paymentsAPI.ownerPayoutsStartOnboarding();
+      if (!response.onboarding_url) {
+        toast.error("Unable to start verification right now.");
         return;
       }
-
-      if (!stripe) {
-        toast.error("Stripe is not ready yet. Please try again in a moment.");
-        return;
-      }
-
-      if (!response.client_secret) {
-        toast.error("Identity verification is temporarily unavailable.");
-        return;
-      }
-
-      const result: any = await stripe.verifyIdentity(response.client_secret);
-
-      if (result && result.error) {
-        const message =
-          result.error.message || "Identity verification was not completed.";
-        setIdentityError(message);
-        toast.error(message);
-      } else {
-        toast.success("Identity verification completed.");
-        await refreshIdentityStatus();
-      }
+      window.location.href = response.onboarding_url;
     } catch (error) {
       const message =
         extractDetailMessage(error) ??
-        "Unable to start identity verification. Please try again.";
+        "Unable to start verification. Please try again.";
       setIdentityError(message);
       toast.error(message);
     } finally {
@@ -854,18 +802,19 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
             </Alert>
           )}
           <p className="text-sm text-muted-foreground">
-            We use Stripe Identity to verify IDs and keep renters and owners protected.
+            We use Stripe Connect verification to keep renters and owners protected. The
+            process happens in a secure Stripe-hosted window.
           </p>
           <div className="space-y-3 text-sm text-muted-foreground">
             <div className="flex items-start gap-3">
               <CheckCircle2 className="h-4 w-4 text-[var(--success-text)]" />
-              <p>Only Stripe and our platform see your verification result.</p>
+              <p>Only Stripe and our platform see your verification status.</p>
             </div>
             <div className="flex items-start gap-3">
               <IdCard className="h-4 w-4 text-[var(--primary)]" />
               <p>
-                You'll be asked to upload or take a picture of your government-issued ID
-                (driver's licence, passport, or ID card).
+                You'll be redirected to Stripe to confirm your identity and payout account
+                details.
               </p>
             </div>
           </div>
@@ -960,7 +909,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
           <div>
             <CardTitle>Identity Verification (KYC)</CardTitle>
             <CardDescription>
-              Complete a quick Stripe-powered identity check to unlock higher limits.
+              Complete a quick Stripe-hosted verification to unlock higher limits and faster payouts.
             </CardDescription>
           </div>
           {renderIdentityStatusPill()}
@@ -975,8 +924,8 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
           <div className="grid gap-6 md:grid-cols-[2fr,3fr]">
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Stripe Identity validates your government-issued ID so we can reduce fraud and
-                safely raise your booking and listing limits.
+                Stripe Connect verifies your identity and account details in their secure window
+                so we can reduce fraud and safely raise your booking and listing limits.
               </p>
               <ul className="space-y-2 text-sm text-muted-foreground">
                 <li className="flex items-start gap-2">
@@ -1000,13 +949,13 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
               <div className="space-y-3 rounded-lg border-2 border-dashed border-muted-foreground/40 bg-muted/30 p-4">
                 <p className="text-sm font-medium">What you'll be asked to do</p>
                 <ul className="space-y-2 text-sm text-muted-foreground">
-                  <li>Upload or take a live photo of your ID.</li>
-                  <li>Ensure your name and photo are clearly visible.</li>
-                  <li>You may be asked for a quick selfie for liveness.</li>
-                  <li>The check happens in a secure Stripe window.</li>
+                  <li>Confirm your personal details in Stripe's onboarding flow.</li>
+                  <li>Add payout details so we can send earnings once you're approved.</li>
+                  <li>Have your government ID handy in case Stripe requests it.</li>
+                  <li>You will be redirected to a secure Stripe window to finish verification.</li>
                 </ul>
                 <p className="text-xs text-muted-foreground">
-                  We don't store your document photos—Stripe shares only the verification result.
+                  We don't store your documents—Stripe only shares the verification status.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -1015,7 +964,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
                   className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
                   style={{ color: "var(--primary-foreground)" }}
                   disabled={identityLoading || identityInitialLoading}
-                  onClick={handleStartIdentityVerification}
+                  onClick={handleStartConnectKyc}
                 >
                   {identityLoading ? (
                     <>

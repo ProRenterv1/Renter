@@ -6,6 +6,8 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+from payments.models import OwnerPayoutAccount
+
 
 class IdentityVerification(models.Model):
     """Represents a Stripe Identity verification session for a user."""
@@ -47,12 +49,14 @@ class IdentityVerification(models.Model):
 
 
 def is_user_identity_verified(user) -> bool:
-    """Return True if the user has any verified identity session."""
+    """Return True if the user is fully onboarded on Stripe Connect."""
     if user is None or not getattr(user, "pk", None):
         return False
-    return IdentityVerification.objects.filter(
-        user=user, status=IdentityVerification.Status.VERIFIED
-    ).exists()
+    try:
+        payout_account = OwnerPayoutAccount.objects.get(user=user)
+    except OwnerPayoutAccount.DoesNotExist:
+        return False
+    return bool(payout_account.is_fully_onboarded)
 
 
 def mark_session_verified(user, session_id: str) -> IdentityVerification:

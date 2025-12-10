@@ -64,6 +64,39 @@ def _parse_decimal(value: str | Decimal | None, field_name: str) -> Decimal:
         raise StripePaymentError(f"Invalid booking total '{field_name}'.") from exc
 
 
+def _extract_booking_fees(booking: Booking) -> dict[str, Decimal]:
+    """Return parsed booking totals needed for payouts/fees."""
+    totals = booking.totals or {}
+
+    rental_subtotal = _parse_decimal(totals.get("rental_subtotal"), "rental_subtotal")
+    renter_fee_raw = totals.get("renter_fee")
+    if renter_fee_raw is None:
+        renter_fee_raw = totals.get("service_fee")
+    renter_fee = _parse_decimal(renter_fee_raw, "renter_fee")
+    owner_fee = _parse_decimal(totals.get("owner_fee"), "owner_fee")
+    platform_fee_total = _parse_decimal(totals.get("platform_fee_total"), "platform_fee_total")
+
+    owner_payout_value = totals.get("owner_payout")
+    owner_payout = (
+        _parse_decimal(owner_payout_value, "owner_payout")
+        if owner_payout_value is not None
+        else rental_subtotal - owner_fee
+    )
+
+    if rental_subtotal <= Decimal("0"):
+        raise StripePaymentError("Booking rental_subtotal must be greater than zero.")
+    if owner_payout < Decimal("0"):
+        raise StripePaymentError("Booking owner_payout cannot be negative.")
+
+    return {
+        "rental_subtotal": rental_subtotal,
+        "renter_fee": renter_fee,
+        "owner_fee": owner_fee,
+        "platform_fee_total": platform_fee_total,
+        "owner_payout": owner_payout,
+    }
+
+
 def _handle_stripe_error(exc: stripe.error.StripeError) -> None:
     """Map Stripe SDK errors onto internal exception types."""
     if isinstance(exc, stripe.error.CardError):
@@ -149,6 +182,16 @@ def _sync_payout_account_from_stripe(
     return payout_account
 
 
+def _sanitize_business_url(raw_url: str) -> str:
+    """Ensure business profile URL is acceptable to Stripe; fall back to a safe default."""
+    cleaned = (raw_url or "").strip()
+    if not cleaned:
+        return "https://example.com"
+    if not cleaned.startswith(("http://", "https://")):
+        cleaned = f"https://{cleaned}"
+    return cleaned
+
+
 def ensure_connect_account(user: User) -> OwnerPayoutAccount:
     """Ensure the owner has a Stripe Connect Express account and sync it locally."""
     stripe.api_key = _get_stripe_api_key()
@@ -176,18 +219,41 @@ def ensure_connect_account(user: User) -> OwnerPayoutAccount:
         except stripe.error.StripeError as exc:
             _handle_stripe_error(exc)
 
+    business_url = getattr(settings, "CONNECT_BUSINESS_URL", "") or getattr(
+        settings, "FRONTEND_ORIGIN", ""
+    )
+    business_profile = {
+        "name": getattr(settings, "CONNECT_BUSINESS_NAME", "") or "Renter",
+        "product_description": getattr(settings, "CONNECT_BUSINESS_PRODUCT_DESCRIPTION", "")
+        or "Peer-to-peer rentals platform",
+        "url": _sanitize_business_url(business_url),
+        "mcc": getattr(settings, "CONNECT_BUSINESS_MCC", "") or "7399",
+    }
+    individual: dict[str, str] = {}
+    if user.first_name:
+        individual["first_name"] = user.first_name
+    if user.last_name:
+        individual["last_name"] = user.last_name
+    if user.email:
+        individual["email"] = user.email
+
     if account_data is None:
         try:
-            account_data = stripe.Account.create(
-                type="express",
-                country="CA",
-                capabilities={
+            account_params = {
+                "type": "express",
+                "country": "CA",
+                "capabilities": {
                     "card_payments": {"requested": True},
                     "transfers": {"requested": True},
                 },
-                business_type="individual",
-                metadata={"user_id": str(user.id)},
-            )
+                "business_type": "individual",
+                "business_profile": business_profile,
+                "metadata": {"user_id": str(user.id), "job_title": "Renter"},
+            }
+            if individual:
+                account_params["individual"] = individual
+
+            account_data = stripe.Account.create(**account_params)
         except stripe.error.StripeError as exc:
             _handle_stripe_error(exc)
 
@@ -198,6 +264,85 @@ def ensure_connect_account(user: User) -> OwnerPayoutAccount:
         )
 
     return _sync_payout_account_from_stripe(payout_account, account_data)
+
+
+def sync_connect_account_personal_info(user: User) -> None:
+    """Push the user's personal details to Stripe Connect."""
+    payout_account = ensure_connect_account(user)
+    individual: dict[str, Any] = {}
+
+    if user.first_name:
+        individual["first_name"] = user.first_name
+    if user.last_name:
+        individual["last_name"] = user.last_name
+    if user.email:
+        individual["email"] = user.email
+    if user.phone:
+        individual["phone"] = user.phone
+    if getattr(user, "birth_date", None):
+        dob_value = user.birth_date
+        individual["dob"] = {
+            "day": dob_value.day,
+            "month": dob_value.month,
+            "year": dob_value.year,
+        }
+
+    address_fields = [
+        getattr(user, "street_address", "").strip(),
+        getattr(user, "city", "").strip(),
+        getattr(user, "province", "").strip(),
+        getattr(user, "postal_code", "").strip(),
+    ]
+    if any(address_fields):
+        individual["address"] = {
+            "line1": getattr(user, "street_address", ""),
+            "city": getattr(user, "city", ""),
+            "state": getattr(user, "province", ""),
+            "postal_code": getattr(user, "postal_code", ""),
+            "country": "CA",
+        }
+
+    if not individual:
+        return
+
+    try:
+        stripe.Account.modify(
+            payout_account.stripe_account_id,
+            individual=individual,
+        )
+    except stripe.error.StripeError as exc:
+        _handle_stripe_error(exc)
+
+
+def update_connect_bank_account(
+    *,
+    payout_account: OwnerPayoutAccount,
+    transit_number: str,
+    institution_number: str,
+    account_number: str,
+) -> dict[str, Any]:
+    """
+    Attach or update the default external bank account for this Stripe Connect account.
+    Returns the Stripe bank account object.
+    """
+    stripe.api_key = _get_stripe_api_key()
+
+    routing_number = f"{institution_number}{transit_number}"
+
+    try:
+        bank_account = stripe.Account.create_external_account(
+            payout_account.stripe_account_id,
+            external_account={
+                "object": "bank_account",
+                "country": "CA",
+                "currency": "cad",
+                "account_number": account_number,
+                "routing_number": routing_number,
+            },
+        )
+    except stripe.error.StripeError as exc:
+        _handle_stripe_error(exc)
+    return bank_account
 
 
 def _get_frontend_origin() -> str:
@@ -311,6 +456,126 @@ def create_connect_onboarding_link(user: User) -> str:
     if not link_url:
         raise StripeConfigurationError("Stripe did not return an onboarding link.")
     return link_url
+
+
+def create_instant_payout(
+    *,
+    user: User,
+    payout_account: OwnerPayoutAccount,
+    amount_cents: int,
+    metadata: dict[str, Any] | None = None,
+) -> Any:
+    """
+    Create an instant payout from the owner's Stripe Connect account balance
+    to their default external bank account.
+
+    amount_cents: integer amount in cents AFTER fee (the amount going to owner).
+    """
+    if amount_cents <= 0:
+        raise StripeConfigurationError("Instant payout amount must be positive.")
+
+    if not payout_account.stripe_account_id:
+        raise StripeConfigurationError("Owner is missing a Stripe Connect account id.")
+
+    stripe.api_key = _get_stripe_api_key()
+
+    base_metadata = {
+        "kind": "instant_payout",
+        "user_id": str(user.id),
+        "stripe_account_id": payout_account.stripe_account_id,
+        "env": getattr(settings, "STRIPE_ENV", "dev") or "dev",
+    }
+    if metadata:
+        base_metadata.update(metadata)
+
+    try:
+        payout = stripe.Payout.create(
+            amount=amount_cents,
+            currency="cad",
+            metadata=base_metadata,
+            stripe_account=payout_account.stripe_account_id,
+            # You can add a statement_descriptor if desired.
+        )
+    except stripe.error.StripeError as exc:
+        _handle_stripe_error(exc)
+
+    return payout
+
+
+def create_owner_transfer_for_booking(*, booking: Booking, payment_intent_id: str) -> None:
+    """Transfer the owner's share of a paid booking to their Connect account."""
+    if not booking.totals:
+        return
+
+    listing = getattr(booking, "listing", None)
+    owner = getattr(listing, "owner", None)
+    if owner is None:
+        return
+
+    fees = _extract_booking_fees(booking)
+    owner_payout = fees["owner_payout"]
+    platform_fee_total = fees["platform_fee_total"]
+
+    if owner_payout <= Decimal("0"):
+        return
+
+    existing_owner_txn = Transaction.objects.filter(
+        user=owner,
+        booking=booking,
+        kind=Transaction.Kind.OWNER_EARNING,
+    ).exists()
+    if existing_owner_txn:
+        return
+
+    payout_account = ensure_connect_account(owner)
+    if not payout_account.stripe_account_id or not payout_account.payouts_enabled:
+        logger.warning(
+            "Owner payout skipped; missing Stripe account or payouts disabled.",
+            extra={
+                "booking_id": booking.id,
+                "owner_id": owner.id,
+                "stripe_account_id": payout_account.stripe_account_id,
+            },
+        )
+        return
+
+    stripe.api_key = _get_stripe_api_key()
+    env_label = getattr(settings, "STRIPE_ENV", "dev") or "dev"
+    amount_cents = _to_cents(owner_payout)
+
+    try:
+        transfer = stripe.Transfer.create(
+            amount=amount_cents,
+            currency="cad",
+            destination=payout_account.stripe_account_id,
+            description=f"Owner payout for booking #{booking.id}",
+            metadata={
+                "kind": "owner_payout",
+                "booking_id": str(booking.id),
+                "listing_id": str(booking.listing_id),
+                "env": env_label,
+                "charge_payment_intent_id": payment_intent_id,
+                "platform_fee_total": str(platform_fee_total),
+            },
+            transfer_group=f"booking:{booking.id}:owner_payout_v1",
+            idempotency_key=f"booking:{booking.id}:owner_payout_v1",
+        )
+    except stripe.error.StripeError as exc:
+        _handle_stripe_error(exc)
+
+    transfer_id = getattr(transfer, "id", None)
+    if transfer_id is None and hasattr(transfer, "get"):
+        transfer_id = transfer.get("id")
+
+    log_transaction(
+        user=owner,
+        booking=booking,
+        promotion_slot=None,
+        kind=Transaction.Kind.OWNER_EARNING,
+        amount=owner_payout,
+        currency="cad",
+        stripe_id=transfer_id,
+    )
 
 
 def _handle_connect_account_updated_event(account_payload: Any) -> None:
@@ -733,6 +998,32 @@ def _ensure_payment_method_for_customer(payment_method_id: str, customer_id: str
         _handle_stripe_error(exc)
 
 
+def fetch_payment_method_details(payment_method_id: str) -> dict[str, object]:
+    """Return brand/last4/exp_month/exp_year for a Stripe PaymentMethod."""
+    if not payment_method_id:
+        raise StripePaymentError("payment_method_id is required.")
+
+    stripe.api_key = _get_stripe_api_key()
+    try:
+        pm = stripe.PaymentMethod.retrieve(payment_method_id)
+    except stripe.error.StripeError as exc:
+        _handle_stripe_error(exc)
+
+    card = getattr(pm, "card", None) or getattr(pm, "card", {}) or {}
+    if hasattr(card, "get"):
+        card_dict = card
+    else:
+        # stripe objects behave like dicts
+        card_dict = dict(card)
+
+    return {
+        "brand": (card_dict.get("brand") or "").upper(),
+        "last4": card_dict.get("last4") or "",
+        "exp_month": card_dict.get("exp_month"),
+        "exp_year": card_dict.get("exp_year"),
+    }
+
+
 def charge_promotion_payment(
     *,
     owner: User,
@@ -798,6 +1089,27 @@ def stripe_webhook(request):
     metadata = data_object.get("metadata") or {}
     booking_id = metadata.get("booking_id")
     kind = metadata.get("kind")
+
+    account_id = event.get("account") or data_object.get("account") or ""
+    account_data: Any | None = None
+    if account_id:
+        try:
+            stripe.api_key = _get_stripe_api_key()
+            account_data = stripe.Account.retrieve(account_id)
+            _handle_connect_account_updated_event(account_data)
+        except StripeConfigurationError:
+            logger.warning("stripe_webhook: missing Stripe config for account sync")
+        except stripe.error.StripeError as exc:  # noqa: PERF203
+            logger.warning(
+                "stripe_webhook: failed to sync connect account",
+                extra={"account_id": account_id, "error": str(exc)},
+            )
+
+    if event_type == "account.updated":
+        if account_data is not None:
+            return Response(status=status.HTTP_200_OK)
+        _handle_connect_account_updated_event(data_object)
+        return Response(status=status.HTTP_200_OK)
 
     if event_type == "identity.verification_session.verified":
         user_id = metadata.get("user_id")
@@ -893,10 +1205,28 @@ def stripe_webhook(request):
         except (Booking.DoesNotExist, ValueError):
             return Response(status=status.HTTP_200_OK)
 
+        intent_id = data_object.get("id", "") or booking.charge_payment_intent_id
         if booking.status in {Booking.Status.REQUESTED, Booking.Status.CONFIRMED}:
-            intent_id = data_object.get("id", "") or booking.charge_payment_intent_id
             booking.status = Booking.Status.PAID
             booking.charge_payment_intent_id = intent_id or booking.charge_payment_intent_id
             booking.save(update_fields=["status", "charge_payment_intent_id", "updated_at"])
+
+        try:
+            create_owner_transfer_for_booking(booking=booking, payment_intent_id=intent_id)
+        except StripeConfigurationError:
+            logger.exception(
+                "Owner transfer skipped due to Stripe configuration error",
+                extra={"booking_id": booking.id},
+            )
+        except StripeTransientError:
+            logger.exception(
+                "Owner transfer encountered transient error",
+                extra={"booking_id": booking.id},
+            )
+        except StripePaymentError:
+            logger.exception(
+                "Owner transfer failed permanently",
+                extra={"booking_id": booking.id},
+            )
 
     return Response(status=status.HTTP_200_OK)

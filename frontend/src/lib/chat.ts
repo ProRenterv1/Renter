@@ -44,7 +44,8 @@ export interface ChatBookingSummary {
 
 export interface ConversationSummary {
   id: number;
-  booking_id: number;
+  booking_id: number | null;
+  listing_id: number | null;
   listing_title: string;
   other_party_name: string;
   other_party_avatar_url?: string | null;
@@ -61,19 +62,22 @@ export interface ConversationSummary {
     created_at: string;
   } | null;
   last_message_at: string | null;
-  unread_count?: number;
+  unread_count: number;
 }
 
 export interface ConversationDetail {
   id: number;
-  booking: ChatBookingSummary;
+  booking: ChatBookingSummary | null;
+  listing_id: number | null;
+  listing_title: string;
+  listing_primary_photo_url?: string | null;
   is_active: boolean;
   messages: ChatMessage[];
 }
 
 export interface ChatEventPayload {
   conversation_id: number;
-  booking_id: number;
+  booking_id: number | null;
   message: {
     id: number;
     sender?: number | null;
@@ -98,6 +102,16 @@ export async function fetchConversationDetail(
 ): Promise<ConversationDetail> {
   return jsonFetch<ConversationDetail>(`/chats/${conversationId}/`, {
     method: "GET",
+  });
+}
+
+// POST /api/chats/start/
+export async function startConversationForListing(
+  listingId: number,
+): Promise<ConversationDetail> {
+  return jsonFetch<ConversationDetail>("/chats/start/", {
+    method: "POST",
+    body: { listing: listingId },
   });
 }
 

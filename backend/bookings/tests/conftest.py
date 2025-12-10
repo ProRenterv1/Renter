@@ -10,8 +10,8 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 
 from bookings.models import Booking
-from identity.models import IdentityVerification
 from listings.models import Listing
+from payments.models import OwnerPayoutAccount
 
 User = get_user_model()
 
@@ -28,11 +28,19 @@ def _create_user(*, username: str, can_list: bool, can_rent: bool) -> User:
 
 
 def _mark_verified(user: User, suffix: str) -> None:
-    IdentityVerification.objects.create(
+    OwnerPayoutAccount.objects.create(
         user=user,
-        session_id=f"vs_test_{suffix}",
-        status=IdentityVerification.Status.VERIFIED,
-        verified_at=timezone.now(),
+        stripe_account_id=f"acct_test_{suffix}",
+        payouts_enabled=True,
+        charges_enabled=True,
+        is_fully_onboarded=True,
+        requirements_due={
+            "currently_due": [],
+            "eventually_due": [],
+            "past_due": [],
+            "disabled_reason": "",
+        },
+        last_synced_at=timezone.now(),
     )
 
 

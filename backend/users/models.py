@@ -68,6 +68,7 @@ class User(AbstractUser):
     )
     rating = models.FloatField(null=True, blank=True)
     review_count = models.PositiveIntegerField(default=0)
+    birth_date = models.DateField(null=True, blank=True, help_text="Optional birth date for KYC.")
 
     def is_owner(self) -> bool:
         return bool(self.can_list)
