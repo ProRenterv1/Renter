@@ -39,10 +39,30 @@ def test_signup_creates_connect_account(monkeypatch, settings):
 
     monkeypatch.setattr(stripe_api, "_get_stripe_api_key", lambda: "sk_test_key")
 
+    base_payload = {
+        "id": "acct_123",
+        "charges_enabled": False,
+        "payouts_enabled": False,
+        "requirements": {
+            "currently_due": [],
+            "eventually_due": [],
+            "past_due": [],
+            "disabled_reason": "",
+        },
+        "individual": {},
+        "external_accounts": {"data": []},
+    }
+
     def fake_create(**kwargs):
         created_calls.append(kwargs)
-        return {"id": "acct_123", "charges_enabled": False, "payouts_enabled": False}
+        return base_payload
 
+    monkeypatch.setattr(
+        stripe_api,
+        "_retrieve_account_with_expand",
+        lambda _account_id: base_payload,
+    )
+    monkeypatch.setattr(stripe.Account, "modify", staticmethod(lambda *a, **k: base_payload))
     monkeypatch.setattr(stripe.Account, "create", staticmethod(fake_create))
 
     client = APIClient()
