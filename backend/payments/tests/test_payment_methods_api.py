@@ -135,8 +135,8 @@ def test_delete_payment_method_detaches_best_effort(monkeypatch, renter_user, se
     detach_calls = {"count": 0}
 
     class DummyStripeError(stripe.error.StripeError):
-        def __init__(self, msg="boom"):
-            super().__init__(message=msg)
+        def __init__(self, msg="boom", *args):
+            super().__init__(msg, *args)
 
     class DummyPaymentMethod:
         @staticmethod
