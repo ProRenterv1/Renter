@@ -154,7 +154,7 @@ def test_onboarding_prefills_personal_info(monkeypatch, settings):
     )
 
     url = stripe_api.create_connect_onboarding_link(user)
-    assert url.startswith("https://stripe.test")
+    assert url == "https://stripe.test/onboarding"
 
     link_calls = [c for c in calls if c["kind"] == "link"]
     assert link_calls, "Should create onboarding link"
