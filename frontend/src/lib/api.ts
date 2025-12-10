@@ -1182,6 +1182,11 @@ export const paymentsAPI = {
   ownerPayoutsSummary() {
     return jsonFetch<OwnerPayoutSummary>("/owner/payouts/summary/", { method: "GET" });
   },
+  ownerPayoutsSummaryRaw() {
+    return jsonFetch<{ connect: OwnerPayoutConnect }>("/owner/payouts/summary/", {
+      method: "GET",
+    });
+  },
   ownerPayoutsHistory(params: { kind?: string; limit?: number; offset?: number } = {}) {
     const search = new URLSearchParams();
     if (params.kind) search.set("kind", params.kind);

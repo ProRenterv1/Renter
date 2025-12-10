@@ -179,6 +179,9 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
   const [loginHistory, setLoginHistory] = useState<LoginHistoryEntry[]>([]);
   const [loginHistoryLoading, setLoginHistoryLoading] = useState(true);
   const [loginHistoryError, setLoginHistoryError] = useState<string | null>(null);
+  const [kycPrereqOpen, setKycPrereqOpen] = useState(false);
+  const [kycPrereqMissing, setKycPrereqMissing] = useState<string[]>([]);
+  const [onboardingResumeChecked, setOnboardingResumeChecked] = useState(false);
   const [identityStatus, setIdentityStatus] = useState<IdentityVerificationStatus | "none">(
     "none",
   );
@@ -320,6 +323,36 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
   useEffect(() => {
     void refreshIdentityStatus();
   }, [refreshIdentityStatus]);
+
+  useEffect(() => {
+    if (onboardingResumeChecked) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("onboarding") !== "return") return;
+    setOnboardingResumeChecked(true);
+
+    const resumeOnboardingIfNeeded = async () => {
+      try {
+        const summary = await paymentsAPI.ownerPayoutsSummary();
+        const reqs = summary?.connect?.requirements_due;
+        const due = [
+          ...(reqs?.currently_due ?? []),
+          ...(reqs?.past_due ?? []),
+        ];
+        if (due.length) {
+          const response = await paymentsAPI.ownerPayoutsStartOnboarding();
+          if (response.onboarding_url) {
+            window.location.href = response.onboarding_url;
+          }
+        } else {
+          void refreshIdentityStatus();
+        }
+      } catch (err) {
+        console.error("onboarding resume check failed", err);
+      }
+    };
+
+    void resumeOnboardingIfNeeded();
+  }, [onboardingResumeChecked, refreshIdentityStatus]);
 
   const persistTwoFactorSetting = async (
     channel: TwoFactorChannel,
@@ -522,11 +555,41 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
     }
   };
 
+  const checkKycPrerequisites = (userData?: Profile | null): { ok: boolean; missing: string[] } => {
+    const user = userData ?? profile ?? AuthStore.getCurrentUser();
+    const missing: string[] = [];
+    if (!user?.phone_verified) {
+      missing.push("Verify your phone number");
+    }
+    const hasAddress =
+      Boolean(user?.street_address?.trim()) &&
+      Boolean(user?.city?.trim()) &&
+      Boolean(user?.province?.trim()) &&
+      Boolean(user?.postal_code?.trim());
+    if (!hasAddress) {
+      missing.push("Complete your address (street, city, province, postal code)");
+    }
+    return { ok: missing.length === 0, missing };
+  };
+
   const handleStartConnectKyc = async () => {
     setIdentityError(null);
     setIdentityLoading(true);
 
     try {
+      // Refresh profile to ensure we have latest phone/address verification state
+      const freshProfile = await authAPI.me();
+      setProfile(freshProfile);
+      AuthStore.setCurrentUser(freshProfile);
+
+      const { ok, missing } = checkKycPrerequisites(freshProfile);
+      if (!ok) {
+        setKycPrereqMissing(missing);
+        setKycPrereqOpen(true);
+        setIdentityLoading(false);
+        return;
+      }
+
       const response = await paymentsAPI.ownerPayoutsStartOnboarding();
       if (!response.onboarding_url) {
         toast.error("Unable to start verification right now.");
@@ -1043,7 +1106,34 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={kycPrereqOpen} onOpenChange={setKycPrereqOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Finish your profile first</DialogTitle>
+            <DialogDescription>
+              Verify your phone number and complete your address before starting identity
+              verification.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {kycPrereqMissing.map((item) => (
+              <div key={item} className="flex items-start gap-2 text-sm text-muted-foreground">
+                <AlertCircle className="h-4 w-4 text-[var(--warning-text, #b45309)]" />
+                <span>{item}</span>
+              </div>
+            ))}
+            <p className="text-xs text-muted-foreground">
+              Update these in your Personal Info section, then return to start verification.
+            </p>
+          </div>
+          <DialogFooter className="sm:justify-end">
+            <Button type="button" onClick={() => setKycPrereqOpen(false)}>
+              Got it
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
-

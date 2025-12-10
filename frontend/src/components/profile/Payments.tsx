@@ -59,6 +59,7 @@ export function Payments() {
   const [instantError, setInstantError] = useState<string | null>(null);
   const [instantAgree, setInstantAgree] = useState(false);
   const [instantQuote, setInstantQuote] = useState<InstantPayoutResponse | null>(null);
+  const [startingOnboarding, setStartingOnboarding] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -168,6 +169,7 @@ export function Payments() {
   const connect = summary?.connect;
   const bankDetails = connect?.bank_details;
   const hasConnectAccount = connect?.has_account;
+  const canStartOnboarding = !loading && (connect ? !connect.is_fully_onboarded : true);
 
   const handleBankSubmit = async () => {
     setSavingBank(true);
@@ -259,6 +261,29 @@ export function Payments() {
       setInstantError(detail);
     } finally {
       setInstantLoading(false);
+    }
+  };
+
+  const handleStartOnboarding = async () => {
+    setStartingOnboarding(true);
+    try {
+      const response = await paymentsAPI.ownerPayoutsStartOnboarding();
+      if (!response.onboarding_url) {
+        toast.error("Unable to start verification right now.");
+        return;
+      }
+      window.location.href = response.onboarding_url;
+    } catch (err) {
+      let detail: string | null = null;
+      if (err && typeof err === "object" && "data" in err) {
+        const data = (err as JsonError).data as Record<string, unknown>;
+        if (data && typeof data.detail === "string") {
+          detail = data.detail;
+        }
+      }
+      toast.error(detail || "Unable to start verification right now.");
+    } finally {
+      setStartingOnboarding(false);
     }
   };
 
@@ -410,23 +435,48 @@ export function Payments() {
                 {loading ? (
                   <Skeleton className="h-4 w-48 mt-2" />
                 ) : !hasConnectAccount ? (
-                  <p className="text-sm mt-1 text-yellow-700">
-                    Finish identity verification in Security → Identity Verification to enable
-                    payouts.
-                  </p>
+                  <div className="text-sm mt-1 space-y-1 text-yellow-700">
+                    <p>Start Stripe verification to enable payouts.</p>
+                    <p className="text-xs text-muted-foreground">
+                      You don&apos;t need to add bank details here first—Stripe will ask for them
+                      during verification or you can add them later.
+                    </p>
+                  </div>
                 ) : bankDetails && bankDetails.account_last4 ? (
                   <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>
                     Transit {bankDetails.transit_number}, Institution {bankDetails.institution_number}
                     , Account ending in {bankDetails.account_last4 || "--"}
                   </p>
                 ) : (
-                  <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>
-                    No bank account on file yet.
-                  </p>
+                  <div className="text-sm mt-1 space-y-1" style={{ color: "var(--text-muted)" }}>
+                    <p>No bank account on file yet.</p>
+                    <p className="text-xs text-muted-foreground">
+                      You can complete Stripe verification first and add payout details there or here
+                      later.
+                    </p>
+                  </div>
                 )}
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap justify-end">
+              {canStartOnboarding && (
+                <Button
+                  size="sm"
+                  className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
+                  style={{ color: "var(--primary-foreground)" }}
+                  onClick={handleStartOnboarding}
+                  disabled={startingOnboarding}
+                >
+                  {startingOnboarding ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Starting verification...
+                    </>
+                  ) : (
+                    "Start verification"
+                  )}
+                </Button>
+              )}
               <Button variant="outline" size="sm" onClick={() => setBankDialogOpen(true)}>
                 Update
               </Button>
