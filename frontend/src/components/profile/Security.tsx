@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
 import { Switch } from "../ui/switch";
 import { Separator } from "../ui/separator";
 import { Alert, AlertDescription } from "../ui/alert";
@@ -27,6 +28,7 @@ import {
   type IdentityVerificationStatus,
   type IdentityStatusLatest,
   paymentsAPI,
+  type OwnerPayoutConnect,
 } from "@/lib/api";
 
 type SecurityProps = {
@@ -182,6 +184,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
   const [kycPrereqOpen, setKycPrereqOpen] = useState(false);
   const [kycPrereqMissing, setKycPrereqMissing] = useState<string[]>([]);
   const [onboardingResumeChecked, setOnboardingResumeChecked] = useState(false);
+  const [connectSummary, setConnectSummary] = useState<OwnerPayoutConnect | null>(null);
   const [identityStatus, setIdentityStatus] = useState<IdentityVerificationStatus | "none">(
     "none",
   );
@@ -324,6 +327,19 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
     void refreshIdentityStatus();
   }, [refreshIdentityStatus]);
 
+  const refreshConnectSummary = useCallback(async () => {
+    try {
+      const summary = await paymentsAPI.ownerPayoutsSummaryRaw();
+      setConnectSummary(summary.connect);
+    } catch (err) {
+      console.error("Unable to load connect summary", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshConnectSummary();
+  }, [refreshConnectSummary]);
+
   useEffect(() => {
     if (onboardingResumeChecked) return;
     const params = new URLSearchParams(window.location.search);
@@ -331,6 +347,22 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
     setOnboardingResumeChecked(true);
 
     const resumeOnboardingIfNeeded = async () => {
+      const repeatFlag = "connect_onboarding_repeat_done";
+      const alreadyRepeated = sessionStorage.getItem(repeatFlag) === "1";
+
+      if (!alreadyRepeated) {
+        try {
+          const response = await paymentsAPI.ownerPayoutsStartOnboarding();
+          sessionStorage.setItem(repeatFlag, "1");
+          if (response.onboarding_url) {
+            window.location.href = response.onboarding_url;
+            return;
+          }
+        } catch (err) {
+          console.error("onboarding auto-repeat failed", err);
+        }
+      }
+
       try {
         const summary = await paymentsAPI.ownerPayoutsSummary();
         const reqs = summary?.connect?.requirements_due;
@@ -338,13 +370,9 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
           ...(reqs?.currently_due ?? []),
           ...(reqs?.past_due ?? []),
         ];
-        if (due.length) {
-          const response = await paymentsAPI.ownerPayoutsStartOnboarding();
-          if (response.onboarding_url) {
-            window.location.href = response.onboarding_url;
-          }
-        } else {
+        if (!due.length) {
           void refreshIdentityStatus();
+          setConnectSummary(summary.connect);
         }
       } catch (err) {
         console.error("onboarding resume check failed", err);
@@ -966,13 +994,28 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
           })
         : null;
 
+    const hasAccount = connectSummary?.has_account ?? false;
+    const idVerified = connectSummary?.is_fully_onboarded ?? identityStatus === "verified";
+    const personalVerified = hasAccount;
+    const requirements = connectSummary?.requirements_due;
+    const outstanding =
+      (requirements?.currently_due?.length ?? 0) + (requirements?.past_due?.length ?? 0) > 0;
+
+    const handleStartPersonal = () => {
+      void handleStartConnectKyc();
+    };
+
+    const handleStartId = () => {
+      void handleStartConnectKyc();
+    };
+
     return (
       <Card>
         <CardHeader className="flex flex-col gap-2 space-y-0 md:flex-row md:items-center md:justify-between">
           <div>
             <CardTitle>Identity Verification (KYC)</CardTitle>
             <CardDescription>
-              Complete a quick Stripe-hosted verification to unlock higher limits and faster payouts.
+              Verify your personal info and ID with Stripe to unlock higher limits and payouts.
             </CardDescription>
           </div>
           {renderIdentityStatusPill()}
@@ -984,72 +1027,60 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
               <AlertDescription>{identityError}</AlertDescription>
             </Alert>
           )}
-          <div className="grid gap-6 md:grid-cols-[2fr,3fr]">
-            <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Stripe Connect verifies your identity and account details in their secure window
-                so we can reduce fraud and safely raise your booking and listing limits.
-              </p>
-              <ul className="space-y-2 text-sm text-muted-foreground">
-                <li className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-[var(--success-text)]" />
-                  <span>Keep the rentals community safe from fraud.</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-[var(--success-text)]" />
-                  <span>Qualify for higher replacement values and deposits.</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-[var(--success-text)]" />
-                  <span>Speed up approvals for last-minute bookings.</span>
-                </li>
-              </ul>
-              {formattedVerifiedAt && (
-                <p className="text-xs text-muted-foreground">Last verified {formattedVerifiedAt}</p>
-              )}
-            </div>
-            <div className="space-y-4">
-              <div className="space-y-3 rounded-lg border-2 border-dashed border-muted-foreground/40 bg-muted/30 p-4">
-                <p className="text-sm font-medium">What you'll be asked to do</p>
-                <ul className="space-y-2 text-sm text-muted-foreground">
-                  <li>Confirm your personal details in Stripe's onboarding flow.</li>
-                  <li>Add payout details so we can send earnings once you're approved.</li>
-                  <li>Have your government ID handy in case Stripe requests it.</li>
-                  <li>You will be redirected to a secure Stripe window to finish verification.</li>
-                </ul>
-                <p className="text-xs text-muted-foreground">
-                  We don't store your documents—Stripe only shares the verification status.
+          <div className="space-y-4">
+            <div className="flex items-center justify-between rounded-lg border bg-muted/40 p-4">
+              <div>
+                <p className="font-medium">1. Personal info & consent</p>
+                <p className="text-sm text-muted-foreground">
+                  Confirm name, contact, address, bank, and agree to Stripe terms.
                 </p>
+                {formattedVerifiedAt && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Last verified {formattedVerifiedAt}
+                  </p>
+                )}
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <Badge variant={personalVerified ? "default" : "secondary"}>
+                  {personalVerified ? "Verified" : "Pending"}
+                </Badge>
                 <Button
-                  type="button"
+                  size="sm"
                   className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
                   style={{ color: "var(--primary-foreground)" }}
+                  onClick={handleStartPersonal}
                   disabled={identityLoading || identityInitialLoading}
-                  onClick={handleStartConnectKyc}
                 >
-                  {identityLoading ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Starting verification...
-                    </>
-                  ) : identityStatus === "verified" ? (
-                    "Re-run verification"
-                  ) : (
-                    "Start verification"
-                  )}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setShowKycFlow(false)}
-                  disabled={identityLoading}
-                >
-                  Back to security settings
+                  {identityLoading ? "Opening..." : personalVerified ? "Reopen" : "Verify"}
                 </Button>
               </div>
             </div>
+
+            <div className="flex items-center justify-between rounded-lg border bg-muted/20 p-4">
+              <div>
+                <p className="font-medium">2. ID verification</p>
+                <p className="text-sm text-muted-foreground">
+                  Upload your government ID when Stripe asks for it.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge variant={idVerified ? "default" : "secondary"}>
+                  {idVerified ? "Verified" : outstanding ? "Required" : "Pending"}
+                </Badge>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleStartId}
+                  disabled={identityLoading || identityInitialLoading || !personalVerified}
+                >
+                  {identityLoading ? "Opening..." : idVerified ? "Reopen" : "Verify"}
+                </Button>
+              </div>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              Stripe may still ask you to re-confirm details based on their requirements.
+            </p>
           </div>
         </CardContent>
       </Card>
