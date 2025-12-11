@@ -655,6 +655,14 @@ export interface DisputeEvidence {
   created_at: string;
 }
 
+export interface DisputeUserSummary {
+  id: number;
+  name: string;
+  avatar_url?: string | null;
+  identity_verified?: boolean;
+  rating?: number | null;
+}
+
 export interface DisputeCase {
   id: number;
   booking: number;
@@ -671,6 +679,12 @@ export interface DisputeCase {
   resolved_at?: string | null;
   messages?: DisputeMessage[];
   evidence?: DisputeEvidence[];
+  booking_start_date?: string | null;
+  booking_end_date?: string | null;
+  listing_title?: string | null;
+  listing_primary_photo_url?: string | null;
+  owner_summary?: DisputeUserSummary | null;
+  renter_summary?: DisputeUserSummary | null;
 }
 
 export interface DisputeCreatePayload {

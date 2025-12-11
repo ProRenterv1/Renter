@@ -5,18 +5,23 @@ from __future__ import annotations
 from typing import Any
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.db import models
+from django.db.models import Prefetch
 from django.utils import timezone
 from rest_framework import permissions, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from bookings.models import Booking
+from listings.models import ListingPhoto
 from storage.s3 import booking_object_key, guess_content_type, presign_put
 from storage.tasks import scan_and_finalize_dispute_evidence
 
 from .intake import update_dispute_intake_status
 from .models import DisputeCase, DisputeEvidence, DisputeMessage
+
+User = get_user_model()
 
 
 class IsDisputeParticipant(permissions.BasePermission):
@@ -75,6 +80,14 @@ class DisputeCaseSerializer(serializers.ModelSerializer):
 
     messages = DisputeMessageSerializer(many=True, read_only=True)
     evidence = DisputeEvidenceSerializer(many=True, read_only=True)
+    booking_start_date = serializers.DateField(source="booking.start_date", read_only=True)
+    booking_end_date = serializers.DateField(source="booking.end_date", read_only=True)
+    listing_title = serializers.CharField(
+        source="booking.listing.title", read_only=True, allow_blank=True
+    )
+    listing_primary_photo_url = serializers.SerializerMethodField()
+    owner_summary = serializers.SerializerMethodField()
+    renter_summary = serializers.SerializerMethodField()
 
     class Meta:
         model = DisputeCase
@@ -103,6 +116,12 @@ class DisputeCaseSerializer(serializers.ModelSerializer):
             "evidence",
             "created_at",
             "updated_at",
+            "booking_start_date",
+            "booking_end_date",
+            "listing_title",
+            "listing_primary_photo_url",
+            "owner_summary",
+            "renter_summary",
         ]
         read_only_fields = [
             "id",
@@ -116,6 +135,45 @@ class DisputeCaseSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def get_listing_primary_photo_url(self, obj: DisputeCase) -> str | None:
+        booking = getattr(obj, "booking", None)
+        listing = getattr(booking, "listing", None) if booking else None
+        if not listing:
+            return None
+        primary = getattr(listing, "primary_photo_url", None)
+        if primary:
+            return primary
+        photos = getattr(listing, "photos", None)
+        try:
+            first = photos.first()
+        except Exception:
+            first = None
+        return getattr(first, "url", None)
+
+    def _user_summary(self, user) -> dict | None:
+        if not user:
+            return None
+        full_name = (user.get_full_name() or "").strip()
+        if not full_name:
+            full_name = user.username or f"user-{user.pk}"
+        return {
+            "id": user.pk,
+            "name": full_name,
+            "avatar_url": getattr(user, "avatar_url", ""),
+            "identity_verified": getattr(user, "identity_verified", False),
+            "rating": getattr(user, "rating", None),
+        }
+
+    def get_owner_summary(self, obj: DisputeCase) -> dict | None:
+        booking = getattr(obj, "booking", None)
+        owner = getattr(booking, "owner", None) if booking else None
+        return self._user_summary(owner)
+
+    def get_renter_summary(self, obj: DisputeCase) -> dict | None:
+        booking = getattr(obj, "booking", None)
+        renter = getattr(booking, "renter", None) if booking else None
+        return self._user_summary(renter)
 
     def validate_booking(self, booking: Booking) -> Booking:
         user = self.context["request"].user
@@ -209,7 +267,15 @@ class DisputeCaseViewSet(viewsets.ModelViewSet):
     permission_classes = [IsDisputeParticipant]
 
     def get_queryset(self):
-        qs = DisputeCase.objects.select_related("booking", "opened_by")
+        qs = DisputeCase.objects.select_related(
+            "booking",
+            "booking__listing",
+            "booking__owner",
+            "booking__renter",
+            "opened_by",
+        ).prefetch_related(
+            Prefetch("booking__listing__photos", queryset=ListingPhoto.objects.order_by("id"))
+        )
         user = self.request.user
         booking_filter = self.request.query_params.get("booking")
         if booking_filter:
@@ -220,8 +286,18 @@ class DisputeCaseViewSet(viewsets.ModelViewSet):
 
     def get_object(self):
         obj = (
-            DisputeCase.objects.select_related("booking", "opened_by")
-            .prefetch_related("messages", "evidence")
+            DisputeCase.objects.select_related(
+                "booking",
+                "booking__listing",
+                "booking__owner",
+                "booking__renter",
+                "opened_by",
+            )
+            .prefetch_related(
+                "messages",
+                "evidence",
+                Prefetch("booking__listing__photos", queryset=ListingPhoto.objects.order_by("id")),
+            )
             .get(pk=self.kwargs["pk"])
         )
         self.check_object_permissions(self.request, obj)

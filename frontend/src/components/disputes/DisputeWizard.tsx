@@ -44,6 +44,7 @@ export interface DisputeWizardProps {
   role: WizardRole;
   toolName?: string;
   rentalPeriodLabel?: string;
+  onCreated?: (disputeId: number) => void;
 }
 
 const detectKind = (file: File): DisputeEvidenceCompletePayload["kind"] => {
@@ -109,6 +110,7 @@ export function DisputeWizard({
   role,
   toolName,
   rentalPeriodLabel,
+  onCreated,
 }: DisputeWizardProps) {
   const [step, setStep] = useState<0 | 1 | 2>(0);
   const [selectedIssue, setSelectedIssue] = useState<IssueOption | null>(null);
@@ -224,6 +226,11 @@ export function DisputeWizard({
       }
 
       toast.success("Issue reported. Our team will review the dispute.");
+      onCreated?.(dispute.id);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("dispute:created", { detail: { id: dispute.id } }));
+      }
+      setSubmitting(false);
       onOpenChange(false);
     } catch (err) {
       const message =
