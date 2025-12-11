@@ -31,16 +31,12 @@ import {
   bookingsAPI,
   identityAPI,
   disputesAPI,
-  type DisputeCase,
   type IdentityVerificationStatus,
   type Listing,
 } from "@/lib/api";
 import { VerifiedAvatar } from "@/components/VerifiedAvatar";
-import { DisputeThread } from "@/components/disputes/DisputeThread";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DisputesPanel, countActiveDisputes } from "@/components/disputes/DisputesPanel";
 import { Separator } from "@/components/ui/separator";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 
 const TAB_KEYS = [
   "personal",
@@ -61,20 +57,6 @@ const DEFAULT_TAB: Tab = "personal";
 const isValidTab = (value: string | null): value is Tab => {
   return typeof value === "string" && (TAB_KEYS as readonly string[]).includes(value);
 };
-
-const ACTIVE_DISPUTE_STATUSES = [
-  "open",
-  "intake_missing_evidence",
-  "awaiting_rebuttal",
-  "under_review",
-] as const;
-
-type ActiveDisputeStatus = (typeof ACTIVE_DISPUTE_STATUSES)[number];
-
-const countActiveDisputes = (items: DisputeCase[]) =>
-  items.filter((item) =>
-    ACTIVE_DISPUTE_STATUSES.includes(item.status as ActiveDisputeStatus),
-  ).length;
 
 export default function UserProfile() {
   const location = useLocation();
@@ -460,126 +442,6 @@ export default function UserProfile() {
       <footer className="border-t py-6 text-center text-sm" style={{ color: "var(--text-muted)" }}>
         © 2025 Renter. All rights reserved.
       </footer>
-    </div>
-  );
-}
-
-const statusLabels: Record<string, string> = {
-  open: "Open",
-  intake_missing_evidence: "Open (needs evidence)",
-  awaiting_rebuttal: "Awaiting rebuttal",
-  under_review: "Under review",
-  resolved_renter: "Resolved for renter",
-  resolved_owner: "Resolved for owner",
-  resolved_partial: "Partially resolved",
-  closed_auto: "Closed",
-};
-
-function DisputesPanel({ onCountChange }: { onCountChange?: (count: number) => void }) {
-  const [disputes, setDisputes] = useState<DisputeCase[]>([]);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const data = await disputesAPI.list();
-        if (cancelled) return;
-        setDisputes(data || []);
-        const activeCount = countActiveDisputes(data || []);
-        onCountChange?.(activeCount);
-        if (!selectedId && data.length > 0) {
-          setSelectedId(data[0].id);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError("Unable to load disputes right now.");
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    };
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedId]);
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Disputes</h2>
-          <p className="text-sm text-muted-foreground">
-            View and respond to any disputes tied to your bookings.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Shield className="w-4 h-4" />
-          Keep evidence ready for faster resolutions.
-        </div>
-      </div>
-
-      {error && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="space-y-3">
-          {loading && <p className="text-sm text-muted-foreground">Loading disputes…</p>}
-          {!loading && disputes.length === 0 && (
-            <Card>
-              <CardContent className="py-6 text-sm text-muted-foreground">
-                You have no disputes at the moment.
-              </CardContent>
-            </Card>
-          )}
-          {disputes.map((item) => (
-            <Card
-              key={item.id}
-              className={`cursor-pointer transition ${
-                selectedId === item.id ? "ring-2 ring-primary" : "hover:border-primary/50"
-              }`}
-              onClick={() => setSelectedId(item.id)}
-            >
-              <CardHeader className="space-y-1">
-                <CardTitle className="text-base flex items-center justify-between">
-                  <span>Booking #{item.booking}</span>
-                  <Badge variant="outline">{statusLabels[item.status] ?? item.status}</Badge>
-                </CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  Category: {item.category.replaceAll("_", " ")}
-                </p>
-                {item.rebuttal_due_at && (
-                  <p className="text-xs text-muted-foreground">
-                    Rebuttal due: {new Date(item.rebuttal_due_at).toLocaleString()}
-                  </p>
-                )}
-              </CardHeader>
-            </Card>
-          ))}
-        </div>
-
-        <div className="lg:col-span-2">
-          {selectedId ? (
-            <DisputeThread disputeId={selectedId} />
-          ) : (
-            <Card>
-              <CardContent className="py-10 text-center text-sm text-muted-foreground">
-                Select a dispute to view the conversation and evidence.
-              </CardContent>
-            </Card>
-          )}
-        </div>
-      </div>
     </div>
   );
 }
