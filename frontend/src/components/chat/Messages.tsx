@@ -177,9 +177,14 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
           isVerified: other.isVerified,
         };
       }
-      return { name: "User", avatarUrl: null, isVerified: false };
+      const fallbackName = conversation?.other_party_name?.trim() || "User";
+      return {
+        name: fallbackName,
+        avatarUrl: conversation?.other_party_avatar_url ?? null,
+        isVerified: Boolean(conversation?.other_party_identity_verified),
+      };
     },
-    [currentUser, participantMeta],
+    [conversation, currentUser, participantMeta],
   );
 
   if (loading && !conversation) {
