@@ -197,6 +197,14 @@ def test_deposit_retry_then_cancel(monkeypatch, booking_factory, owner_user, ren
         "create",
         lambda **kwargs: transfer_calls.append(kwargs) or SimpleNamespace(id="tr_1"),
     )
+    monkeypatch.setattr(
+        "bookings.domain.ensure_connect_account",
+        lambda user: SimpleNamespace(
+            stripe_account_id="acct_test_owner",
+            payouts_enabled=True,
+            charges_enabled=True,
+        ),
+    )
 
     first = authorize_deposit_for_start_day(booking.id)
     assert first is False

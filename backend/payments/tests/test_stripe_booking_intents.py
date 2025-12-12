@@ -88,6 +88,7 @@ def test_create_booking_payment_intents_logs_transactions(monkeypatch, settings)
     monkeypatch.setattr(stripe_api, "_retrieve_payment_intent", fake_retrieve)
     payment_intent_mock = type("MockPI", (), {"create": staticmethod(fake_create)})
     monkeypatch.setattr(stripe_api.stripe, "PaymentIntent", payment_intent_mock)
+    monkeypatch.setattr(stripe_api, "_ensure_payment_method_for_customer", lambda *a, **k: None)
 
     charge_id = stripe_api.create_booking_charge_intent(
         booking=booking,

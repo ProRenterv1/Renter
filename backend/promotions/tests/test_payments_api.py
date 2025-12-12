@@ -207,7 +207,7 @@ def test_pay_for_promotion_with_earnings(monkeypatch, owner_user, listing, setti
 
     assert response.status_code == 201, response.json()
     slot = PromotedSlot.objects.get(pk=response.data["slot"]["id"])
-    assert slot.stripe_session_id == ""
+    assert slot.stripe_session_id == "tr_test_promo"
     total_amount = (Decimal(base_cents + gst_cents) / Decimal("100")).quantize(Decimal("0.01"))
 
     txn_promo = Transaction.objects.filter(

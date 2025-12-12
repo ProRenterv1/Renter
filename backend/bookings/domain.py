@@ -22,7 +22,6 @@ from payments.stripe_api import (
     _to_cents,
     ensure_connect_account,
 )
-from payments_refunds import get_platform_ledger_user
 
 from .models import Booking, BookingPhoto
 
@@ -329,6 +328,8 @@ def settle_and_cancel_for_deposit_failure(booking: Booking) -> None:
             )
 
         if platform_amount > Decimal("0"):
+            from payments_refunds import get_platform_ledger_user
+
             platform_user = get_platform_ledger_user()
             if platform_user:
                 log_transaction(
