@@ -89,6 +89,7 @@ def test_owner_payouts_summary_returns_balances(owner_user, booking_factory, mon
         account_number="000123456789",
     )
     monkeypatch.setattr(payments_api, "ensure_connect_account", lambda user: payout_account)
+    monkeypatch.setattr("payments.api._get_stripe_api_key", lambda: "sk_test_summary")
 
     client = _auth_client(owner_user)
     resp = client.get("/api/owner/payouts/summary/")

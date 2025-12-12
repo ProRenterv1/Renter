@@ -178,6 +178,7 @@ def test_deposit_retry_then_cancel(monkeypatch, booking_factory, owner_user, ren
         "bookings.tasks.create_booking_deposit_hold_intent",
         raise_insufficient,
     )
+    settings.STRIPE_SECRET_KEY = "sk_test"
 
     refund_calls: list[dict] = []
     transfer_calls: list[dict] = []
