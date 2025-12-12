@@ -16,6 +16,7 @@ import {
   getBookingDamageDeposit,
   listingsAPI,
   disputesAPI,
+  paymentsAPI,
   type Booking,
   type BookingTotals,
   type BookingStatus,
@@ -24,6 +25,7 @@ import {
   type DisputeStatus,
   type JsonError,
   type Listing,
+  type PaymentMethod,
 } from "@/lib/api";
 import { fetchConversations, type ConversationSummary } from "@/lib/chat";
 import { formatCurrency, parseMoney } from "@/lib/utils";
@@ -189,6 +191,18 @@ const hasChargeIntent = (booking: Booking) =>
 
 const isPrePaymentBooking = (booking: Booking) => !hasChargeIntent(booking);
 
+const isStartDay = (isoDate: string): boolean => {
+  try {
+    const today = startOfToday();
+    const start = parseLocalDate(isoDate);
+    return today.getFullYear() === start.getFullYear() &&
+      today.getMonth() === start.getMonth() &&
+      today.getDate() === start.getDate();
+  } catch {
+    return false;
+  }
+};
+
 const getDaysUntilStart = (booking: Booking): number | null => {
   try {
     const today = startOfToday();
@@ -275,6 +289,12 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [payingRental, setPayingRental] = useState<PayableRental | null>(null);
   const [savePaymentMethod, setSavePaymentMethod] = useState(false);
+  const [savedMethods, setSavedMethods] = useState<PaymentMethod[]>([]);
+  const [savedMethodsLoading, setSavedMethodsLoading] = useState(false);
+  const [savedMethodsError, setSavedMethodsError] = useState<string | null>(null);
+  const [paymentMode, setPaymentMode] = useState<"new" | "saved">("new");
+  const [selectedSavedMethodId, setSelectedSavedMethodId] = useState<number | null>(null);
+  const isSavedMode = paymentMode === "saved";
   const [paymentForm, setPaymentForm] = useState<PaymentFormState>(createInitialPaymentForm());
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [paymentLoading, setPaymentLoading] = useState(false);
@@ -332,6 +352,10 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
       },
     }),
     []
+  );
+  const cardElementComputedOptions = useMemo<StripeCardElementOptions>(
+    () => ({ ...cardElementOptions, disabled: isSavedMode }),
+    [cardElementOptions, isSavedMode],
   );
 
   const getOwnerDisplayName = useCallback((row: RentalRow | null | undefined) => {
@@ -509,6 +533,50 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     setPaymentForm((prev) => ({ ...prev, [fieldName]: value }));
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!payingRental) {
+      setSavedMethods([]);
+      setSavedMethodsError(null);
+      setSavedMethodsLoading(false);
+      setSelectedSavedMethodId(null);
+      return;
+    }
+
+    const loadSavedMethods = async () => {
+      setSavedMethodsLoading(true);
+      setSavedMethodsError(null);
+      try {
+        const methods = await paymentsAPI.listPaymentMethods();
+        if (cancelled) return;
+        setSavedMethods(methods);
+        const preferred = methods.find((method) => method.is_default) ?? methods[0];
+        setSelectedSavedMethodId((prev) => prev ?? preferred?.id ?? null);
+      } catch (err) {
+        if (cancelled) return;
+        console.error("payments: failed to load saved methods", err);
+        setSavedMethodsError("Could not load saved payment methods.");
+        setSavedMethods([]);
+        setSelectedSavedMethodId(null);
+      } finally {
+        if (!cancelled) {
+          setSavedMethodsLoading(false);
+        }
+      }
+    };
+
+    void loadSavedMethods();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [payingRental]);
+
+  const selectedSavedMethod = useMemo(
+    () => savedMethods.find((method) => method.id === selectedSavedMethodId) ?? null,
+    [savedMethods, selectedSavedMethodId],
+  );
+
   const resetPaymentState = () => {
     const cardElement = elements?.getElement(CardElement);
     cardElement?.clear();
@@ -517,10 +585,50 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     setSavePaymentMethod(false);
     setPaymentError(null);
     setPaymentLoading(false);
+    setPaymentMode("new");
+    setSavedMethods([]);
+    setSavedMethodsError(null);
+    setSelectedSavedMethodId(null);
   };
 
   const handlePayment = async () => {
     if (!payingRental) return;
+
+    if (paymentMode === "saved") {
+      if (!selectedSavedMethod) {
+        setPaymentError("Please select a saved card before paying.");
+        return;
+      }
+      setPaymentError(null);
+      setPaymentLoading(true);
+      try {
+        const stripeCustomerId = currentUser?.stripe_customer_id || undefined;
+        const updatedBooking = await bookingsAPI.pay(payingRental.bookingId, {
+          stripe_payment_method_id: selectedSavedMethod.stripe_payment_method_id,
+          stripe_customer_id: stripeCustomerId,
+        });
+        setBookings((prev) =>
+          prev.map((booking) => (booking.id === updatedBooking.id ? updatedBooking : booking)),
+        );
+        try {
+          const refreshedProfile = await authAPI.me();
+          AuthStore.setCurrentUser(refreshedProfile);
+        } catch {
+          // Non-fatal if profile refresh fails.
+        }
+        toast.success("Payment successful!");
+        resetPaymentState();
+      } catch (err) {
+        const message = isJsonError(err)
+          ? extractJsonErrorMessage(err) ?? "Payment could not be completed. Please try again."
+          : "Payment could not be completed. Please try again.";
+        setPaymentError(message);
+      } finally {
+        setPaymentLoading(false);
+      }
+      return;
+    }
+
     if (!stripe || !elements) {
       setPaymentError("Payment form is still loading. Please try again.");
       return;
@@ -564,6 +672,14 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
       setBookings((prev) =>
         prev.map((booking) => (booking.id === updatedBooking.id ? updatedBooking : booking))
       );
+      if (savePaymentMethod) {
+        try {
+          await paymentsAPI.addPaymentMethod({ stripe_payment_method_id: paymentMethod.id });
+        } catch (saveErr) {
+          console.error("payments: failed to save payment method", saveErr);
+          toast.error("Payment succeeded, but we couldn't save this card.");
+        }
+      }
       try {
         const refreshedProfile = await authAPI.me();
         AuthStore.setCurrentUser(refreshedProfile);
@@ -832,6 +948,10 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     setSavePaymentMethod(false);
     setPaymentError(null);
     setPaymentLoading(false);
+    setPaymentMode("new");
+    setSelectedSavedMethodId(null);
+    setSavedMethodsError(null);
+    setSavedMethods([]);
     setPayingRental({
       ...row,
       bookingId: row.bookingId,
@@ -910,7 +1030,10 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     const chargeAmount = payingRental.rentalSubtotal + payingRental.serviceFee;
     const depositHold = payingRental.damageDeposit;
     const estimatedTotal = depositHold;
-    const isPaymentDisabled = paymentLoading || !stripe || !elements;
+    const isPaymentDisabled =
+      paymentLoading ||
+      (!isSavedMode && (!stripe || !elements)) ||
+      (isSavedMode && (savedMethodsLoading || !selectedSavedMethod));
 
     return (
       <div className="space-y-6">
@@ -936,9 +1059,103 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                   <CreditCard className="h-5 w-5" />
                   Payment Method
                 </CardTitle>
-                <CardDescription>Enter your card details</CardDescription>
+                <CardDescription>Use a saved card or enter new details</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant={isSavedMode ? "outline" : "default"}
+                    size="sm"
+                    className="rounded-full"
+                    onClick={() => {
+                      setPaymentMode("new");
+                      setPaymentError(null);
+                    }}
+                  >
+                    New card
+                  </Button>
+                  {savedMethods.length > 0 && (
+                    <Button
+                      variant={isSavedMode ? "default" : "outline"}
+                      size="sm"
+                      className="rounded-full"
+                      onClick={() => {
+                        setPaymentMode("saved");
+                        setPaymentError(null);
+                      }}
+                    >
+                      Saved card
+                    </Button>
+                  )}
+                </div>
+
+                {savedMethodsError && (
+                  <p className="text-xs text-destructive">{savedMethodsError}</p>
+                )}
+
+                {isSavedMode && (
+                  <div className="space-y-3">
+                    {savedMethodsLoading && (
+                      <p className="text-sm text-muted-foreground">Loading saved cards...</p>
+                    )}
+                    {!savedMethodsLoading && savedMethods.length === 0 && (
+                      <p className="text-sm text-muted-foreground">No saved cards yet.</p>
+                    )}
+                    {!savedMethodsLoading &&
+                      savedMethods.map((method) => {
+                        const isSelected = method.id === selectedSavedMethodId;
+                        return (
+                          <label
+                            key={method.id}
+                            className={`flex items-center justify-between rounded-xl border p-3 cursor-pointer transition-colors ${
+                              isSelected ? "border-primary bg-primary/5" : "hover:border-primary/60"
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name="saved-payment-method"
+                              className="sr-only"
+                              checked={isSelected}
+                              onChange={() => {
+                                setSelectedSavedMethodId(method.id);
+                                setPaymentError(null);
+                              }}
+                            />
+                            <div className="flex items-center gap-3">
+                              <div className="h-10 w-10 rounded-lg bg-muted flex items-center justify-center">
+                                <CreditCard className="h-5 w-5 text-muted-foreground" />
+                              </div>
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2 text-sm font-medium">
+                                  <span>
+                                    {method.brand} ending in {method.last4}
+                                  </span>
+                                  {method.is_default && (
+                                    <Badge variant="secondary" className="text-[10px]">
+                                      Default
+                                    </Badge>
+                                  )}
+                                </div>
+                                <p className="text-xs text-muted-foreground">
+                                  Expires {String(method.exp_month ?? "--").padStart(2, "0")}/
+                                  {method.exp_year ?? "--"}
+                                </p>
+                              </div>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    {!savedMethodsLoading &&
+                      savedMethods.length > 0 &&
+                      !selectedSavedMethod &&
+                      !paymentLoading && (
+                        <p className="text-xs text-destructive">
+                          Select a saved card to continue.
+                        </p>
+                      )}
+                  </div>
+                )}
+
                 <div className="space-y-2">
                   <Label htmlFor="cardholderName">Cardholder Name</Label>
                   <Input
@@ -948,13 +1165,14 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                     onChange={handleInputChange}
                     placeholder="John Doe"
                     className="rounded-xl"
+                    disabled={isSavedMode}
                   />
                 </div>
 
                 <div className="space-y-2">
                   <Label>Card Details</Label>
                   <div className="rounded-xl border border-input bg-background px-3 py-3 focus-within:ring-2 focus-within:ring-ring transition-shadow">
-                    <CardElement options={cardElementOptions} />
+                    <CardElement options={cardElementComputedOptions} />
                   </div>
                 </div>
               </CardContent>
@@ -976,6 +1194,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                       onChange={handleInputChange}
                       placeholder="Edmonton"
                       className="rounded-xl"
+                      disabled={isSavedMode}
                     />
                   </div>
 
@@ -988,6 +1207,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                       onChange={handleInputChange}
                       placeholder="T5K 2J8"
                       className="rounded-xl"
+                      disabled={isSavedMode}
                     />
                   </div>
                 </div>
@@ -1002,6 +1222,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                       onChange={handleInputChange}
                       placeholder="Alberta"
                       className="rounded-xl"
+                      disabled={isSavedMode}
                     />
                   </div>
 
@@ -1009,6 +1230,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                     <Label htmlFor="country">Country</Label>
                     <Select
                       value={paymentForm.country}
+                      disabled={isSavedMode}
                       onValueChange={(value) =>
                         setPaymentForm((prev) => ({ ...prev, country: value }))
                       }
@@ -1027,16 +1249,18 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
 
                 <Separator className="my-4" />
 
-                <div className="flex items-center space-x-2">
-                  <Checkbox
-                    id="savePayment"
-                    checked={savePaymentMethod}
-                    onCheckedChange={(checked) => setSavePaymentMethod(checked === true)}
-                  />
-                  <Label htmlFor="savePayment" className="cursor-pointer text-sm">
-                    Save payment method for future use
-                  </Label>
-                </div>
+                {!isSavedMode && (
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="savePayment"
+                      checked={savePaymentMethod}
+                      onCheckedChange={(checked) => setSavePaymentMethod(checked === true)}
+                    />
+                    <Label htmlFor="savePayment" className="cursor-pointer text-sm">
+                      Save payment method for future use
+                    </Label>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -1281,6 +1505,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                 filteredRows.map((row) => {
                   const showPickupButton =
                     row.statusRaw === "paid" &&
+                    isStartDay(row.startDate) &&
                     row.beforePhotosRequired &&
                     !row.beforePhotosUploadedAt &&
                     !row.pickupConfirmedAt;
@@ -1550,3 +1775,5 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     </>
   );
 }
+
+export const __testables = { parseLocalDate, startOfToday, isStartDay };

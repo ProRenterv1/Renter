@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { addDays, differenceInCalendarDays, format } from "date-fns";
+import { addDays, differenceInCalendarDays, eachDayOfInterval, format, parseISO } from "date-fns";
 import { CardElement, useElements, useStripe } from "@stripe/react-stripe-js";
 import type { StripeCardElementOptions } from "@stripe/stripe-js";
 import { Loader2 } from "lucide-react";
@@ -11,6 +11,7 @@ import {
   type Listing,
   type OwnerPayoutSummary,
   type PromotionSlot,
+  type PaymentMethod,
 } from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
 import { formatCurrency, parseMoney } from "@/lib/utils";
@@ -80,6 +81,9 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
     from: today,
     to: addDays(today, 6),
   }));
+  const [blockedDates, setBlockedDates] = useState<Date[]>([]);
+  const [isLoadingAvailability, setIsLoadingAvailability] = useState<boolean>(false);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
   const [pricePerDayCents, setPricePerDayCents] = useState<number | null>(null);
   const [pricingError, setPricingError] = useState<string | null>(null);
   const [isLoadingPricing, setIsLoadingPricing] = useState<boolean>(true);
@@ -92,6 +96,11 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
   const [payoutSummary, setPayoutSummary] = useState<OwnerPayoutSummary | null>(null);
   const [availableEarningsCents, setAvailableEarningsCents] = useState<number | null>(null);
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("card");
+  const [cardSource, setCardSource] = useState<"new" | "saved">("new");
+  const [savedMethods, setSavedMethods] = useState<PaymentMethod[]>([]);
+  const [savedMethodsLoading, setSavedMethodsLoading] = useState(false);
+  const [savedMethodsError, setSavedMethodsError] = useState<string | null>(null);
+  const [selectedSavedMethodId, setSelectedSavedMethodId] = useState<number | null>(null);
   const [earningsError, setEarningsError] = useState<string | null>(null);
   const currentUser = AuthStore.getCurrentUser();
 
@@ -109,15 +118,51 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
     }
   }, [listing.id]);
 
+  const loadAvailability = useCallback(async () => {
+    setIsLoadingAvailability(true);
+    setAvailabilityError(null);
+    try {
+      const ranges = await promotionsAPI.availability(listing.id);
+      const blocked: Date[] = [];
+      ranges.forEach((range) => {
+        const start = parseISO(range.start_date);
+        const end = parseISO(range.end_date);
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) {
+          return;
+        }
+        const days = eachDayOfInterval({ start, end });
+        days.forEach((day) => {
+          const normalized = new Date(day);
+          normalized.setHours(0, 0, 0, 0);
+          blocked.push(normalized);
+        });
+      });
+      setBlockedDates(blocked);
+    } catch (err) {
+      console.error("promotions: failed to load availability", err);
+      setBlockedDates([]);
+      setAvailabilityError("Unable to load promotion availability.");
+    } finally {
+      setIsLoadingAvailability(false);
+    }
+  }, [listing.id]);
+
   useEffect(() => {
     void loadPricing();
   }, [loadPricing]);
+
+  useEffect(() => {
+    setBlockedDates([]);
+    void loadAvailability();
+  }, [loadAvailability]);
 
   useEffect(() => {
     setDateRange({
       from: today,
       to: addDays(today, 6),
     });
+    setPricingError(null);
+    setAvailabilityError(null);
     setStep("schedule");
     setCheckoutSummary(null);
     setSuccessSlot(null);
@@ -138,12 +183,35 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
   const promotionStart = dateRange.from ? format(dateRange.from, "yyyy-MM-dd") : "";
   const promotionEnd = dateRange.to ? format(dateRange.to, "yyyy-MM-dd") : "";
 
-  const fallbackAvailableString = payoutSummary?.balances?.available_earnings;
+  const blockedDateSet = useMemo(
+    () => new Set(blockedDates.map((day) => format(day, "yyyy-MM-dd"))),
+    [blockedDates],
+  );
+
+  const isDateBlocked = useCallback(
+    (day: Date) => blockedDateSet.has(format(day, "yyyy-MM-dd")),
+    [blockedDateSet],
+  );
+
+  const selectionHasBlockedDays = useMemo(() => {
+    if (!dateRange.from || !dateRange.to) return false;
+    try {
+      return eachDayOfInterval({ start: dateRange.from, end: dateRange.to }).some((day) =>
+        isDateBlocked(day),
+      );
+    } catch {
+      return false;
+    }
+  }, [dateRange, isDateBlocked]);
+
+  const preferredAvailableString =
+    payoutSummary?.balances?.connect_available_earnings ??
+    payoutSummary?.balances?.available_earnings;
   const availableEarningsAmount =
     availableEarningsCents !== null
       ? availableEarningsCents / 100
-      : fallbackAvailableString !== undefined
-        ? parseMoney(fallbackAvailableString)
+      : preferredAvailableString !== undefined
+        ? parseMoney(preferredAvailableString ?? "0")
         : null;
   const availableEarningsDisplay =
     availableEarningsAmount !== null ? formatCurrency(availableEarningsAmount, "CAD") : null;
@@ -155,6 +223,21 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
       setDateRange({ from: undefined, to: undefined });
       return;
     }
+    if (range.from && range.to) {
+      try {
+        const hasBlocked = eachDayOfInterval({ start: range.from, end: range.to }).some((day) =>
+          isDateBlocked(day),
+        );
+        if (hasBlocked) {
+          setPricingError("Some of the selected days are already promoted.");
+          toast.error("Some of the selected days are already promoted.");
+          return;
+        }
+      } catch {
+        // ignore invalid interval and allow selection reset
+      }
+    }
+    setPricingError(null);
     setDateRange({
       from: range.from,
       to: range.to,
@@ -166,7 +249,16 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
       setPricingError("Please select a valid date range to continue.");
       return;
     }
+    if (selectionHasBlockedDays) {
+      setPricingError("Some of the selected days are already promoted.");
+      toast.error("Some of the selected days are already promoted.");
+      return;
+    }
     setPaymentMode("card");
+    setCardSource("new");
+    setSavedMethods([]);
+    setSavedMethodsError(null);
+    setSelectedSavedMethodId(null);
     setAvailableEarningsCents(null);
     setEarningsError(null);
     setPricingError(null);
@@ -189,15 +281,55 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
 
   useEffect(() => {
     if (step !== "payment") {
+      setCardSource("new");
+      setSavedMethods([]);
+      setSavedMethodsError(null);
+      setSavedMethodsLoading(false);
+      setSelectedSavedMethodId(null);
       return;
     }
     let cancelled = false;
+
+    if (paymentMode === "card") {
+      const loadSavedMethods = async () => {
+        setSavedMethodsLoading(true);
+        setSavedMethodsError(null);
+        try {
+          const methods = await paymentsAPI.listPaymentMethods();
+          if (cancelled) return;
+          setSavedMethods(methods);
+          const preferred = methods.find((method) => method.is_default) ?? methods[0];
+          setSelectedSavedMethodId((prev) => prev ?? preferred?.id ?? null);
+          if (methods.length === 0 && cardSource === "saved") {
+            setCardSource("new");
+          }
+        } catch (err) {
+          if (cancelled) return;
+          console.error("payments: failed to load saved payment methods", err);
+          setSavedMethodsError("Saved cards are unavailable right now.");
+          setSavedMethods([]);
+          setSelectedSavedMethodId(null);
+          if (cardSource === "saved") {
+            setCardSource("new");
+          }
+        } finally {
+          if (!cancelled) {
+            setSavedMethodsLoading(false);
+          }
+        }
+      };
+      void loadSavedMethods();
+    }
+
     const loadAvailableEarnings = async () => {
       try {
         const summary = await paymentsAPI.ownerPayoutsSummary();
         if (cancelled) return;
         setPayoutSummary(summary);
-        const raw = summary.balances?.available_earnings ?? "0.00";
+        const raw =
+          summary.balances?.connect_available_earnings ??
+          summary.balances?.available_earnings ??
+          "0.00";
         const amount = parseMoney(raw);
         setAvailableEarningsCents(Math.round(amount * 100));
         setEarningsError(null);
@@ -213,7 +345,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
     return () => {
       cancelled = true;
     };
-  }, [step]);
+  }, [step, paymentMode, cardSource]);
 
   const handlePayment = async () => {
     if (!checkoutSummary) return;
@@ -242,6 +374,51 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
             typeof err.data.detail === "string" &&
             err.data.detail) ||
           "Unable to use your earnings for this promotion. Please try again or use a card.";
+        setPaymentError(message);
+      } finally {
+        setPaymentLoading(false);
+      }
+      return;
+    }
+
+    if (cardSource === "saved") {
+      if (!selectedSavedMethodId) {
+        setPaymentError("Please select a saved card.");
+        return;
+      }
+      const selected = savedMethods.find((m) => m.id === selectedSavedMethodId);
+      if (!selected) {
+        setPaymentError("Please select a saved card.");
+        return;
+      }
+      setPaymentError(null);
+      setPaymentLoading(true);
+      try {
+        const payload = {
+          listing_id: listing.id,
+          promotion_start: checkoutSummary.startDate,
+          promotion_end: checkoutSummary.endDate,
+          base_price_cents: checkoutSummary.baseCents,
+          gst_cents: checkoutSummary.gstCents,
+          stripe_payment_method_id: selected.stripe_payment_method_id,
+          stripe_customer_id: currentUser?.stripe_customer_id || undefined,
+          save_payment_method: false,
+          pay_with_earnings: false,
+        };
+        const response = await promotionsAPI.payPromotion(payload);
+        setSuccessSlot(response.slot);
+        toast.success("Promotion scheduled!");
+        setStep("success");
+      } catch (err) {
+        const message =
+          (typeof err === "object" &&
+            err !== null &&
+            "status" in err &&
+            typeof (err as { data?: unknown }).data === "object" &&
+            err.data &&
+            typeof (err.data as { detail?: string }).detail === "string" &&
+            (err.data as { detail?: string }).detail) ||
+          "Payment could not be completed. Please try again.";
         setPaymentError(message);
       } finally {
         setPaymentLoading(false);
@@ -294,6 +471,14 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
         pay_with_earnings: false,
       };
       const response = await promotionsAPI.payPromotion(payload);
+      if (savePaymentMethod) {
+        try {
+          await paymentsAPI.addPaymentMethod({ stripe_payment_method_id: paymentMethod.id });
+        } catch (saveErr) {
+          console.error("payments: failed to save card", saveErr);
+          toast.error("Payment succeeded, but we couldn't save this card.");
+        }
+      }
       setSuccessSlot(response.slot);
       toast.success("Promotion scheduled!");
       setStep("success");
@@ -313,6 +498,17 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
     }
   };
 
+  const resetPaymentStepState = () => {
+    setPaymentError(null);
+    setPaymentLoading(false);
+    setCardSource("new");
+    setSavedMethods([]);
+    setSavedMethodsError(null);
+    setSelectedSavedMethodId(null);
+    setSavePaymentMethod(true);
+    setPaymentForm(createInitialBillingState());
+  };
+
   const renderScheduleStep = () => (
     <>
       <div>
@@ -323,6 +519,11 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
       {pricingError && (
         <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
           {pricingError}
+        </div>
+      )}
+      {availabilityError && (
+        <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+          {availabilityError}
         </div>
       )}
 
@@ -349,7 +550,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
                     selected={dateRange}
                     onSelect={handleRangeSelect}
                     defaultMonth={dateRange.from ?? today}
-                    disabled={(date) => date < today}
+                    disabled={(date) => date < today || isDateBlocked(date)}
                   />
                 </div>
                 <div className="space-y-4 rounded-2xl border border-border bg-muted/20 p-4">
@@ -373,6 +574,11 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
                         : "0 days"}
                     </p>
                   </div>
+                  {selectionHasBlockedDays && (
+                    <p className="text-xs text-destructive">
+                      Some of these days are already promoted. Pick a different window.
+                    </p>
+                  )}
                   {pricePerDayCents && (
                     <p className="text-sm text-muted-foreground">
                       {formatCents(pricePerDayCents)} per day of boosted visibility
@@ -410,7 +616,10 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
                   !dateRange.from ||
                   !dateRange.to ||
                   durationDays <= 0 ||
-                  isLoadingPricing
+                  isLoadingPricing ||
+                  isLoadingAvailability ||
+                  availabilityError !== null ||
+                  selectionHasBlockedDays
                 }
                 onClick={handleProceedToPayment}
               >
@@ -427,8 +636,14 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
     if (!checkoutSummary) return null;
     const chargeAmount = checkoutSummary.baseCents + checkoutSummary.gstCents;
     const canPayWithEarnings =
-      availableEarningsCentsForCheck !== null && availableEarningsCentsForCheck >= chargeAmount;
-    const cardDisabled = paymentMode === "earnings";
+      !!payoutSummary?.connect?.has_account &&
+      !!payoutSummary?.connect?.payouts_enabled &&
+      availableEarningsCentsForCheck !== null &&
+      availableEarningsCentsForCheck >= chargeAmount;
+    const isSavedSource = cardSource === "saved";
+    const cardFieldsDisabled = paymentMode !== "card" || isSavedSource;
+    const selectedSavedMethod =
+      savedMethods.find((method) => method.id === selectedSavedMethodId) ?? null;
 
     return (
       <>
@@ -450,6 +665,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
                     type="button"
                     onClick={() => {
                       setPaymentMode("card");
+                      setCardSource("new");
                       setPaymentError(null);
                     }}
                     disabled={paymentLoading}
@@ -465,6 +681,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
                     type="button"
                     onClick={() => {
                       setPaymentMode("earnings");
+                      setCardSource("new");
                       setPaymentError(null);
                     }}
                     disabled={!canPayWithEarnings || paymentLoading}
@@ -499,8 +716,106 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
                 <CardTitle>Payment method</CardTitle>
               </CardHeader>
               <CardContent
-                className={`space-y-4 ${cardDisabled ? "opacity-60 pointer-events-none" : ""}`}
+                className="space-y-4"
               >
+                {paymentMode === "card" && (
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant={!isSavedSource ? "default" : "outline"}
+                      size="sm"
+                      className="rounded-full"
+                      onClick={() => {
+                        setCardSource("new");
+                        setPaymentError(null);
+                      }}
+                      disabled={paymentLoading}
+                    >
+                      New card
+                    </Button>
+                    {savedMethods.length > 0 && (
+                      <Button
+                        variant={isSavedSource ? "default" : "outline"}
+                        size="sm"
+                        className="rounded-full"
+                        onClick={() => {
+                          setCardSource("saved");
+                          setPaymentError(null);
+                        }}
+                        disabled={paymentLoading}
+                      >
+                        Saved card
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                {savedMethodsError && (
+                  <p className="text-xs text-destructive">{savedMethodsError}</p>
+                )}
+
+                {paymentMode === "card" && isSavedSource && (
+                  <div className="space-y-3">
+                    {savedMethodsLoading && (
+                      <p className="text-sm text-muted-foreground">Loading saved cards...</p>
+                    )}
+                    {!savedMethodsLoading && savedMethods.length === 0 && (
+                      <p className="text-sm text-muted-foreground">No saved cards yet.</p>
+                    )}
+                    {!savedMethodsLoading &&
+                      savedMethods.map((method) => {
+                        const isSelected = method.id === selectedSavedMethodId;
+                        return (
+                          <label
+                            key={method.id}
+                            className={`flex items-center justify-between rounded-xl border p-3 cursor-pointer transition-colors ${
+                              isSelected ? "border-primary bg-primary/5" : "hover:border-primary/60"
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name="saved-promo-payment-method"
+                              className="sr-only"
+                              checked={isSelected}
+                              onChange={() => {
+                                setSelectedSavedMethodId(method.id);
+                                setPaymentError(null);
+                              }}
+                            />
+                            <div className="flex items-center gap-3">
+                              <div className="h-10 w-10 rounded-lg bg-muted flex items-center justify-center">
+                                <CreditCard className="h-5 w-5 text-muted-foreground" />
+                              </div>
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2 text-sm font-medium">
+                                  <span>
+                                    {method.brand} ending in {method.last4}
+                                  </span>
+                                  {method.is_default && (
+                                    <Badge variant="secondary" className="text-[10px]">
+                                      Default
+                                    </Badge>
+                                  )}
+                                </div>
+                                <p className="text-xs text-muted-foreground">
+                                  Expires {String(method.exp_month ?? "--").padStart(2, "0")}/
+                                  {method.exp_year ?? "--"}
+                                </p>
+                              </div>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    {!savedMethodsLoading &&
+                      savedMethods.length > 0 &&
+                      !selectedSavedMethod &&
+                      !paymentLoading && (
+                        <p className="text-xs text-destructive">
+                          Select a saved card to continue.
+                        </p>
+                      )}
+                  </div>
+                )}
+
                 <div className="space-y-2">
                   <Label htmlFor="cardholderName">Cardholder name</Label>
                   <Input
@@ -510,12 +825,18 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
                     onChange={handlePaymentInputChange}
                     placeholder="Jane Doe"
                     className="rounded-xl"
+                    disabled={cardFieldsDisabled}
                   />
                 </div>
                 <div className="space-y-2">
                   <Label>Card details</Label>
                   <div className="rounded-xl border border-input bg-background px-3 py-3 focus-within:ring-2 focus-within:ring-ring transition-shadow">
-                    <CardElement options={cardElementOptions} />
+                    <CardElement
+                      options={{
+                        ...cardElementOptions,
+                        disabled: cardFieldsDisabled,
+                      }}
+                    />
                   </div>
                 </div>
               </CardContent>
@@ -526,7 +847,11 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
                 <CardTitle>Billing address</CardTitle>
               </CardHeader>
               <CardContent
-                className={`space-y-4 ${cardDisabled ? "opacity-60 pointer-events-none" : ""}`}
+                className={`space-y-4 ${
+                  cardFieldsDisabled || paymentMode !== "card"
+                    ? "opacity-60 pointer-events-none"
+                    : ""
+                }`}
               >
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
@@ -538,6 +863,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
                       onChange={handlePaymentInputChange}
                       placeholder="Edmonton"
                       className="rounded-xl"
+                      disabled={cardFieldsDisabled}
                     />
                   </div>
                   <div className="space-y-2">
@@ -549,6 +875,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
                       onChange={handlePaymentInputChange}
                       placeholder="T5A 0A1"
                       className="rounded-xl"
+                      disabled={cardFieldsDisabled}
                     />
                   </div>
                 </div>
@@ -562,12 +889,14 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
                       onChange={handlePaymentInputChange}
                       placeholder="Alberta"
                       className="rounded-xl"
+                      disabled={cardFieldsDisabled}
                     />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="country">Country</Label>
                     <Select
                       value={paymentForm.country}
+                      disabled={cardFieldsDisabled}
                       onValueChange={(value) => setPaymentForm((prev) => ({ ...prev, country: value }))}
                     >
                       <SelectTrigger className="rounded-xl">
@@ -583,16 +912,18 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
 
                 <Separator />
 
-                <div className="flex items-center space-x-2">
-                  <Checkbox
-                    id="savePaymentMethod"
-                    checked={savePaymentMethod}
-                    onCheckedChange={(checked) => setSavePaymentMethod(checked === true)}
-                  />
-                  <Label htmlFor="savePaymentMethod" className="cursor-pointer text-sm">
-                    Save payment method for future promotions
-                  </Label>
-                </div>
+                {paymentMode === "card" && !isSavedSource && (
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="savePaymentMethod"
+                      checked={savePaymentMethod}
+                      onCheckedChange={(checked) => setSavePaymentMethod(checked === true)}
+                    />
+                    <Label htmlFor="savePaymentMethod" className="cursor-pointer text-sm">
+                      Save payment method for future promotions
+                    </Label>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -625,12 +956,19 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
                   onClick={handlePayment}
                   className="w-full rounded-full"
                   size="lg"
-                  disabled={paymentLoading || (paymentMode === "earnings" && !canPayWithEarnings)}
+                  disabled={
+                    paymentLoading ||
+                    (paymentMode === "earnings" && !canPayWithEarnings) ||
+                    (paymentMode === "card" && isSavedSource && (!selectedSavedMethod || savedMethodsLoading))
+                  }
                 >
                   {paymentLoading ? "Processing..." : "Complete payment"}
                 </Button>
                 <Button
-                  onClick={() => setStep("schedule")}
+                  onClick={() => {
+                    resetPaymentStepState();
+                    setStep("schedule");
+                  }}
                   variant="outline"
                   className="w-full rounded-full"
                 >
@@ -691,7 +1029,10 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
     step === "schedule"
       ? onBack
       : step === "payment"
-        ? () => setStep("schedule")
+        ? () => {
+            resetPaymentStepState();
+            setStep("schedule");
+          }
         : onBack;
 
   const backLabel =

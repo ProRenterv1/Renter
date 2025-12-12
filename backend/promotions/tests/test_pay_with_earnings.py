@@ -11,8 +11,8 @@ from rest_framework.test import APIClient
 from bookings.models import Booking
 from listings.models import Listing
 from listings.services import compute_booking_totals
-from payments.ledger import compute_owner_available_balance, log_transaction
-from payments.models import Transaction
+from payments.ledger import log_transaction
+from payments.models import OwnerPayoutAccount, Transaction
 from promotions.models import PromotedSlot
 
 User = get_user_model()
@@ -106,6 +106,27 @@ def test_pay_with_earnings_success(monkeypatch, seeded_earnings, owner_user, lis
         "promotions.api.ensure_stripe_customer",
         lambda *args, **kwargs: pytest.fail("Should not create stripe customer for earnings path"),
     )
+    monkeypatch.setattr(
+        "promotions.api.transfer_earnings_to_platform",
+        lambda **kwargs: "tr_promo_success",
+    )
+    payout_account, _ = OwnerPayoutAccount.objects.get_or_create(
+        user=owner_user,
+        defaults={
+            "stripe_account_id": "acct_earnings_success",
+            "payouts_enabled": True,
+            "charges_enabled": True,
+        },
+    )
+    payout_account.stripe_account_id = payout_account.stripe_account_id or "acct_earnings_success"
+    payout_account.payouts_enabled = True
+    payout_account.charges_enabled = True
+    payout_account.save(update_fields=["stripe_account_id", "payouts_enabled", "charges_enabled"])
+    monkeypatch.setattr("promotions.api.ensure_connect_account", lambda user: payout_account)
+    monkeypatch.setattr(
+        "promotions.api.get_connect_available_balance",
+        lambda _acct: Decimal("50.00"),
+    )
 
     response = api_client.post(url, data=payload, format="json")
     assert response.status_code == 201, response.content
@@ -123,16 +144,14 @@ def test_pay_with_earnings_success(monkeypatch, seeded_earnings, owner_user, lis
         kind=Transaction.Kind.PROMOTION_CHARGE,
     )
     assert Decimal(promo_txn.amount) == Decimal("31.50")
-
-    earning_txn = Transaction.objects.get(
-        user=owner_user,
-        promotion_slot=slot,
-        kind=Transaction.Kind.OWNER_EARNING,
+    assert (
+        Transaction.objects.filter(
+            user=owner_user,
+            promotion_slot=slot,
+            kind=Transaction.Kind.OWNER_EARNING,
+        ).count()
+        == 0
     )
-    assert Decimal(earning_txn.amount) == Decimal("-31.50")
-
-    available_after = compute_owner_available_balance(owner_user)
-    assert available_after == Decimal("18.50")
 
 
 @pytest.mark.django_db
@@ -147,6 +166,27 @@ def test_pay_with_earnings_insufficient_balance(monkeypatch, seeded_earnings, ow
     monkeypatch.setattr(
         "promotions.api.compute_owner_available_balance",
         lambda user: Decimal("10.00"),
+    )
+    monkeypatch.setattr(
+        "promotions.api.transfer_earnings_to_platform",
+        lambda **kwargs: pytest.fail("should not transfer with insufficient balance"),
+    )
+    payout_account, _ = OwnerPayoutAccount.objects.get_or_create(
+        user=owner_user,
+        defaults={
+            "stripe_account_id": "acct_earnings_low",
+            "payouts_enabled": True,
+            "charges_enabled": True,
+        },
+    )
+    payout_account.stripe_account_id = payout_account.stripe_account_id or "acct_earnings_low"
+    payout_account.payouts_enabled = True
+    payout_account.charges_enabled = True
+    payout_account.save(update_fields=["stripe_account_id", "payouts_enabled", "charges_enabled"])
+    monkeypatch.setattr("promotions.api.ensure_connect_account", lambda user: payout_account)
+    monkeypatch.setattr(
+        "promotions.api.get_connect_available_balance",
+        lambda _acct: Decimal("10.00"),
     )
     response = api_client.post(url, data=payload, format="json")
 

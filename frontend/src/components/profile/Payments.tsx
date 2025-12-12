@@ -288,7 +288,7 @@ export function Payments() {
   };
 
   const transactions = useMemo(() => {
-    return history.map((txn) => {
+    return history.filter((txn) => txn.kind !== "DAMAGE_DEPOSIT_CAPTURE").map((txn) => {
       const date = txn.created_at
         ? new Date(txn.created_at).toLocaleDateString(undefined, {
             year: "numeric",
@@ -298,7 +298,9 @@ export function Payments() {
         : "";
 
       let description = txn.kind;
-      if (txn.kind === "OWNER_EARNING" && txn.listing_title) {
+      if (txn.kind === "BOOKING_CHARGE") {
+        description = "Booking charge";
+      } else if (txn.kind === "OWNER_EARNING" && txn.listing_title) {
         description = `Owner earning – ${txn.listing_title}`;
       } else if (txn.kind === "REFUND") {
         description = "Refund";
@@ -310,9 +312,8 @@ export function Payments() {
         description = "Promotion payment";
       }
 
-      const amountNumber = Number(txn.amount || "0");
-      const signed =
-        txn.kind === "PROMOTION_CHARGE" ? -Math.abs(amountNumber) : amountNumber;
+      const amountNumber = Math.abs(Number(txn.amount || "0"));
+      const signed = txn.direction === "debit" ? -amountNumber : amountNumber;
 
       return {
         id: txn.id,

@@ -12,6 +12,7 @@ from rest_framework.test import APIClient
 from bookings import api as bookings_api
 from bookings.models import Booking
 from listings.models import Listing
+from payments.models import PaymentMethod
 from payments_cancellation_policy import CancellationSettlement
 
 pytestmark = pytest.mark.django_db
@@ -189,18 +190,18 @@ def test_pay_booking_renter_only_and_status_transition(
     )
 
     ensure_calls: list[tuple[int, str | None]] = []
-    payment_calls: list[tuple[int, str, str]] = []
+    charge_calls: list[tuple[int, str, str]] = []
 
     def fake_ensure(user, customer_id=None):
         ensure_calls.append((user.id, customer_id))
         return customer_id or "cus_generated"
 
     def fake_create(*, booking, customer_id, payment_method_id):
-        payment_calls.append((booking.id, customer_id, payment_method_id))
-        return "pi_charge_pay", "pi_deposit_pay"
+        charge_calls.append((booking.id, customer_id, payment_method_id))
+        return "pi_charge_pay"
 
     monkeypatch.setattr(bookings_api, "ensure_stripe_customer", fake_ensure)
-    monkeypatch.setattr(bookings_api, "create_booking_payment_intents", fake_create)
+    monkeypatch.setattr(bookings_api, "create_booking_charge_intent", fake_create)
 
     receipt_calls: list[tuple[int, int]] = []
     from notifications import tasks as notification_tasks
@@ -241,10 +242,58 @@ def test_pay_booking_renter_only_and_status_transition(
     booking.refresh_from_db()
     assert booking.status == Booking.Status.PAID
     assert booking.charge_payment_intent_id == "pi_charge_pay"
-    assert booking.deposit_hold_id == "pi_deposit_pay"
+    assert booking.deposit_hold_id == ""
+    assert booking.renter_stripe_customer_id == "cus_client"
+    assert booking.renter_stripe_payment_method_id == "pm_pay"
     assert ensure_calls == [(renter_user.id, "cus_client")]
-    assert payment_calls == [(booking.id, "cus_client", "pm_pay")]
+    assert charge_calls == [(booking.id, "cus_client", "pm_pay")]
     assert receipt_calls == [(renter_user.id, booking.id)]
+
+
+def test_pay_booking_with_saved_payment_method(monkeypatch, booking_factory, renter_user):
+    start = date.today() + timedelta(days=3)
+    booking = booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.CONFIRMED,
+    )
+    PaymentMethod.objects.create(
+        user=renter_user,
+        stripe_payment_method_id="pm_saved_card",
+        brand="VISA",
+        last4="4242",
+    )
+
+    ensure_calls: list[tuple[int, str | None]] = []
+    charge_calls: list[tuple[int, str, str]] = []
+
+    def fake_ensure(user, customer_id=None):
+        ensure_calls.append((user.id, customer_id))
+        return "cus_saved"
+
+    def fake_create(*, booking, customer_id, payment_method_id):
+        charge_calls.append((booking.id, customer_id, payment_method_id))
+        return "pi_charge_saved"
+
+    monkeypatch.setattr(bookings_api, "ensure_stripe_customer", fake_ensure)
+    monkeypatch.setattr(bookings_api, "create_booking_charge_intent", fake_create)
+
+    client = _auth_client(renter_user)
+    resp = client.post(
+        f"/api/bookings/{booking.id}/pay/",
+        {"stripe_payment_method_id": "pm_saved_card"},
+        format="json",
+    )
+
+    assert resp.status_code == 200, resp.data
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.PAID
+    assert booking.charge_payment_intent_id == "pi_charge_saved"
+    assert booking.deposit_hold_id == ""
+    assert booking.renter_stripe_customer_id == "cus_saved"
+    assert booking.renter_stripe_payment_method_id == "pm_saved_card"
+    assert ensure_calls == [(renter_user.id, None)]
+    assert charge_calls == [(booking.id, "cus_saved", "pm_saved_card")]
 
 
 def test_pay_requires_confirmed_status(booking_factory, renter_user):

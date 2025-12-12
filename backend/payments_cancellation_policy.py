@@ -7,7 +7,6 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Literal, Mapping, Tuple
 
-from bookings.domain import days_until_start
 from bookings.models import Booking
 
 CancelActor = Literal["renter", "owner", "no_show", "system"]
@@ -112,6 +111,8 @@ def compute_refund_amounts(
     today: date,
 ) -> CancellationSettlement:
     """Return how cash / deposit should settle for a paid booking cancellation."""
+
+    from bookings.domain import days_until_start
 
     totals = booking.totals or {}
     rental_subtotal = _get_total_decimal(totals, "rental_subtotal")

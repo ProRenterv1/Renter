@@ -126,21 +126,13 @@ def test_owner_transfer_created_on_webhook(
     assert booking.status == Booking.Status.PAID
     assert booking.charge_payment_intent_id == "pi_test_123"
 
-    tx = Transaction.objects.get(
+    assert not Transaction.objects.filter(
         user=booking.listing.owner,
         booking=booking,
         kind=Transaction.Kind.OWNER_EARNING,
-    )
-    assert Decimal(tx.amount) == owner_payout
-    assert tx.stripe_id == "tr_test_123"
+    ).exists()
 
-    mock_transfer_create.assert_called_once()
-    _, kwargs = mock_transfer_create.call_args
-    assert kwargs["amount"] == int((owner_payout * 100).quantize(Decimal("1")))
-    assert kwargs["currency"] == "cad"
-    assert kwargs["destination"] == payout_account.stripe_account_id
-    assert kwargs["metadata"]["kind"] == "owner_payout"
-    assert kwargs["metadata"]["booking_id"] == str(booking.id)
+    mock_transfer_create.assert_not_called()
 
 
 @pytest.mark.django_db
@@ -185,7 +177,6 @@ def test_owner_transfer_webhook_idempotent(
         booking=booking,
         kind=Transaction.Kind.OWNER_EARNING,
     )
-    assert txs.count() == 1
-    assert Decimal(txs.first().amount) == owner_payout
+    assert txs.count() == 0
 
-    mock_transfer_create.assert_called_once()
+    mock_transfer_create.assert_not_called()

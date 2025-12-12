@@ -18,7 +18,7 @@ from notifications import tasks as notification_tasks
 from payments.stripe_api import (
     StripePaymentError,
     StripeTransientError,
-    create_booking_payment_intents,
+    create_booking_charge_intent,
 )
 
 from .domain import ensure_no_conflict, is_return_initiated, validate_booking_dates
@@ -295,7 +295,7 @@ class BookingSerializer(serializers.ModelSerializer):
 
             if payment_method_id:
                 try:
-                    charge_id, deposit_id = create_booking_payment_intents(
+                    charge_id = create_booking_charge_intent(
                         booking=booking,
                         customer_id=customer_id,
                         payment_method_id=payment_method_id,
@@ -319,11 +319,13 @@ class BookingSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({"non_field_errors": [message]})
 
                 booking.charge_payment_intent_id = charge_id or ""
-                booking.deposit_hold_id = deposit_id or ""
+                booking.renter_stripe_customer_id = customer_id or ""
+                booking.renter_stripe_payment_method_id = payment_method_id or ""
                 booking.save(
                     update_fields=[
                         "charge_payment_intent_id",
-                        "deposit_hold_id",
+                        "renter_stripe_customer_id",
+                        "renter_stripe_payment_method_id",
                         "updated_at",
                     ]
                 )

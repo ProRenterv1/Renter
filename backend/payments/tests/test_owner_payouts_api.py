@@ -89,6 +89,7 @@ def test_owner_payouts_summary_returns_balances(owner_user, booking_factory, mon
         account_number="000123456789",
     )
     monkeypatch.setattr(payments_api, "ensure_connect_account", lambda user: payout_account)
+    monkeypatch.setattr("payments.stripe_api._get_stripe_api_key", lambda: "sk_test_summary")
 
     client = _auth_client(owner_user)
     resp = client.get("/api/owner/payouts/summary/")
@@ -257,6 +258,57 @@ def test_owner_payouts_update_bank_details(owner_user, monkeypatch):
     assert connect["bank_details"]["account_last4"] == "4567"
     assert connect["bank_details"]["transit_number"] == "10010"
     assert connect["bank_details"]["institution_number"] == "004"
+
+
+def test_history_for_renter_excludes_deposit_capture_and_signs_charge_negative(
+    renter_user,
+    booking_factory,
+):
+    booking = booking_factory(
+        start_date=date.today(),
+        end_date=date.today() + timedelta(days=1),
+        status=Booking.Status.PAID,
+    )
+    log_transaction(
+        user=renter_user,
+        booking=booking,
+        kind=Transaction.Kind.BOOKING_CHARGE,
+        amount=Decimal("165.00"),
+    )
+    log_transaction(
+        user=renter_user,
+        booking=booking,
+        kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE,
+        amount=Decimal("250.00"),
+    )
+    log_transaction(
+        user=renter_user,
+        booking=booking,
+        kind=Transaction.Kind.DAMAGE_DEPOSIT_RELEASE,
+        amount=Decimal("250.00"),
+    )
+
+    client = _auth_client(renter_user)
+    resp = client.get("/api/owner/payouts/history/")
+
+    assert resp.status_code == 200, resp.data
+    kinds = [row["kind"] for row in resp.data["results"]]
+    assert Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE not in kinds
+    assert Transaction.Kind.BOOKING_CHARGE in kinds
+
+    charge_row = next(
+        row for row in resp.data["results"] if row["kind"] == Transaction.Kind.BOOKING_CHARGE
+    )
+    assert charge_row["amount"] == "-165.00"
+    assert charge_row["direction"] == "debit"
+
+    release_row = next(
+        row
+        for row in resp.data["results"]
+        if row["kind"] == Transaction.Kind.DAMAGE_DEPOSIT_RELEASE
+    )
+    assert release_row["amount"] == "250.00"
+    assert release_row["direction"] == "credit"
 
 
 def test_owner_payouts_update_bank_details_requires_fields(owner_user, monkeypatch):
