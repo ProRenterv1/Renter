@@ -72,6 +72,9 @@ export interface ConversationDetail {
   listing_title: string;
   listing_primary_photo_url?: string | null;
   is_active: boolean;
+  other_party_name: string;
+  other_party_avatar_url?: string | null;
+  other_party_identity_verified?: boolean;
   messages: ChatMessage[];
 }
 
