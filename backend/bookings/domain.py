@@ -2,15 +2,31 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal, Optional
 
+import stripe
 from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.utils import timezone
 
 from listings.models import Listing
+from notifications import tasks as notification_tasks
+from payments.ledger import log_transaction
+from payments.models import Transaction
+from payments.stripe_api import (
+    _get_stripe_api_key,
+    _handle_stripe_error,
+    _to_cents,
+    ensure_connect_account,
+)
+from payments_refunds import get_platform_ledger_user
 
 from .models import Booking, BookingPhoto
+
+logger = logging.getLogger(__name__)
 
 # Statuses that block dates for availability and conflict detection.
 # Plain requested bookings remain allowed to overlap.
@@ -205,3 +221,132 @@ def mark_canceled(
     if reason:
         booking.canceled_reason = reason
     booking.auto_canceled = auto
+
+
+def settle_and_cancel_for_deposit_failure(booking: Booking) -> None:
+    """
+    Cancel a booking and settle funds when deposit authorization fails twice.
+    Refund 50% to renter, pay 30% to owner, keep 20% for platform.
+    """
+
+    if booking.status == Booking.Status.CANCELED:
+        return
+
+    totals = booking.totals or {}
+
+    def _safe_decimal(value) -> Decimal:
+        try:
+            return Decimal(str(value))
+        except Exception:
+            return Decimal("0")
+
+    def _money(value: Decimal) -> Decimal:
+        return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    rental_subtotal = _money(_safe_decimal(totals.get("rental_subtotal", "0")))
+    service_fee_value = totals.get("service_fee", totals.get("renter_fee", "0"))
+    service_fee = _money(_safe_decimal(service_fee_value))
+    charge_amount = _money(rental_subtotal + service_fee)
+
+    reason = "Insufficient funds for damage deposit"
+    refund_amount = _money(charge_amount * Decimal("0.5"))
+    owner_amount = _money(charge_amount * Decimal("0.3"))
+    platform_amount = _money(charge_amount - refund_amount - owner_amount)
+
+    charge_intent_id = (booking.charge_payment_intent_id or "").strip()
+
+    stripe.api_key = _get_stripe_api_key()
+
+    refund_id: str | None = None
+    if charge_intent_id and refund_amount > Decimal("0"):
+        try:
+            refund = stripe.Refund.create(
+                payment_intent=charge_intent_id,
+                amount=_to_cents(refund_amount),
+                idempotency_key=(
+                    f"booking:{booking.id}:deposit_fail:refund:{_to_cents(refund_amount)}"
+                ),
+            )
+            refund_id = getattr(refund, "id", None)
+        except stripe.error.StripeError as exc:
+            _handle_stripe_error(exc)
+
+    owner_transfer_id: str | None = None
+    if owner_amount > Decimal("0"):
+        owner = getattr(booking, "owner", None)
+        if owner:
+            payout_account = ensure_connect_account(owner)
+            if payout_account.stripe_account_id and payout_account.payouts_enabled:
+                try:
+                    transfer = stripe.Transfer.create(
+                        amount=_to_cents(owner_amount),
+                        currency="cad",
+                        destination=payout_account.stripe_account_id,
+                        description=f"Deposit failure payout for booking #{booking.id}",
+                        metadata={
+                            "kind": "owner_payout_deposit_failure",
+                            "booking_id": str(booking.id),
+                            "listing_id": str(booking.listing_id),
+                        },
+                        transfer_group=f"booking:{booking.id}:deposit_failure",
+                        idempotency_key=(
+                            f"booking:{booking.id}:deposit_fail:owner:{_to_cents(owner_amount)}"
+                        ),
+                    )
+                    owner_transfer_id = getattr(transfer, "id", None)
+                except stripe.error.StripeError as exc:
+                    _handle_stripe_error(exc)
+
+    with transaction.atomic():
+        mark_canceled(booking, actor="system", auto=True, reason=reason)
+        booking.save(
+            update_fields=[
+                "status",
+                "canceled_by",
+                "canceled_reason",
+                "auto_canceled",
+                "updated_at",
+            ]
+        )
+
+        if refund_amount > Decimal("0"):
+            log_transaction(
+                user=booking.renter,
+                booking=booking,
+                kind=Transaction.Kind.REFUND,
+                amount=refund_amount,
+                stripe_id=refund_id or charge_intent_id or None,
+            )
+
+        if owner_amount > Decimal("0") and owner_transfer_id:
+            owner = booking.owner
+            log_transaction(
+                user=owner,
+                booking=booking,
+                kind=Transaction.Kind.OWNER_EARNING,
+                amount=owner_amount,
+                stripe_id=owner_transfer_id,
+            )
+
+        if platform_amount > Decimal("0"):
+            platform_user = get_platform_ledger_user()
+            if platform_user:
+                log_transaction(
+                    user=platform_user,
+                    booking=booking,
+                    kind=Transaction.Kind.PLATFORM_FEE,
+                    amount=platform_amount,
+                )
+
+    try:
+        notification_tasks.send_deposit_failed_renter.delay(booking.id, f"{refund_amount:.2f}")
+    except Exception:
+        logger.info(
+            "notifications: failed to queue deposit_failed_renter for booking %s", booking.id
+        )
+    try:
+        notification_tasks.send_deposit_failed_owner.delay(booking.id, f"{owner_amount:.2f}")
+    except Exception:
+        logger.info(
+            "notifications: failed to queue deposit_failed_owner for booking %s", booking.id
+        )

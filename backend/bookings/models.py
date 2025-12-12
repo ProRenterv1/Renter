@@ -54,6 +54,24 @@ class Booking(models.Model):
         help_text="Stripe PaymentIntent ID for the rental charge (base + renter fee).",
     )
     deposit_hold_id = models.CharField(max_length=120, blank=True, default="")
+    renter_stripe_customer_id = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Cached Stripe customer id used for charges/deposit holds.",
+    )
+    renter_stripe_payment_method_id = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Payment method id to reuse for deposit authorization.",
+    )
+    deposit_attempt_count = models.PositiveIntegerField(default=0)
+    deposit_authorized_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When a damage deposit authorization succeeded.",
+    )
     is_disputed = models.BooleanField(
         default=False,
         help_text="True when at least one dispute case is open for this booking.",

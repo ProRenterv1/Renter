@@ -298,6 +298,11 @@ export interface PromotionPricingResponse {
   price_per_day_cents: number;
 }
 
+export interface PromotionAvailabilityRange {
+  start_date: string;
+  end_date: string;
+}
+
 export interface PromotionPaymentPayload {
   listing_id: number;
   promotion_start: string;
@@ -345,6 +350,7 @@ export interface OwnerPayoutBalances {
   net_earnings: string;
   last_30_days_net: string;
   available_earnings: string;
+  connect_available_earnings?: string | null;
 }
 
 export interface OwnerPayoutConnect {
@@ -1161,6 +1167,12 @@ export const promotionsAPI = {
   fetchPromotionPricing(listingId: number) {
     const search = new URLSearchParams({ listing_id: String(listingId) }).toString();
     return jsonFetch<PromotionPricingResponse>(`/promotions/pricing/?${search}`, {
+      method: "GET",
+    });
+  },
+  availability(listingId: number) {
+    const search = new URLSearchParams({ listing_id: String(listingId) }).toString();
+    return jsonFetch<PromotionAvailabilityRange[]>(`/promotions/availability/?${search}`, {
       method: "GET",
     });
   },

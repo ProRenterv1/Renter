@@ -44,17 +44,22 @@ def test_payment_methods_list_is_scoped_to_user(renter_user, other_user):
     assert len(resp.data) == 1
     result = resp.data[0]
     assert result["id"] == user_pm.id
+    assert result["stripe_payment_method_id"] == "pm_user"
     assert result["last4"] == "4242"
     assert result["is_default"] is True
-    assert "stripe_payment_method_id" not in result
 
 
 def test_create_payment_method_attaches_and_sets_default(monkeypatch, renter_user, settings):
     settings.STRIPE_SECRET_KEY = "sk_test"
 
+    customer_calls = {"count": 0}
     attach_calls = {"called": False, "customer_id": None, "payment_method_id": None}
 
-    monkeypatch.setattr(payment_methods_api, "ensure_stripe_customer", lambda user: "cus_123")
+    def _fake_customer(user):
+        customer_calls["count"] += 1
+        return "cus_123"
+
+    monkeypatch.setattr(payment_methods_api, "ensure_stripe_customer", _fake_customer)
 
     def _fake_attach(payment_method_id: str, customer_id: str):
         attach_calls["called"] = True
@@ -81,6 +86,7 @@ def test_create_payment_method_attaches_and_sets_default(monkeypatch, renter_use
     )
 
     assert resp.status_code == 201, resp.data
+    assert customer_calls["count"] == 1
     assert attach_calls["called"] is True
     assert attach_calls["customer_id"] == "cus_123"
     assert attach_calls["payment_method_id"] == "pm_new"
@@ -89,8 +95,10 @@ def test_create_payment_method_attaches_and_sets_default(monkeypatch, renter_use
     assert pm.is_default is True
     assert pm.brand == "VISA"
     assert pm.last4 == "1111"
+    assert pm.exp_month == 12
+    assert pm.exp_year == 2030
     assert resp.data["brand"] == "VISA"
-    assert "stripe_payment_method_id" not in resp.data
+    assert resp.data["stripe_payment_method_id"] == "pm_new"
 
 
 def test_set_default_updates_flags(renter_user):
@@ -119,6 +127,8 @@ def test_set_default_updates_flags(renter_user):
     assert pm2.is_default is True
     assert resp.data["id"] == pm2.id
     assert resp.data["is_default"] is True
+    assert resp.data["stripe_payment_method_id"] == pm2.stripe_payment_method_id
+    assert PaymentMethod.objects.filter(user=renter_user, is_default=True).count() == 1
 
 
 def test_delete_payment_method_detaches_best_effort(monkeypatch, renter_user, settings):
@@ -132,7 +142,7 @@ def test_delete_payment_method_detaches_best_effort(monkeypatch, renter_user, se
         is_default=True,
     )
 
-    detach_calls = {"count": 0}
+    detach_calls = {"count": 0, "last_id": None}
 
     class DummyStripeError(stripe.error.StripeError):
         def __init__(self, msg="boom", *args):
@@ -142,6 +152,7 @@ def test_delete_payment_method_detaches_best_effort(monkeypatch, renter_user, se
         @staticmethod
         def detach(payment_method_id: str):
             detach_calls["count"] += 1
+            detach_calls["last_id"] = payment_method_id
             raise DummyStripeError("fail")
 
     monkeypatch.setattr(payment_methods_api.stripe, "PaymentMethod", DummyPaymentMethod)
@@ -152,3 +163,4 @@ def test_delete_payment_method_detaches_best_effort(monkeypatch, renter_user, se
     assert resp.status_code == 204
     assert PaymentMethod.objects.filter(id=pm.id).count() == 0
     assert detach_calls["count"] == 1
+    assert detach_calls["last_id"] == "pm_delete"

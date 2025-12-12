@@ -89,21 +89,32 @@ def test_create_booking_payment_intents_logs_transactions(monkeypatch, settings)
     payment_intent_mock = type("MockPI", (), {"create": staticmethod(fake_create)})
     monkeypatch.setattr(stripe_api.stripe, "PaymentIntent", payment_intent_mock)
 
-    charge_id, deposit_id = stripe_api.create_booking_payment_intents(
+    charge_id = stripe_api.create_booking_charge_intent(
         booking=booking,
-        customer_id="",
+        customer_id="cus_mock",
         payment_method_id="pm_mock",
     )
 
     charge_txn = Transaction.objects.get(kind=Transaction.Kind.BOOKING_CHARGE)
-    deposit_txn = Transaction.objects.get(kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE)
-    assert Transaction.objects.count() == 2
+    assert Transaction.objects.count() == 1
     assert charge_txn.amount == Decimal("100.00")
-    assert deposit_txn.amount == Decimal("15.00")
     assert charge_txn.stripe_id == charge_id
-    assert deposit_txn.stripe_id == deposit_id
 
     assert booking.charge_payment_intent_id == charge_id
+    assert booking.deposit_hold_id == ""
+    assert create_calls["count"] == 1
+
+    deposit_id = stripe_api.create_booking_deposit_hold_intent(
+        booking=booking,
+        customer_id="cus_mock",
+        payment_method_id="pm_mock",
+    )
+
+    deposit_txn = Transaction.objects.get(kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE)
+    assert Transaction.objects.count() == 2
+    assert deposit_txn.amount == Decimal("15.00")
+    assert deposit_txn.stripe_id == deposit_id
+
     assert booking.deposit_hold_id == deposit_id
     assert create_calls["count"] == 2
 
@@ -112,9 +123,9 @@ def test_create_booking_payment_intents_logs_transactions(monkeypatch, settings)
     assert booking.deposit_hold_id == deposit_id
 
     # Second invocation should reuse intents and not create duplicate ledger entries.
-    stripe_api.create_booking_payment_intents(
+    stripe_api.create_booking_deposit_hold_intent(
         booking=booking,
-        customer_id="",
+        customer_id="cus_mock",
         payment_method_id="pm_mock",
     )
 

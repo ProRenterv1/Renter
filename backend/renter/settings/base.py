@@ -199,6 +199,10 @@ CELERY_BEAT_SCHEDULE.update(
             "task": "bookings.auto_release_deposits",
             "schedule": crontab(minute=0),  # every hour on the hour
         },
+        "bookings_authorize_start_day_deposits": {
+            "task": "bookings.enqueue_deposit_authorizations",
+            "schedule": crontab(minute="*/15"),  # every 15 minutes
+        },
         "disputes_auto_flag_unanswered_rebuttals_hourly": {
             "task": "disputes.auto_flag_unanswered_rebuttals",
             "schedule": crontab(minute=0),  # every hour on the hour

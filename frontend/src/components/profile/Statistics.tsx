@@ -78,6 +78,10 @@ export function Statistics() {
 
   const unpaidSinceLastPayout = useMemo(() => {
     if (!summary) return 0;
+    const connectBalance = summary.balances.connect_available_earnings;
+    if (connectBalance !== undefined && connectBalance !== null) {
+      return parseMoney(connectBalance || "0");
+    }
     return parseMoney(summary.balances.available_earnings || "0");
   }, [summary]);
 
@@ -104,6 +108,27 @@ export function Statistics() {
     return seen.size;
   }, [history, completedStatusLabels]);
 
+  const normalizedHistory = useMemo(() => {
+    return history
+      .filter(
+        (row) =>
+          row.kind !== "DAMAGE_DEPOSIT_CAPTURE" && row.kind !== "DAMAGE_DEPOSIT_RELEASE",
+      )
+      .map((row) => {
+        const amount = parseMoney(row.amount || "0");
+        const signed =
+          row.kind === "PROMOTION_CHARGE" && row.stripe_id
+            ? 0
+            : (row.direction === "debit" ? -1 : 1) * amount;
+        return {
+          ...row,
+          signedAmount: signed,
+          createdDate: new Date(row.created_at),
+        };
+      })
+      .sort((a, b) => a.createdDate.getTime() - b.createdDate.getTime());
+  }, [history]);
+
   const { monthlyData, rentalData } = useMemo(() => {
     const now = new Date();
     const months: { key: string; label: string }[] = [];
@@ -115,52 +140,77 @@ export function Statistics() {
       months.push({ key, label });
     }
 
-    const incomeByMonth = new Map<string, { profit: number; count: number }>();
-    months.forEach((m) => incomeByMonth.set(m.key, { profit: 0, count: 0 }));
+    const endBalanceByMonth = new Map<string, number>();
+    months.forEach((m) => endBalanceByMonth.set(m.key, 0));
 
     const bookingCountByMonth = new Map<string, Set<number>>();
     months.forEach((m) => bookingCountByMonth.set(m.key, new Set<number>()));
 
-    for (const row of history) {
-      const dt = new Date(row.created_at);
-      const key = `${dt.getFullYear()}-${dt.getMonth()}`;
-      if (!incomeByMonth.has(key)) continue;
+    let runningBalance = 0;
+    let idx = 0;
 
-      const bucket = incomeByMonth.get(key)!;
-      const amt = Number(row.amount || "0");
+    for (const m of months) {
+      while (idx < normalizedHistory.length) {
+        const row = normalizedHistory[idx];
+        const dt = row.createdDate;
+        const key = `${dt.getFullYear()}-${dt.getMonth()}`;
+        if (key !== m.key) break;
+        runningBalance += row.signedAmount;
 
-      let signed = amt;
-      if (row.kind === "PROMOTION_CHARGE" && row.stripe_id) {
-        // Card-paid promotion shouldn't affect profit
-        signed = 0;
+        if (
+          row.booking_id &&
+          row.booking_status &&
+          completedStatusLabels.some((label) =>
+            row.booking_status?.toLowerCase().includes(label),
+          ) &&
+          row.kind === "OWNER_EARNING"
+        ) {
+          const set = bookingCountByMonth.get(m.key);
+          if (set) {
+            set.add(row.booking_id);
+          }
+        }
+        idx += 1;
       }
+      endBalanceByMonth.set(m.key, Math.round(runningBalance * 100) / 100);
+    }
 
-      bucket.profit += signed;
-
+    while (idx < normalizedHistory.length) {
+      const row = normalizedHistory[idx];
+      const dt = row.createdDate;
+      const key = `${dt.getFullYear()}-${dt.getMonth()}`;
+      runningBalance += row.signedAmount;
+      const set = bookingCountByMonth.get(key);
       if (
+        set &&
         row.booking_id &&
         row.booking_status &&
-        completedStatusLabels.some((label) => row.booking_status?.toLowerCase().includes(label)) &&
+        completedStatusLabels.some((label) =>
+          row.booking_status?.toLowerCase().includes(label),
+        ) &&
         row.kind === "OWNER_EARNING"
       ) {
-        const set = bookingCountByMonth.get(key);
-        if (set) {
-          set.add(row.booking_id);
-        }
+        set.add(row.booking_id);
       }
+      idx += 1;
+    }
+
+    const latestKey = months[months.length - 1]?.key;
+    if (latestKey && endBalanceByMonth.has(latestKey)) {
+      endBalanceByMonth.set(latestKey, Math.round(runningBalance * 100) / 100);
     }
 
     return {
       monthlyData: months.map((m) => ({
         month: m.label,
-        profit: Math.round((incomeByMonth.get(m.key)?.profit || 0) * 100) / 100,
+        profit: endBalanceByMonth.get(m.key) ?? 0,
       })),
       rentalData: months.map((m) => ({
         month: m.label,
         count: bookingCountByMonth.get(m.key)?.size || 0,
       })),
     };
-  }, [history]);
+  }, [normalizedHistory, completedStatusLabels]);
 
   return (
     <div className="space-y-6">
@@ -189,7 +239,7 @@ export function Statistics() {
               {loading ? <Skeleton className="h-6 w-20" /> : formatCurrency(unpaidSinceLastPayout)}
             </div>
             <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-              Earnings available after last payout (net of deposits/promo spend)
+              Balance currently available in your Stripe Connect account
             </p>
           </CardContent>
         </Card>

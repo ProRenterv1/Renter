@@ -770,3 +770,73 @@ def send_dispute_rebuttal_ended_email(dispute_id: int, recipient_id: int):
         context,
         getattr(user, "email", None),
     )
+
+
+@shared_task(queue="emails")
+def send_deposit_failed_renter(booking_id: int, refund_amount: str):
+    """Notify renter that booking was canceled due to failed deposit auth."""
+    from bookings.models import Booking
+
+    try:
+        booking = Booking.objects.select_related("listing", "owner", "renter").get(pk=booking_id)
+    except Booking.DoesNotExist:
+        logger.warning("notifications: booking %s no longer exists", booking_id)
+        return
+
+    renter = booking.renter
+    listing_title = getattr(booking.listing, "title", "your booking")
+    start_display, end_display, date_range_display = _format_booking_date_range(
+        getattr(booking, "start_date", None),
+        getattr(booking, "end_date", None),
+    )
+    context = {
+        "booking": booking,
+        "listing_title": listing_title,
+        "renter": renter,
+        "refund_amount": refund_amount,
+        "start_date_display": start_display,
+        "end_date_display": end_display,
+        "date_range_display": date_range_display,
+    }
+    _send_email(
+        "Booking canceled: deposit could not be authorized",
+        "deposit_failed_renter.txt",
+        context,
+        getattr(renter, "email", None),
+    )
+    _send_sms("deposit_failed_renter.txt", context, getattr(renter, "phone", None))
+
+
+@shared_task(queue="emails")
+def send_deposit_failed_owner(booking_id: int, owner_amount: str):
+    """Notify owner that booking was canceled due to renter deposit failure."""
+    from bookings.models import Booking
+
+    try:
+        booking = Booking.objects.select_related("listing", "owner", "renter").get(pk=booking_id)
+    except Booking.DoesNotExist:
+        logger.warning("notifications: booking %s no longer exists", booking_id)
+        return
+
+    owner = booking.owner
+    listing_title = getattr(booking.listing, "title", "your listing")
+    start_display, end_display, date_range_display = _format_booking_date_range(
+        getattr(booking, "start_date", None),
+        getattr(booking, "end_date", None),
+    )
+    context = {
+        "booking": booking,
+        "listing_title": listing_title,
+        "owner": owner,
+        "owner_amount": owner_amount,
+        "start_date_display": start_display,
+        "end_date_display": end_display,
+        "date_range_display": date_range_display,
+    }
+    _send_email(
+        "Booking canceled: renter deposit failed",
+        "deposit_failed_owner.txt",
+        context,
+        getattr(owner, "email", None),
+    )
+    _send_sms("deposit_failed_owner.txt", context, getattr(owner, "phone", None))

@@ -28,7 +28,7 @@ from payments.stripe_api import (
     StripePaymentError,
     StripeTransientError,
     capture_deposit_amount,
-    create_booking_payment_intents,
+    create_booking_charge_intent,
     create_late_fee_payment_intent,
     ensure_stripe_customer,
 )
@@ -1016,7 +1016,7 @@ class BookingViewSet(viewsets.ModelViewSet):
             return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            charge_id, deposit_id = create_booking_payment_intents(
+            charge_id = create_booking_charge_intent(
                 booking=booking,
                 customer_id=customer_id,
                 payment_method_id=payment_method_id,
@@ -1031,13 +1031,15 @@ class BookingViewSet(viewsets.ModelViewSet):
             return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
 
         booking.charge_payment_intent_id = charge_id or ""
-        booking.deposit_hold_id = deposit_id or ""
+        booking.renter_stripe_customer_id = customer_id or ""
+        booking.renter_stripe_payment_method_id = payment_method_id or ""
         booking.status = Booking.Status.PAID
         booking.save(
             update_fields=[
                 "status",
                 "charge_payment_intent_id",
-                "deposit_hold_id",
+                "renter_stripe_customer_id",
+                "renter_stripe_payment_method_id",
                 "updated_at",
             ]
         )

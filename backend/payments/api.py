@@ -24,6 +24,7 @@ from .stripe_api import (
     create_connect_onboarding_link,
     create_instant_payout,
     ensure_connect_account,
+    get_connect_available_balance,
     update_connect_bank_account,
 )
 
@@ -152,6 +153,14 @@ def owner_payouts_summary(request):
     balances = compute_owner_balances(user)
     available = compute_owner_available_balance(user)
     balances["available_earnings"] = _format_money(available)
+
+    connect_available = None
+    if payout_account is not None:
+        connect_available = get_connect_available_balance(payout_account)
+    if connect_available is not None:
+        balances["connect_available_earnings"] = _format_money(connect_available)
+    else:
+        balances["connect_available_earnings"] = None
     return Response(
         {
             "connect": _connect_payload(payout_account),
@@ -170,7 +179,17 @@ def _history_direction(amount: Decimal) -> str:
 @permission_classes([IsAuthenticated])
 def owner_payouts_history(request):
     """Return paginated ledger rows for owner earnings."""
-    qs = get_owner_history_queryset(request.user).select_related("booking__listing")
+    user = request.user
+    is_owner = bool(getattr(user, "can_list", False))
+
+    if is_owner:
+        qs = get_owner_history_queryset(user)
+    else:
+        # For renters, show their charges/refunds but hide deposit holds.
+        qs = Transaction.objects.filter(user=user).exclude(
+            kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE,
+        )
+    qs = qs.select_related("booking__listing")
     kind_param = request.query_params.get("kind")
     if kind_param:
         qs = qs.filter(kind=kind_param)
@@ -190,9 +209,13 @@ def owner_payouts_history(request):
         listing = getattr(booking, "listing", None) if booking else None
         amount = Decimal(tx.amount)
         direction = _history_direction(amount)
-        if tx.kind == Transaction.Kind.PROMOTION_CHARGE and amount > 0:
+
+        if tx.kind == Transaction.Kind.BOOKING_CHARGE and amount > 0:
             direction = "debit"
-            amount = -amount
+            amount = -abs(amount)
+        elif tx.kind == Transaction.Kind.PROMOTION_CHARGE and amount > 0:
+            direction = "debit"
+            amount = -abs(amount)
         results.append(
             {
                 "id": tx.id,

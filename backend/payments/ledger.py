@@ -62,9 +62,10 @@ def get_owner_history_queryset(user: User):
 
 def compute_owner_available_balance(user: User) -> Decimal:
     """Return the owner's spendable balance based purely on ledger transactions."""
-    total = get_owner_earnings_queryset(user).aggregate(total=Sum("amount")).get(
-        "total"
-    ) or Decimal("0.00")
+    spendable_kinds = [Transaction.Kind.OWNER_EARNING, Transaction.Kind.REFUND]
+    total = Transaction.objects.filter(user=user, kind__in=spendable_kinds).aggregate(
+        total=Sum("amount")
+    ).get("total") or Decimal("0.00")
     return Decimal(total).quantize(TWO_PLACES)
 
 

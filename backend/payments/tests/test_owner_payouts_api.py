@@ -259,6 +259,57 @@ def test_owner_payouts_update_bank_details(owner_user, monkeypatch):
     assert connect["bank_details"]["institution_number"] == "004"
 
 
+def test_history_for_renter_excludes_deposit_capture_and_signs_charge_negative(
+    renter_user,
+    booking_factory,
+):
+    booking = booking_factory(
+        start_date=date.today(),
+        end_date=date.today() + timedelta(days=1),
+        status=Booking.Status.PAID,
+    )
+    log_transaction(
+        user=renter_user,
+        booking=booking,
+        kind=Transaction.Kind.BOOKING_CHARGE,
+        amount=Decimal("165.00"),
+    )
+    log_transaction(
+        user=renter_user,
+        booking=booking,
+        kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE,
+        amount=Decimal("250.00"),
+    )
+    log_transaction(
+        user=renter_user,
+        booking=booking,
+        kind=Transaction.Kind.DAMAGE_DEPOSIT_RELEASE,
+        amount=Decimal("250.00"),
+    )
+
+    client = _auth_client(renter_user)
+    resp = client.get("/api/owner/payouts/history/")
+
+    assert resp.status_code == 200, resp.data
+    kinds = [row["kind"] for row in resp.data["results"]]
+    assert Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE not in kinds
+    assert Transaction.Kind.BOOKING_CHARGE in kinds
+
+    charge_row = next(
+        row for row in resp.data["results"] if row["kind"] == Transaction.Kind.BOOKING_CHARGE
+    )
+    assert charge_row["amount"] == "-165.00"
+    assert charge_row["direction"] == "debit"
+
+    release_row = next(
+        row
+        for row in resp.data["results"]
+        if row["kind"] == Transaction.Kind.DAMAGE_DEPOSIT_RELEASE
+    )
+    assert release_row["amount"] == "250.00"
+    assert release_row["direction"] == "credit"
+
+
 def test_owner_payouts_update_bank_details_requires_fields(owner_user, monkeypatch):
     OwnerPayoutAccount.objects.filter(user=owner_user).delete()
     payout_account = OwnerPayoutAccount.objects.create(

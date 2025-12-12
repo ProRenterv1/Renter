@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class PaymentMethodSerializer(serializers.ModelSerializer):
-    stripe_payment_method_id = serializers.CharField(write_only=True)
+    stripe_payment_method_id = serializers.CharField()
 
     class Meta:
         model = PaymentMethod
