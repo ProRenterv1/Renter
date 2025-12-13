@@ -19,11 +19,15 @@ for possible_base in (BASE_DIR, BASE_DIR.parent):
 SECRET_KEY = env("DJANGO_SECRET_KEY", default="dev-secret")
 DEBUG = env.bool("DJANGO_DEBUG", default=True)
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1", "http://localhost:8000"])
+ENABLE_OPERATOR = env.bool("ENABLE_OPERATOR", default=False)
+OPS_ALLOWED_HOSTS = env.list("OPS_ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
+ENABLE_DJANGO_ADMIN = env.bool("ENABLE_DJANGO_ADMIN", default=False)
 
 INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "django_filters",
     "anymail",
+    "operator_core",
     "bookings.apps.BookingsConfig",
     "payments.apps.PaymentsConfig",
     "disputes",
@@ -50,6 +54,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "operator_core.middleware.OpsOnlyRouteGatingMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",

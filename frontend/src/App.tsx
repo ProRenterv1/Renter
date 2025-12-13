@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
+import { Suspense, lazy, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
@@ -13,6 +13,9 @@ const UserProfile = lazy(() => import("@/pages/UserProfile"));
 const Messages = lazy(() => import("@/pages/Messages"));
 const AllCategoriesPage = lazy(() => import("@/pages/AllCategories"));
 const PublicProfile = lazy(() => import("@/pages/PublicProfile"));
+
+const isOpsBuildEnv = import.meta.env.VITE_OPS_BUILD === "1";
+const OperatorApp = isOpsBuildEnv ? lazy(() => import("@/operator/OperatorApp")) : null;
 
 function FeedPage() {
   const navigate = useNavigate();
@@ -134,8 +137,14 @@ function SectionFallback({ message }: { message: string }) {
   );
 }
 
-export default function App() {
+type AppProps = {
+  opsBuild?: boolean;
+};
+
+export default function App({ opsBuild }: AppProps) {
+  const isOpsBuild = useMemo(() => opsBuild ?? isOpsBuildEnv, [opsBuild]);
   const location = useLocation();
+  const [darkMode, setDarkMode] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -151,6 +160,11 @@ export default function App() {
     }
     window.scrollTo({ top: 0 });
   }, [location.pathname, location.hash]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.documentElement.classList.toggle("dark", darkMode);
+  }, [darkMode]);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -177,6 +191,21 @@ export default function App() {
           />
           <Route path="/listings/:slug" element={<BookingRoutePage />} />
           <Route path="/users/:userId" element={<PublicProfile />} />
+          {isOpsBuild && OperatorApp ? (
+            <Route
+              path="/operator/*"
+              element={
+                <RequireAuth>
+                  <Suspense fallback={<PageLoader />}>
+                    <OperatorApp
+                      darkMode={darkMode}
+                      onToggleTheme={() => setDarkMode((v) => !v)}
+                    />
+                  </Suspense>
+                </RequireAuth>
+              }
+            />
+          ) : null}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Suspense>

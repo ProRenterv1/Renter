@@ -12,20 +12,26 @@ if (!rootElement) {
   throw new Error("Root element not found");
 }
 
+const isOpsBuild = import.meta.env.VITE_OPS_BUILD === "1";
 const stripePublishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY;
+const stripePromise = !isOpsBuild && stripePublishableKey ? loadStripe(stripePublishableKey) : null;
 
-if (!stripePublishableKey) {
+if (!isOpsBuild && !stripePublishableKey) {
   throw new Error("Missing Stripe publishable key (VITE_STRIPE_PUBLISHABLE_KEY).");
 }
 
-const stripePromise = loadStripe(stripePublishableKey);
-
 ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
-    <Elements stripe={stripePromise}>
+    {isOpsBuild ? (
       <BrowserRouter>
-        <App />
+        <App opsBuild />
       </BrowserRouter>
-    </Elements>
+    ) : (
+      <Elements stripe={stripePromise!}>
+        <BrowserRouter>
+          <App opsBuild={false} />
+        </BrowserRouter>
+      </Elements>
+    )}
   </React.StrictMode>
 );
