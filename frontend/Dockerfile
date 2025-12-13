@@ -1,8 +1,13 @@
 FROM node:20-alpine
 WORKDIR /app
-COPY package*.json ./
 
+# Build-time toggle for ops bundle (default off for public build)
+ARG VITE_OPS_BUILD=0
+ENV VITE_OPS_BUILD=${VITE_OPS_BUILD}
+
+COPY package*.json ./
 RUN npm install -g npm@11.6.2 \
     && npm ci --include=optional
+
 COPY . .
 RUN npm run build
