@@ -6,9 +6,13 @@ from django.db import models
 
 class OperatorAuditEvent(models.Model):
     class EntityType(models.TextChoices):
+        USER = "user", "User"
+        LISTING = "listing", "Listing"
+        BOOKING = "booking", "Booking"
         DISPUTE_CASE = "dispute_case", "Dispute Case"
         DISPUTE_MESSAGE = "dispute_message", "Dispute Message"
         DISPUTE_EVIDENCE = "dispute_evidence", "Dispute Evidence"
+        OPERATOR_NOTE = "operator_note", "Operator Note"
 
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,

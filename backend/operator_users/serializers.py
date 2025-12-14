@@ -22,6 +22,7 @@ class OperatorUserListSerializer(serializers.ModelSerializer):
     bookings_as_owner_count = serializers.IntegerField(read_only=True)
     disputes_count = serializers.IntegerField(read_only=True)
     identity_verified = serializers.SerializerMethodField()
+    active_risk_flag = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -35,6 +36,7 @@ class OperatorUserListSerializer(serializers.ModelSerializer):
             "first_name",
             "last_name",
             "city",
+            "active_risk_flag",
             "can_rent",
             "can_list",
             "is_active",
@@ -49,6 +51,45 @@ class OperatorUserListSerializer(serializers.ModelSerializer):
         if isinstance(annotated_value, bool):
             return annotated_value
         return is_user_identity_verified(obj)
+
+    def get_active_risk_flag(self, obj: User):
+        flags = getattr(obj, "active_risk_flags", None)
+        flag = flags[0] if isinstance(flags, list) and flags else None
+
+        if flag is None:
+            manager = getattr(obj, "risk_flags", None)
+            if manager is not None and hasattr(manager, "filter"):
+                flag = (
+                    manager.filter(active=True)
+                    .select_related("created_by")
+                    .order_by("-created_at")
+                    .first()
+                )
+
+        if not flag:
+            return None
+
+        creator = getattr(flag, "created_by", None)
+        creator_full_name = None
+        if creator:
+            full_name = creator.get_full_name() or ""
+            creator_full_name = full_name.strip() or None
+        creator_label = (
+            creator_full_name
+            or getattr(creator, "email", None)
+            or getattr(creator, "username", None)
+            or (f"User {creator.id}" if creator and creator.id else None)
+        )
+
+        return {
+            "id": getattr(flag, "id", None),
+            "level": getattr(flag, "level", None),
+            "category": getattr(flag, "category", None),
+            "note": getattr(flag, "note", None) or "",
+            "created_at": getattr(flag, "created_at", None),
+            "created_by_id": getattr(creator, "id", None),
+            "created_by_label": creator_label,
+        }
 
 
 class OperatorUserDetailSerializer(OperatorUserListSerializer):
@@ -71,6 +112,7 @@ class OperatorUserDetailSerializer(OperatorUserListSerializer):
             "can_rent",
             "can_list",
             "is_active",
+            "active_risk_flag",
             "email_verified",
             "phone_verified",
             "identity_verified",

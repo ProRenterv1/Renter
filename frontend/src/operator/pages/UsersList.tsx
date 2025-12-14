@@ -5,7 +5,7 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { Card, CardContent } from '../../components/ui/card';
 import { Skeleton } from '../../components/ui/skeleton';
-import { CheckCircle2, Mail, Phone, Shield, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Mail, Phone, Shield, XCircle } from 'lucide-react';
 import { DataTable } from '../components/DataTable';
 import { FilterBar } from '../components/FilterBar';
 import { RightDrawer } from '../components/RightDrawer';
@@ -60,6 +60,19 @@ function formatJoined(dateJoined?: string | null) {
   } catch {
     return parsed.toLocaleDateString();
   }
+}
+
+function formatRiskLevel(level?: string | null) {
+  if (!level) return 'Unknown';
+  if (level === 'high') return 'High';
+  if (level === 'med') return 'Medium';
+  if (level === 'low') return 'Low';
+  return level;
+}
+
+function formatRiskCategory(category?: string | null) {
+  if (!category) return 'Unknown';
+  return category.charAt(0).toUpperCase() + category.slice(1);
 }
 
 export function UsersList() {
@@ -368,6 +381,9 @@ export function UsersList() {
                   loadingRows={8}
                   onRowClick={handleRowClick}
                   getRowId={(user) => user.id}
+                  getRowClassName={(user) =>
+                    user.active_risk_flag ? 'bg-rose-50 hover:bg-rose-100/80' : undefined
+                  }
                   page={page}
                   pageSize={pageSize}
                   total={total}
@@ -419,6 +435,20 @@ export function UsersList() {
           (() => {
             const user = previewUser ?? selectedUser;
             if (!user) return null;
+            const riskFlag = user.active_risk_flag;
+            const levelLabel = riskFlag ? formatRiskLevel(riskFlag.level) : null;
+            const categoryLabel = riskFlag ? formatRiskCategory(riskFlag.category) : null;
+            const riskNote = riskFlag?.note?.trim();
+            const riskMarkedOn = riskFlag?.created_at ? formatJoined(riskFlag.created_at) : null;
+            const riskMarkedBy = riskFlag?.created_by_label ?? 'Unknown';
+            const tone =
+              (riskFlag?.level && riskToneByLevel[riskFlag.level]) || riskToneByLevel['med'] || {
+                bg: 'bg-rose-50',
+                border: 'border-rose-100',
+                text: 'text-rose-900',
+                badge: 'bg-rose-100 text-rose-900 border-rose-200',
+                chip: 'bg-rose-200/80 text-rose-900 border border-rose-300',
+              };
             return (
               <div className="space-y-4">
                 <div className="text-xs font-semibold uppercase text-muted-foreground tracking-wide">User Details</div>
@@ -493,6 +523,40 @@ export function UsersList() {
                     <div className="text-xs text-muted-foreground">Active tool listings</div>
                   </div>
                 </div>
+
+                {riskFlag ? (
+                  <div
+                    className={`space-y-3 rounded-2xl border p-4 shadow-sm ${tone.bg} ${tone.border} ${tone.text}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="inline-flex items-center justify-center rounded-full bg-white/60 p-2 border border-white/80">
+                        <AlertTriangle className="h-4 w-4" />
+                      </div>
+                      <div className="font-semibold text-base">Suspicion</div>
+                      <Badge variant="outline" className={tone.chip}>
+                        {levelLabel}
+                      </Badge>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                      <div className="rounded-lg bg-white/70 border border-white/80 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]">
+                        <div className="text-[11px] uppercase tracking-wide opacity-70">Level</div>
+                        <div className="font-semibold text-base">{levelLabel}</div>
+                      </div>
+                      <div className="rounded-lg bg-white/70 border border-white/80 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]">
+                        <div className="text-[11px] uppercase tracking-wide opacity-70">Category</div>
+                        <div className="font-semibold text-base">{categoryLabel}</div>
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-white/70 border border-white/80 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]">
+                      <div className="text-[11px] uppercase tracking-wide opacity-70 mb-1">Description</div>
+                      <p className="m-0 text-sm">{riskNote || 'No note provided.'}</p>
+                    </div>
+                    <div className="text-xs opacity-80">
+                      Marked by {riskMarkedBy}
+                      {riskMarkedOn ? ` · ${riskMarkedOn}` : ''}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             );
           })()
@@ -501,3 +565,26 @@ export function UsersList() {
     </div>
   );
 }
+const riskToneByLevel: Record<string, { bg: string; border: string; text: string; badge: string; chip: string }> = {
+  high: {
+    bg: 'bg-gradient-to-br from-rose-50 via-amber-50 to-white',
+    border: 'border-rose-200',
+    text: 'text-rose-900',
+    badge: 'bg-rose-100 text-rose-900 border-rose-200',
+    chip: 'bg-rose-200/80 text-rose-900 border border-rose-300',
+  },
+  med: {
+    bg: 'bg-gradient-to-br from-amber-50 via-orange-50 to-white',
+    border: 'border-amber-200',
+    text: 'text-amber-900',
+    badge: 'bg-amber-100 text-amber-900 border-amber-200',
+    chip: 'bg-amber-200/70 text-amber-900 border border-amber-300',
+  },
+  low: {
+    bg: 'bg-gradient-to-br from-emerald-50 via-lime-50 to-white',
+    border: 'border-emerald-200',
+    text: 'text-emerald-900',
+    badge: 'bg-emerald-100 text-emerald-900 border-emerald-200',
+    chip: 'bg-emerald-200/70 text-emerald-900 border border-emerald-300',
+  },
+};

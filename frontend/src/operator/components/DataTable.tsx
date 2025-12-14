@@ -33,6 +33,7 @@ type DataTableProps<T> = {
   emptyMessage?: string;
   onRowClick?: (item: T) => void;
   getRowId?: (item: T, index: number) => string | number;
+  getRowClassName?: (item: T) => string | undefined;
   page?: number;
   pageSize?: number;
   total?: number;
@@ -48,6 +49,7 @@ export function DataTable<T>({
   emptyMessage = "No results found.",
   onRowClick,
   getRowId,
+  getRowClassName,
   page = 1,
   pageSize,
   total,
@@ -84,14 +86,15 @@ export function DataTable<T>({
             {data.map((item, index) => {
               const rowKey = getRowId ? getRowId(item, index) : index;
               return (
-                <TableRow
-                  key={rowKey}
-                  className={cn(
-                    "border-b border-border transition-colors",
-                    onRowClick && "hover:bg-muted/50 cursor-pointer",
-                  )}
-                  onClick={onRowClick ? () => onRowClick(item) : undefined}
-                >
+              <TableRow
+                key={rowKey}
+                className={cn(
+                  "border-b border-border transition-colors",
+                  onRowClick && "hover:bg-muted/50 cursor-pointer",
+                  getRowClassName?.(item),
+                )}
+                onClick={onRowClick ? () => onRowClick(item) : undefined}
+              >
                   {columns.map((column) => (
                     <TableCell key={column.key} className={cn("p-4 align-top", column.className)}>
                       {column.cell(item)}

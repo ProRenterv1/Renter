@@ -26,7 +26,10 @@ export function RightDrawer({
 }: RightDrawerProps) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-full sm:max-w-md">
+      <SheetContent
+        side="right"
+        className="w-full sm:max-w-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:slide-in-from-right data-[state=closed]:slide-out-to-right data-[state=open]:duration-300 data-[state=closed]:duration-200"
+      >
         <SheetHeader className="pb-2 px-2 sm:px-4">
           {title ? <SheetTitle>{title}</SheetTitle> : null}
           {description ? <SheetDescription>{description}</SheetDescription> : null}

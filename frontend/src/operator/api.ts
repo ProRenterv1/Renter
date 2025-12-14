@@ -1,4 +1,5 @@
 import { jsonFetch } from "@/lib/api";
+import type { ContactVerificationChannel } from "@/lib/api";
 
 export type OperatorDashboardMetrics = {
   today: {
@@ -21,6 +22,16 @@ export type OperatorDashboardMetrics = {
   rebuttals_due_soon_count: number;
 };
 
+export type OperatorRiskFlag = {
+  id?: number | null;
+  level: string | null;
+  category: string | null;
+  note?: string | null;
+  created_at?: string | null;
+  created_by_id?: number | null;
+  created_by_label?: string | null;
+};
+
 export type OperatorUserListItem = {
   id: number;
   email: string | null;
@@ -37,6 +48,7 @@ export type OperatorUserListItem = {
   bookings_as_renter_count: number;
   bookings_as_owner_count: number;
   disputes_count: number;
+  active_risk_flag?: OperatorRiskFlag | null;
   email_verified?: boolean;
   phone_verified?: boolean;
   identity_verified?: boolean;
@@ -53,6 +65,7 @@ export type OperatorUserDetail = OperatorUserListItem & {
   last_login_ip: string | null;
   last_login_ua: string | null;
   bookings?: OperatorBookingSummary[];
+  phone?: string | null;
 };
 
 export type OperatorUserListResponse = {
@@ -72,6 +85,20 @@ export type OperatorBookingSummary = {
   role: "owner" | "renter";
 };
 
+export type OperatorNote = {
+  id: number;
+  entity_type: string;
+  entity_id: string;
+  text: string;
+  tags: string[];
+  author: { id: number; email: string | null; name: string | null } | null;
+  created_at: string;
+};
+
+type ReasonPayload = { reason: string };
+type SuspiciousPayload = ReasonPayload & { level: string; category: string; note?: string | null };
+type RestrictionsPayload = ReasonPayload & { can_rent?: boolean; can_list?: boolean };
+
 export type OperatorUserListParams = Partial<{
   email: string;
   name: string;
@@ -90,7 +117,7 @@ export type OperatorUserListParams = Partial<{
   date_joined_before: string;
 }>;
 
-function buildQuery(params: Record<string, string | number | boolean | undefined>) {
+function buildQuery(params: Record<string, string | number | boolean | undefined | null>) {
   const search = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
     if (value === undefined || value === null) return;
@@ -126,6 +153,58 @@ export const operatorAPI = {
   },
   userDetail(userId: number) {
     return jsonFetch<OperatorUserDetail>(`/operator/users/${userId}/`, { method: "GET" });
+  },
+  suspendUser(userId: number, payload: ReasonPayload) {
+    return jsonFetch<{ ok: boolean; user_id: number; is_active: boolean }>(
+      `/operator/users/${userId}/suspend/`,
+      { method: "POST", body: payload },
+    );
+  },
+  reinstateUser(userId: number, payload: ReasonPayload) {
+    return jsonFetch<{ ok: boolean; user_id: number; is_active: boolean }>(
+      `/operator/users/${userId}/reinstate/`,
+      { method: "POST", body: payload },
+    );
+  },
+  setUserRestrictions(userId: number, payload: RestrictionsPayload) {
+    return jsonFetch<{ ok: boolean; user_id: number; can_rent: boolean; can_list: boolean }>(
+      `/operator/users/${userId}/set-restrictions/`,
+      { method: "POST", body: payload },
+    );
+  },
+  markUserSuspicious(userId: number, payload: SuspiciousPayload) {
+    return jsonFetch<{ ok: boolean; risk_flag_id: number }>(
+      `/operator/users/${userId}/mark-suspicious/`,
+      { method: "POST", body: payload },
+    );
+  },
+  sendPasswordReset(userId: number, payload: ReasonPayload) {
+    return jsonFetch<{ ok: boolean; challenge_id?: number }>(
+      `/operator/users/${userId}/send-password-reset/`,
+      { method: "POST", body: payload },
+    );
+  },
+  resendVerification(
+    userId: number,
+    payload: ReasonPayload & { channel: ContactVerificationChannel },
+  ) {
+    return jsonFetch<{ ok: boolean; challenge_id?: number; channel: ContactVerificationChannel }>(
+      `/operator/users/${userId}/resend-verification/`,
+      { method: "POST", body: payload },
+    );
+  },
+  listNotes(entityType: string, entityId: string | number) {
+    const query = buildQuery({ entity_type: entityType, entity_id: entityId });
+    return jsonFetch<OperatorNote[]>(`/operator/notes/${query}`, { method: "GET" });
+  },
+  createNote(payload: {
+    entity_type: string;
+    entity_id: string | number;
+    text: string;
+    tags?: string[];
+    reason: string;
+  }) {
+    return jsonFetch<OperatorNote>("/operator/notes/", { method: "POST", body: payload });
   },
 };
 
