@@ -4,6 +4,8 @@ import { AuthStore } from "@/lib/auth";
 import { OperatorLayout } from "./OperatorLayout";
 import { Dashboard } from "./pages/Dashboard";
 import { AccessDeniedPage } from "./pages/AccessDeniedPage";
+import { UsersList } from "./pages/UsersList";
+import { UserDetail } from "./pages/UserDetail";
 
 interface OperatorAppProps {
   darkMode: boolean;
@@ -139,7 +141,8 @@ export function OperatorApp({ darkMode, onToggleTheme }: OperatorAppProps) {
       <Routes>
         <Route index element={<Navigate to="dashboard" replace />} />
         <Route path="dashboard" element={<Dashboard />} />
-        <Route path="users" element={<div>Users page coming soon...</div>} />
+        <Route path="users" element={<UsersList />} />
+        <Route path="users/:userId" element={<UserDetail />} />
         <Route path="listings" element={<div>Listings page coming soon...</div>} />
         <Route path="bookings" element={<div>Bookings page coming soon...</div>} />
         <Route path="finance" element={<div>Finance page coming soon...</div>} />
