@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     "django_filters",
     "anymail",
     "operator_core",
+    "operator_users",
     "bookings.apps.BookingsConfig",
     "payments.apps.PaymentsConfig",
     "disputes",
