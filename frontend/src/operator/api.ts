@@ -22,6 +22,97 @@ export type OperatorDashboardMetrics = {
   rebuttals_due_soon_count: number;
 };
 
+export type OperatorListingOwner = {
+  id: number;
+  email: string | null;
+  name?: string | null;
+  phone?: string | null;
+  city?: string | null;
+};
+
+export type OperatorListingCategory = {
+  id: number | null;
+  name: string | null;
+  slug: string | null;
+};
+
+export type OperatorListingListItem = {
+  id: number;
+  title: string;
+  owner: OperatorListingOwner;
+  city: string | null;
+  category: OperatorListingCategory | null;
+  daily_price_cad: string | number;
+  is_active: boolean;
+  needs_review?: boolean;
+  thumbnail_url?: string | null;
+  created_at: string;
+};
+
+export type OperatorListingDetail = OperatorListingListItem & {
+  description: string;
+  postal_code: string | null;
+  is_available: boolean;
+  replacement_value_cad: string | number;
+  damage_deposit_cad: string | number;
+  photos: { id: number; url: string; ordering: number }[];
+};
+
+export type OperatorBookingEvent = {
+  id: number;
+  type: string;
+  payload: Record<string, unknown> | null;
+  actor: OperatorListingOwner | null;
+  created_at: string;
+};
+
+export type OperatorBookingListItem = {
+  id: number;
+  status: string;
+  listing_id: number;
+  listing_title: string;
+  owner: OperatorListingOwner;
+  renter: OperatorListingOwner;
+  start_date: string;
+  end_date: string;
+  is_overdue: boolean;
+  total_charge: string | number;
+  created_at: string;
+};
+
+export type OperatorBookingDetail = OperatorBookingListItem & {
+  is_disputed: boolean;
+  dispute_window_expires_at: string | null;
+  totals: Record<string, unknown>;
+  charge_payment_intent_id: string | null;
+  deposit_hold_id: string | null;
+  events: OperatorBookingEvent[];
+  disputes: { id: number; status: string; category: string; created_at: string }[];
+  pickup_confirmed_at?: string | null;
+  returned_by_renter_at?: string | null;
+  return_confirmed_at?: string | null;
+  after_photos_uploaded_at?: string | null;
+};
+
+export type OperatorListingListParams = Partial<{
+  owner: number;
+  city: string;
+  category: string;
+  is_active: boolean;
+  needs_review: boolean;
+  created_at_after: string;
+  created_at_before: string;
+}>;
+
+export type OperatorBookingListParams = Partial<{
+  status: string;
+  created_at_after: string;
+  created_at_before: string;
+  owner: number | string;
+  renter: number | string;
+  overdue: boolean;
+}>;
+
 export type OperatorRiskFlag = {
   id?: number | null;
   level: string | null;
@@ -205,6 +296,44 @@ export const operatorAPI = {
     reason: string;
   }) {
     return jsonFetch<OperatorNote>("/operator/notes/", { method: "POST", body: payload });
+  },
+  listings(params: OperatorListingListParams = {}) {
+    const query = buildQuery(params as Record<string, string | number | boolean>);
+    return jsonFetch<OperatorListingListItem[]>(`/operator/listings/${query}`, { method: "GET" });
+  },
+  listingDetail(listingId: number) {
+    return jsonFetch<OperatorListingDetail>(`/operator/listings/${listingId}/`, { method: "GET" });
+  },
+  activateListing(listingId: number, payload: ReasonPayload) {
+    return jsonFetch<{ ok: boolean; id: number; is_active: boolean }>(
+      `/operator/listings/${listingId}/activate/`,
+      { method: "POST", body: payload },
+    );
+  },
+  deactivateListing(listingId: number, payload: ReasonPayload) {
+    return jsonFetch<{ ok: boolean; id: number; is_active: boolean }>(
+      `/operator/listings/${listingId}/deactivate/`,
+      { method: "POST", body: payload },
+    );
+  },
+  markListingNeedsReview(listingId: number, payload: ReasonPayload & { text: string }) {
+    return jsonFetch<{ ok: boolean; id: number; note_id: number }>(
+      `/operator/listings/${listingId}/mark-needs-review/`,
+      { method: "POST", body: payload },
+    );
+  },
+  emergencyEditListing(listingId: number, payload: ReasonPayload & { title?: string; description?: string }) {
+    return jsonFetch<{ ok: boolean; id: number; updated_fields: string[] }>(
+      `/operator/listings/${listingId}/emergency-edit/`,
+      { method: "PATCH", body: payload },
+    );
+  },
+  bookings(params: OperatorBookingListParams = {}) {
+    const query = buildQuery(params as Record<string, string | number | boolean>);
+    return jsonFetch<OperatorBookingListItem[]>(`/operator/bookings/${query}`, { method: "GET" });
+  },
+  bookingDetail(bookingId: number) {
+    return jsonFetch<OperatorBookingDetail>(`/operator/bookings/${bookingId}/`, { method: "GET" });
   },
 };
 

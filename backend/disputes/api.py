@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+from django.apps import apps
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import models
@@ -20,6 +22,8 @@ from storage.tasks import scan_and_finalize_dispute_evidence
 
 from .intake import update_dispute_intake_status
 from .models import DisputeCase, DisputeEvidence, DisputeMessage
+
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
@@ -214,6 +218,10 @@ class DisputeCaseSerializer(serializers.ModelSerializer):
             validated_data["damage_flow_kind"] = DisputeCase.DamageFlowKind.GENERIC
 
         category = validated_data.get("category")
+        is_safety_fraud = category == DisputeCase.Category.SAFETY_OR_FRAUD
+        now = timezone.now()
+        auto_close = False
+        expires_at = booking.dispute_window_expires_at
         if not user.is_staff:
             if booking.status not in {Booking.Status.PAID, Booking.Status.COMPLETED}:
                 raise serializers.ValidationError(
@@ -224,38 +232,57 @@ class DisputeCaseSerializer(serializers.ModelSerializer):
                     }
                 )
 
-            is_safety_fraud = category == DisputeCase.Category.SAFETY_OR_FRAUD
-            if booking.status == Booking.Status.COMPLETED and not is_safety_fraud:
-                expires_at = booking.dispute_window_expires_at
-                now = timezone.now()
-                if expires_at is None or now > expires_at:
-                    raise serializers.ValidationError(
-                        {"non_field_errors": ["Dispute window expired for this booking."]}
-                    )
+        if expires_at and now > expires_at and not is_safety_fraud:
+            auto_close = True
 
         has_deposit_hold = bool(getattr(booking, "deposit_hold_id", ""))
-
+        created_at = now
+        status_value = DisputeCase.Status.CLOSED_AUTO if auto_close else DisputeCase.Status.OPEN
         dispute = DisputeCase.objects.create(
             **validated_data,
             opened_by=user,
             opened_by_role=opened_by_role,
-            status=DisputeCase.Status.OPEN,
-            filed_at=timezone.now(),
-            deposit_locked=has_deposit_hold,
+            status=status_value,
+            filed_at=created_at,
+            resolved_at=created_at if auto_close else None,
+            deposit_locked=False if auto_close else has_deposit_hold,
         )
 
         updated_fields: list[str] = []
-        if not booking.is_disputed:
+        if not auto_close and not booking.is_disputed:
             booking.is_disputed = True
             updated_fields.append("is_disputed")
-        if has_deposit_hold and not booking.deposit_locked:
+        if not auto_close and has_deposit_hold and not booking.deposit_locked:
             booking.deposit_locked = True
             updated_fields.append("deposit_locked")
         if updated_fields:
             updated_fields.append("updated_at")
             booking.save(update_fields=updated_fields)
 
-        update_dispute_intake_status(dispute.id)
+        if not auto_close:
+            update_dispute_intake_status(dispute.id)
+
+        try:
+            BookingEvent = apps.get_model("operator_bookings", "BookingEvent")
+            BookingEvent.objects.create(
+                booking=booking,
+                actor=user if getattr(user, "is_authenticated", False) else None,
+                type=BookingEvent.Type.DISPUTE_OPENED,
+                payload={
+                    "dispute_id": dispute.id,
+                    "category": dispute.category,
+                    "auto_closed": auto_close,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "booking_event: failed to create dispute_opened event",
+                extra={
+                    "booking_id": booking.id,
+                    "dispute_id": dispute.id,
+                    "auto_closed": auto_close,
+                },
+            )
 
         return dispute
 
