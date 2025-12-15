@@ -232,7 +232,14 @@ class DisputeCaseSerializer(serializers.ModelSerializer):
                     }
                 )
 
-        if expires_at and now > expires_at and not is_safety_fraud:
+            window_expired = bool(expires_at and now > expires_at)
+            if window_expired and not is_safety_fraud and not booking.deposit_hold_id:
+                raise serializers.ValidationError(
+                    {"non_field_errors": ["Dispute window expired for this booking."]}
+                )
+
+        window_expired = bool(expires_at and now > expires_at)
+        if window_expired and not is_safety_fraud and not user.is_staff:
             auto_close = True
 
         has_deposit_hold = bool(getattr(booking, "deposit_hold_id", ""))

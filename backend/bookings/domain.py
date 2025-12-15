@@ -109,7 +109,7 @@ def assert_can_complete(booking: Booking) -> None:
     """Ensure the booking can be marked as complete."""
     if booking.status not in {Booking.Status.CONFIRMED, Booking.Status.PAID}:
         raise ValidationError({"status": ["Only confirmed or paid bookings can be completed."]})
-    if not booking.return_confirmed_at:
+    if booking.status == Booking.Status.PAID and not booking.return_confirmed_at:
         raise ValidationError(
             {"return_confirmed_at": ["Owner must confirm return before completing the booking."]}
         )

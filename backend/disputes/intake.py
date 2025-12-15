@@ -65,6 +65,9 @@ def update_dispute_intake_status(dispute_id: int) -> Optional[DisputeCase]:
                 logger.warning("dispute intake: booking missing for dispute %s", dispute_id)
                 return dispute
 
+            if dispute.category == DisputeCase.Category.SAFETY_OR_FRAUD:
+                return dispute
+
             before_clean, after_clean = _count_clean_booking_photos(booking_id=booking.id)
             photo_count, video_count, total_clean = _count_clean_evidence(dispute_id=dispute.id)
 

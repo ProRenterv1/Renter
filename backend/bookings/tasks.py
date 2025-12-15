@@ -97,7 +97,6 @@ def auto_release_deposits() -> int:
     qs = (
         Booking.objects.filter(
             status=Booking.Status.COMPLETED,
-            return_confirmed_at__isnull=False,
             deposit_hold_id__isnull=False,
             deposit_hold_id__gt="",
             deposit_released_at__isnull=True,
