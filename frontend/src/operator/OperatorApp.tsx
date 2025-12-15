@@ -6,6 +6,10 @@ import { Dashboard } from "./pages/Dashboard";
 import { AccessDeniedPage } from "./pages/AccessDeniedPage";
 import { UsersList } from "./pages/UsersList";
 import { UserDetail } from "./pages/UserDetail";
+import { ListingsList } from "./pages/ListingsList";
+import { ListingDetail } from "./pages/ListingDetail";
+import { BookingsList } from "./pages/BookingsList";
+import { BookingDetail } from "./pages/BookingDetail";
 
 interface OperatorAppProps {
   darkMode: boolean;
@@ -143,8 +147,10 @@ export function OperatorApp({ darkMode, onToggleTheme }: OperatorAppProps) {
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="users" element={<UsersList />} />
         <Route path="users/:userId" element={<UserDetail />} />
-        <Route path="listings" element={<div>Listings page coming soon...</div>} />
-        <Route path="bookings" element={<div>Bookings page coming soon...</div>} />
+        <Route path="listings" element={<ListingsList />} />
+        <Route path="listings/:listingId" element={<ListingDetail />} />
+        <Route path="bookings" element={<BookingsList />} />
+        <Route path="bookings/:bookingId" element={<BookingDetail />} />
         <Route path="finance" element={<div>Finance page coming soon...</div>} />
         <Route path="disputes" element={<div>Disputes page coming soon...</div>} />
         <Route path="promotions" element={<div>Promotions page coming soon...</div>} />

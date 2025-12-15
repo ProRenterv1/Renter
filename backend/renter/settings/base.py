@@ -29,6 +29,8 @@ INSTALLED_APPS = [
     "anymail",
     "operator_core",
     "operator_users",
+    "operator_listings",
+    "operator_bookings",
     "bookings.apps.BookingsConfig",
     "payments.apps.PaymentsConfig",
     "disputes",

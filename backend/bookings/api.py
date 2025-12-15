@@ -591,7 +591,10 @@ class BookingViewSet(viewsets.ModelViewSet):
         now = timezone.now()
         update_fields = ["status", "updated_at"]
         booking.status = Booking.Status.COMPLETED
-        if booking.dispute_window_expires_at is None:
+        if booking.return_confirmed_at and booking.dispute_window_expires_at is None:
+            booking.dispute_window_expires_at = booking.return_confirmed_at + timedelta(hours=24)
+            update_fields.insert(1, "dispute_window_expires_at")
+        elif booking.dispute_window_expires_at is None:
             booking.dispute_window_expires_at = now + timedelta(hours=24)
             update_fields.insert(1, "dispute_window_expires_at")
 
@@ -666,8 +669,12 @@ class BookingViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        booking.return_confirmed_at = timezone.now()
-        booking.save(update_fields=["return_confirmed_at", "updated_at"])
+        now = timezone.now()
+        booking.return_confirmed_at = now
+        booking.dispute_window_expires_at = now + timedelta(hours=24)
+        booking.save(
+            update_fields=["return_confirmed_at", "dispute_window_expires_at", "updated_at"]
+        )
         return Response(self.get_serializer(booking).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="before-photos/presign")

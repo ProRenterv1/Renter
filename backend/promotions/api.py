@@ -74,7 +74,6 @@ def _has_active_promotion_overlap(
     starts_at: datetime,
     ends_at: datetime,
     *,
-    now: datetime | None = None,
     lock: bool = False,
 ) -> bool:
     """
@@ -82,16 +81,11 @@ def _has_active_promotion_overlap(
 
     Overlap rule: existing.starts_at < new.ends_at AND existing.ends_at > new.starts_at
     """
-    current_time = now or timezone.now()
-    qs = (
-        PromotedSlot.objects.filter(
-            listing_id=listing_id,
-            active=True,
-            starts_at__lt=ends_at,
-        )
-        .filter(ends_at__gt=current_time)
-        .filter(ends_at__gt=starts_at)
-    )
+    qs = PromotedSlot.objects.filter(
+        listing_id=listing_id,
+        active=True,
+        starts_at__lt=ends_at,
+    ).filter(ends_at__gt=starts_at)
     if lock:
         qs = qs.select_for_update()
     return qs.exists()
@@ -109,13 +103,11 @@ def _create_promoted_slot(
     total_price_cents: int,
     stripe_session_id: str,
 ) -> PromotedSlot:
-    now = timezone.now()
     with transaction.atomic():
         if _has_active_promotion_overlap(
             listing_id=listing.id,
             starts_at=starts_at,
             ends_at=ends_at,
-            now=now,
             lock=True,
         ):
             raise PromotionConflictError(PROMOTION_CONFLICT_MESSAGE)
