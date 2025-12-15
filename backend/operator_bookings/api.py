@@ -1,4 +1,5 @@
 from django.db.models import Prefetch
+from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics
 
@@ -27,11 +28,16 @@ class OperatorBookingListView(generics.ListAPIView):
     http_method_names = ["get"]
 
     def get_queryset(self):
-        return (
+        qs = (
             Booking.objects.select_related("listing", "owner", "renter")
             .filter(listing__is_deleted=False)
             .order_by("-created_at")
         )
+        # Default to excluding overdue bookings unless explicitly requested via ?overdue=...
+        if "overdue" not in self.request.query_params:
+            today = timezone.localdate()
+            qs = qs.exclude(end_date__lt=today, return_confirmed_at__isnull=True)
+        return qs
 
 
 class OperatorBookingDetailView(generics.RetrieveAPIView):
