@@ -31,6 +31,7 @@ INSTALLED_APPS = [
     "operator_users",
     "operator_listings",
     "operator_bookings",
+    "operator_finance",
     "bookings.apps.BookingsConfig",
     "payments.apps.PaymentsConfig",
     "disputes",

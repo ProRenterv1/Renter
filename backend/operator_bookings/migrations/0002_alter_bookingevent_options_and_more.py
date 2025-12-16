@@ -4,6 +4,33 @@ from django.conf import settings
 from django.db import migrations, models
 
 
+def rename_indexes_forward(apps, schema_editor):
+    # SQLite (used in tests) doesn't support ALTER INDEX, so skip there.
+    if schema_editor.connection.vendor == "sqlite":
+        return
+    schema_editor.execute(
+        "ALTER INDEX IF EXISTS operator_bo_booking_e7cbaf_idx "
+        "RENAME TO operator_bo_booking_171dcf_idx;"
+    )
+    schema_editor.execute(
+        "ALTER INDEX IF EXISTS operator_bo_type_crea_7fa74e_idx "
+        "RENAME TO operator_bo_type_7351de_idx;"
+    )
+
+
+def rename_indexes_backward(apps, schema_editor):
+    if schema_editor.connection.vendor == "sqlite":
+        return
+    schema_editor.execute(
+        "ALTER INDEX IF EXISTS operator_bo_booking_171dcf_idx "
+        "RENAME TO operator_bo_booking_e7cbaf_idx;"
+    )
+    schema_editor.execute(
+        "ALTER INDEX IF EXISTS operator_bo_type_7351de_idx "
+        "RENAME TO operator_bo_type_crea_7fa74e_idx;"
+    )
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -17,13 +44,8 @@ class Migration(migrations.Migration):
             name="bookingevent",
             options={"ordering": ["-created_at", "-id"]},
         ),
-        migrations.RunSQL(
-            sql="ALTER INDEX IF EXISTS operator_bo_booking_e7cbaf_idx RENAME TO operator_bo_booking_171dcf_idx;",
-            reverse_sql="ALTER INDEX IF EXISTS operator_bo_booking_171dcf_idx RENAME TO operator_bo_booking_e7cbaf_idx;",
-        ),
-        migrations.RunSQL(
-            sql="ALTER INDEX IF EXISTS operator_bo_type_crea_7fa74e_idx RENAME TO operator_bo_type_7351de_idx;",
-            reverse_sql="ALTER INDEX IF EXISTS operator_bo_type_7351de_idx RENAME TO operator_bo_type_crea_7fa74e_idx;",
+        migrations.RunPython(
+            rename_indexes_forward, rename_indexes_backward
         ),
         migrations.AlterField(
             model_name="bookingevent",
