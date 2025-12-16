@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 from typing import Callable
 
@@ -92,12 +93,16 @@ def booking_factory(listing, owner_user, renter_user) -> Callable[..., Booking]:
         listing_override: Listing | None = None,
         owner=None,
         renter=None,
-        start_date,
-        end_date,
+        start_date=None,
+        end_date=None,
         status=Booking.Status.REQUESTED,
         **extra_fields,
     ) -> Booking:
         selected_listing = listing_override or listing
+        if start_date is None:
+            start_date = timezone.now().date()
+        if end_date is None:
+            end_date = start_date + timedelta(days=1)
         return Booking.objects.create(
             listing=selected_listing,
             owner=owner or selected_listing.owner,

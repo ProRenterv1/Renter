@@ -1401,8 +1401,6 @@ def detect_missing_notifications(days: int = 7):
 
         for booking in recent_bookings:
             required = set(REQUIRED_BY_STATUS.get(booking.status, {"booking_request"}))
-            if "receipt" in required and not getattr(booking, "charge_payment_intent_id", ""):
-                required.discard("receipt")
             sent = sent_map.get(booking.id, set())
             missing = sorted(required - sent)
             if missing:

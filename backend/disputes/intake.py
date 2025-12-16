@@ -99,6 +99,7 @@ def update_dispute_intake_status(dispute_id: int) -> Optional[DisputeCase]:
                 new_status = DisputeCase.Status.INTAKE_MISSING_EVIDENCE
                 filed_at = dispute.filed_at or now
                 new_intake_due_at = filed_at + timedelta(hours=24)
+                new_rebuttal_due_at = filed_at + timedelta(hours=24)
             else:
                 new_status = DisputeCase.Status.AWAITING_REBUTTAL
                 if dispute.status != DisputeCase.Status.AWAITING_REBUTTAL:
