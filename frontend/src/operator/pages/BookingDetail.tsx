@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { differenceInCalendarDays, format, subDays } from "date-fns";
+import { format, subDays } from "date-fns";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -27,8 +27,6 @@ import { Input } from "../../components/ui/input";
 import { Textarea } from "../../components/ui/textarea";
 import { Label } from "../../components/ui/label";
 import { Checkbox } from "../../components/ui/checkbox";
-import { Calendar as DatePicker } from "../../components/ui/calendar";
-import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import {
   operatorAPI,
   type OperatorBookingEvent,
@@ -36,6 +34,7 @@ import {
 } from "../api";
 import { toast } from "sonner";
 import type { OperatorBookingDetail as BookingDetailType } from "../api";
+import { AdjustBookingDatesModal } from "../components/modals/AdjustBookingDatesModal";
 import { cn } from "@/lib/utils";
 
 export function BookingDetail() {
@@ -55,11 +54,7 @@ export function BookingDetail() {
     reason: "",
   });
   const [forceCompleteReason, setForceCompleteReason] = useState("");
-  const [adjustDatesPayload, setAdjustDatesPayload] = useState<{ start_date: string; end_date: string; reason: string }>({
-    start_date: "",
-    end_date: "",
-    reason: "",
-  });
+  const [adjustDatesReason, setAdjustDatesReason] = useState("");
   const [resendSelections, setResendSelections] = useState<Record<string, boolean>>({});
   const [submittingAction, setSubmittingAction] = useState(false);
 
@@ -119,11 +114,7 @@ export function BookingDetail() {
 
   useEffect(() => {
     if (!booking) return;
-    setAdjustDatesPayload({
-      start_date: booking.start_date,
-      end_date: booking.end_date,
-      reason: "",
-    });
+    setAdjustDatesReason("");
   }, [booking]);
 
   const handleCopyStripeIds = () => {
@@ -391,20 +382,29 @@ export function BookingDetail() {
         }}
         disabled={submittingAction}
       />
-      <AdjustDatesModal
+      <AdjustBookingDatesModal
         open={adjustDatesOpen}
-        onClose={() => setAdjustDatesOpen(false)}
-        payload={adjustDatesPayload}
+        onClose={() => {
+          setAdjustDatesOpen(false);
+          setAdjustDatesReason("");
+        }}
         booking={booking}
-        onChange={setAdjustDatesPayload}
+        reason={adjustDatesReason}
+        onReasonChange={setAdjustDatesReason}
         submitting={submittingAction}
-        onSubmit={async () => {
+        onConfirm={async ({ startDate, endDate, reason }) => {
           if (!booking) return;
           setSubmittingAction(true);
           try {
-            await operatorAPI.adjustBookingDates(booking.id, adjustDatesPayload);
+            const payload = {
+              start_date: format(startDate, "yyyy-MM-dd"),
+              end_date: format(endDate, "yyyy-MM-dd"),
+              reason: reason || "Operator adjustment",
+            };
+            await operatorAPI.adjustBookingDates(booking.id, payload);
             toast.success("Booking dates adjusted");
             setAdjustDatesOpen(false);
+            setAdjustDatesReason("");
             loadBooking();
           } catch (err) {
             console.error(err);
@@ -616,13 +616,15 @@ function statusVariant(status: string) {
 
 function displayStatus(booking: BookingDetailType) {
   if (!booking) return "Unknown";
+  const status = booking.status?.toLowerCase?.() || "";
   const today = new Date().toISOString().slice(0, 10);
-  if (booking.status?.toLowerCase() === "canceled") return "Canceled";
+  if (status === "completed") return "Completed";
+  if (status === "canceled") return "Canceled";
   if (booking.after_photos_uploaded_at) return "Completed";
   if (booking.returned_by_renter_at || booking.return_confirmed_at) return "Waiting After Photo";
   if (booking.end_date && booking.end_date === today) return "Waiting return";
   if (booking.pickup_confirmed_at) return "In progress";
-  if (booking.status?.toLowerCase() === "paid") return "Waiting pick up";
+  if (status === "paid") return "Waiting pick up";
   return booking.status || "Unknown";
 }
 
@@ -879,295 +881,6 @@ function ForceCompleteModal({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function AdjustDatesModal({
-  open,
-  onClose,
-  payload,
-  booking,
-  onChange,
-  onSubmit,
-  submitting,
-}: {
-  open: boolean;
-  onClose: () => void;
-  payload: { start_date: string; end_date: string; reason: string };
-  booking: BookingDetailType | null;
-  onChange: (p: { start_date: string; end_date: string; reason: string }) => void;
-  onSubmit: () => void;
-  submitting: boolean;
-}) {
-  const [startOpen, setStartOpen] = useState(false);
-  const [endOpen, setEndOpen] = useState(false);
-  const startDate = payload.start_date ? new Date(payload.start_date) : null;
-  const endDate = payload.end_date ? new Date(payload.end_date) : null;
-
-  const computeDuration = (start?: Date | null, end?: Date | null) => {
-    if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 0;
-    if (end < start) return 0;
-    return Math.max(1, differenceInCalendarDays(end, start) + 1);
-  };
-
-  const durationCurrent = computeDuration(
-    booking?.start_date ? new Date(booking.start_date) : null,
-    booking?.end_date ? new Date(booking.end_date) : null
-  );
-  const durationNew = computeDuration(startDate, endDate);
-
-  const asNumber = (value: unknown) => {
-    const num = Number(value);
-    return Number.isFinite(num) ? num : 0;
-  };
-
-  const currentSubtotal = asNumber((booking?.totals as any)?.rental_subtotal ?? (booking?.totals as any)?.subtotal);
-  const currentServiceFee = asNumber((booking?.totals as any)?.renter_fee);
-  const dailyRate = durationCurrent ? currentSubtotal / durationCurrent : 0;
-  const dailyFee = durationCurrent ? currentServiceFee / durationCurrent : 0;
-
-  const newSubtotal = durationNew ? Math.round(dailyRate * durationNew * 100) / 100 : 0;
-  const newServiceFee = durationNew ? Math.round(dailyFee * durationNew * 100) / 100 : 0;
-
-  const currentDeposit = asNumber((booking?.totals as any)?.damage_deposit);
-  const currentTotalComputed = Math.round((currentSubtotal + currentServiceFee + currentDeposit) * 100) / 100;
-
-  const newTotal = Math.round((newSubtotal + newServiceFee + currentDeposit) * 100) / 100;
-
-  const totalDelta = Math.round((newTotal - currentTotalComputed) * 100) / 100;
-  const deltaLabel = totalDelta === 0 ? "No change" : totalDelta > 0 ? `Charge ${formatMoney(totalDelta)}` : `Refund ${formatMoney(Math.abs(totalDelta))}`;
-
-  const changed = {
-    duration: durationNew !== durationCurrent,
-    subtotal: Math.abs(newSubtotal - currentSubtotal) > 0.009,
-    serviceFee: Math.abs(newServiceFee - currentServiceFee) > 0.009,
-    total: Math.abs(newTotal - currentTotalComputed) > 0.009,
-  };
-
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen) onClose();
-      }}
-    >
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Adjust Booking Dates</DialogTitle>
-          <p className="text-sm text-muted-foreground">
-            Modify the rental period for booking BK-{booking?.id}. This will recalculate all charges and update the booking.
-          </p>
-        </DialogHeader>
-        <div className="space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <DateField
-              label="Start Date"
-              date={startDate}
-              open={startOpen}
-              onOpenChange={setStartOpen}
-              onSelect={(date) => {
-                const iso = date ? date.toISOString().slice(0, 10) : "";
-                onChange({ ...payload, start_date: iso });
-              }}
-            />
-            <DateField
-              label="End Date"
-              date={endDate}
-              open={endOpen}
-              onOpenChange={setEndOpen}
-              onSelect={(date) => {
-                const iso = date ? date.toISOString().slice(0, 10) : "";
-                onChange({ ...payload, end_date: iso });
-              }}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>Reason</Label>
-            <Textarea
-              placeholder="Short note for audit trail"
-              value={payload.reason}
-              onChange={(e) => onChange({ ...payload, reason: e.target.value })}
-            />
-          </div>
-          <div className="rounded-xl border bg-muted/40">
-            <div className="px-4 py-3 border-b">
-              <p className="m-0 font-medium">Recalculated Totals</p>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-0 px-4 py-3 text-sm">
-              <div className="space-y-2 pr-3 border-b md:border-b-0 md:border-r">
-                <p className="text-xs font-semibold text-muted-foreground uppercase">Current</p>
-                <PreviewRow label="Duration" value={`${durationCurrent || "—"} day${durationCurrent === 1 ? "" : "s"}`} />
-                <PreviewRow
-                  label="Subtotal"
-                  value={formatMoney(currentSubtotal)}
-                  highlight={changed.subtotal}
-                />
-                <PreviewRow
-                  label="Service Fee"
-                  value={formatMoney(currentServiceFee)}
-                  highlight={changed.serviceFee}
-                />
-                <PreviewRow label="Damage Deposit" value={formatMoney(currentDeposit)} />
-                <PreviewRow
-                  label="Total"
-                  value={formatMoney(currentTotalComputed)}
-                  highlight={changed.total}
-                  bold
-                />
-              </div>
-              <div className="space-y-2 pl-3">
-                <p className="text-xs font-semibold text-primary uppercase">New</p>
-                <PreviewRow
-                  label="Duration"
-                  value={`${durationNew || "—"} day${durationNew === 1 ? "" : "s"}`}
-                  highlight={changed.duration}
-                />
-                <PreviewRow
-                  label="Subtotal"
-                  value={formatMoney(newSubtotal)}
-                  highlight={changed.subtotal}
-                />
-                <PreviewRow
-                  label="Service Fee"
-                  value={formatMoney(newServiceFee)}
-                  highlight={changed.serviceFee}
-                />
-                <PreviewRow
-                  label="Damage Deposit"
-                  value={formatMoney(currentDeposit)}
-                />
-                <PreviewRow
-                  label="Total"
-                  value={formatMoney(newTotal)}
-                  highlight={changed.total}
-                  bold
-                />
-              </div>
-            </div>
-            <div className="px-4 py-3 border-t text-sm flex items-center justify-between">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <CalendarClock className="w-4 h-4" />
-                <span>Adjustment</span>
-              </div>
-              <span
-                className={cn(
-                  "font-semibold",
-                  totalDelta > 0 ? "text-destructive" : totalDelta < 0 ? "text-green-600" : "text-muted-foreground"
-                )}
-              >
-                {deltaLabel}
-              </span>
-            </div>
-          </div>
-          <div className="rounded-lg border border-amber-300 bg-amber-50 text-amber-900 p-3 text-sm flex gap-2">
-            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-            <div className="space-y-1">
-              <p className="m-0 font-medium">Heads up</p>
-              <p className="m-0">Payment adjustments (charges or refunds) will be processed and date conflicts will be blocked if another booking overlaps.</p>
-            </div>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>
-            Close
-          </Button>
-          <Button onClick={onSubmit} disabled={!payload.start_date || !payload.end_date || durationNew === 0 || submitting}>
-            Confirm Adjustment
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function PreviewRow({
-  label,
-  value,
-  highlight,
-  bold,
-}: {
-  label: string;
-  value: string;
-  highlight?: boolean;
-  bold?: boolean;
-}) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-muted-foreground">{label}</span>
-      <span className={cn(bold ? "font-semibold" : "", highlight ? "text-primary" : "")}>{value}</span>
-    </div>
-  );
-}
-
-function DateField({
-  label,
-  date,
-  onSelect,
-  open,
-  onOpenChange,
-}: {
-  label: string;
-  date: Date | null;
-  onSelect: (date: Date | undefined) => void;
-  open: boolean;
-  onOpenChange: (val: boolean) => void;
-}) {
-  return (
-    <div className="space-y-2">
-      <Label>{label}</Label>
-      <Popover modal open={open} onOpenChange={onOpenChange}>
-        <PopoverTrigger asChild>
-          <Button
-            type="button"
-            variant="outline"
-            className={cn(
-              "w-full justify-start text-left font-normal h-11 rounded-md border-input bg-white hover:bg-muted",
-              date ? "bg-primary/10 border-primary/60 text-foreground" : "text-muted-foreground"
-            )}
-            aria-expanded={open}
-          >
-            <CalendarIcon className="w-4 h-4 mr-2" />
-            {date ? format(date, "PP") : "Pick a date"}
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent
-          className="p-0 w-[320px] bg-white text-foreground shadow-lg rounded-xl border z-[200]"
-          align="start"
-          sideOffset={8}
-        >
-          <DatePicker
-            mode="single"
-            selected={date ?? undefined}
-            onSelect={(d) => {
-              onSelect(d);
-              onOpenChange(false);
-            }}
-            initialFocus
-            className="p-3"
-            classNames={{
-              months: "flex flex-col space-y-2",
-              month: "space-y-3",
-              caption: "flex justify-between items-center px-1 text-sm font-medium text-foreground",
-              caption_label: "text-sm font-semibold",
-              nav: "flex items-center gap-2",
-              nav_button:
-                "h-8 w-8 rounded-full border border-border bg-white hover:bg-muted flex items-center justify-center text-muted-foreground",
-              table: "w-full border-collapse",
-              head_row: "flex justify-between text-[0.85rem] text-muted-foreground",
-              head_cell: "w-10 text-center font-medium",
-              row: "flex w-full justify-between",
-              cell: "w-10 h-10 text-center",
-              day: "h-10 w-10 p-0 rounded-md hover:bg-muted text-foreground transition-colors",
-              day_selected:
-                "bg-[#5B8CA6] text-white hover:bg-[#5B8CA6] hover:text-white rounded-lg ring-2 ring-[#5B8CA6]/30",
-              day_today: "border border-primary text-primary",
-              day_outside: "text-muted-foreground opacity-50",
-              day_disabled: "text-muted-foreground opacity-50",
-            }}
-          />
-        </PopoverContent>
-      </Popover>
-    </div>
   );
 }
 
