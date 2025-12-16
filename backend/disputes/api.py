@@ -194,6 +194,16 @@ class DisputeCaseSerializer(serializers.ModelSerializer):
         damage_flow_kind = validated_data.get(
             "damage_flow_kind", DisputeCase.DamageFlowKind.GENERIC
         )
+        active_statuses = {
+            DisputeCase.Status.OPEN,
+            DisputeCase.Status.INTAKE_MISSING_EVIDENCE,
+            DisputeCase.Status.AWAITING_REBUTTAL,
+            DisputeCase.Status.UNDER_REVIEW,
+        }
+        if DisputeCase.objects.filter(booking=booking, status__in=active_statuses).exists():
+            raise serializers.ValidationError(
+                {"booking": ["An active dispute already exists for this booking."]}
+            )
 
         if not user or not getattr(user, "is_authenticated", False):
             raise serializers.ValidationError({"non_field_errors": ["Authentication required."]})

@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Optional, Sequence, Tuple
 
 from celery import shared_task
+from django.apps import apps
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.mail import EmailMultiAlternatives
@@ -13,6 +14,8 @@ from django.template import TemplateDoesNotExist
 from django.template.loader import render_to_string
 from django.utils import timezone
 
+from notifications.models import NotificationLog
+from operator_core.models import OperatorJobRun
 from payments.receipts import upload_booking_receipt_pdf, upload_promotion_receipt_pdf
 
 logger = logging.getLogger(__name__)
@@ -98,6 +101,292 @@ def _build_email_context(extra: Optional[dict]) -> dict:
 Attachment = Tuple[str, bytes, str]
 
 
+def _log_notification(
+    channel: str,
+    type_: str,
+    status: str,
+    *,
+    user_id: int | None = None,
+    booking_id: int | None = None,
+    error: str | None = None,
+) -> None:
+    try:
+        NotificationLog.objects.create(
+            channel=channel,
+            type=type_,
+            status=status,
+            user_id=user_id,
+            booking_id=booking_id,
+            error=error or "",
+        )
+    except Exception:
+        logger.exception(
+            "notifications: failed to persist notification log",
+            extra={"channel": channel, "type": type_, "status": status},
+        )
+
+
+def _log_booking_event(
+    *,
+    booking_id: int | None,
+    channel: str,
+    type_: str,
+    status: str,
+    error: str | None = None,
+) -> None:
+    if not booking_id:
+        return
+    try:
+        BookingEvent = apps.get_model("operator_bookings", "BookingEvent")
+        Booking = apps.get_model("bookings", "Booking")
+        if not BookingEvent:
+            return
+        booking = Booking.objects.filter(pk=booking_id).first() if Booking else None
+        if not booking:
+            return
+
+        if channel == "email":
+            event_type = (
+                BookingEvent.Type.EMAIL_SENT
+                if status == NotificationLog.Status.SENT
+                else BookingEvent.Type.EMAIL_FAILED
+            )
+        else:
+            event_type = (
+                BookingEvent.Type.SMS_SENT
+                if status == NotificationLog.Status.SENT
+                else BookingEvent.Type.SMS_FAILED
+            )
+        payload = {"notification_type": type_, "channel": channel, "status": status}
+        if error:
+            payload["error"] = error
+        BookingEvent.objects.create(booking=booking, type=event_type, payload=payload)
+    except Exception:
+        logger.exception(
+            "booking_event: failed to log notification",
+            extra={"booking_id": booking_id, "channel": channel, "type": type_, "status": status},
+        )
+
+
+def _prepare_email_bodies(
+    subject: str,
+    template: str | None,
+    context: dict | None,
+    *,
+    html_template: str | None = None,
+) -> tuple[str, str | None]:
+    context_with_brand = _build_email_context(context or {})
+    context_with_brand["subject"] = subject
+    body = ""
+    html_body = None
+    if template:
+        text_template_path = template if template.startswith("email/") else f"email/{template}"
+        body = _render(text_template_path, context_with_brand)
+
+        derived_html_template = html_template
+        if not derived_html_template:
+            base_name = template.rsplit(".", 1)[0]
+            derived_html_template = f"{base_name}.html"
+
+        if derived_html_template:
+            html_template_path = (
+                derived_html_template
+                if derived_html_template.startswith("email/")
+                else f"email/{derived_html_template}"
+            )
+            try:
+                html_body = _render(html_template_path, context_with_brand)
+            except TemplateDoesNotExist:
+                html_body = None
+    return body, html_body
+
+
+def _send_email_logged(
+    type_: str,
+    *,
+    to_email: str | None,
+    subject: str,
+    body: str | None = None,
+    template: str | None = None,
+    context: dict | None = None,
+    html_template: str | None = None,
+    attachments: Optional[Sequence[Attachment]] = None,
+    user_id: int | None = None,
+    booking_id: int | None = None,
+):
+    if not to_email:
+        error = "missing recipient email"
+        _log_notification(
+            "email",
+            type_,
+            NotificationLog.Status.FAILED,
+            user_id=user_id,
+            booking_id=booking_id,
+            error=error,
+        )
+        _log_booking_event(
+            booking_id=booking_id,
+            channel="email",
+            type_=type_,
+            status=NotificationLog.Status.FAILED,
+            error=error,
+        )
+        logger.warning("notifications: cannot send email without recipient")
+        return False
+
+    text_body, html_body = _prepare_email_bodies(
+        subject, template, context, html_template=html_template
+    )
+    send_body = body if body is not None else text_body
+
+    message = EmailMultiAlternatives(
+        subject=subject,
+        body=send_body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[to_email],
+    )
+    if html_body:
+        message.attach_alternative(html_body, "text/html")
+    for attachment in attachments or ():
+        filename, content, mime_type = attachment
+        message.attach(filename, content, mime_type)
+
+    try:
+        message.send(fail_silently=False)
+        _log_notification(
+            "email",
+            type_,
+            NotificationLog.Status.SENT,
+            user_id=user_id,
+            booking_id=booking_id,
+        )
+        _log_booking_event(
+            booking_id=booking_id,
+            channel="email",
+            type_=type_,
+            status=NotificationLog.Status.SENT,
+        )
+        return True
+    except Exception as exc:
+        error_text = str(exc) or exc.__class__.__name__
+        logger.exception(
+            "notifications: email send failed",
+            extra={"type": type_, "booking_id": booking_id, "user_id": user_id},
+        )
+        _log_notification(
+            "email",
+            type_,
+            NotificationLog.Status.FAILED,
+            user_id=user_id,
+            booking_id=booking_id,
+            error=error_text,
+        )
+        _log_booking_event(
+            booking_id=booking_id,
+            channel="email",
+            type_=type_,
+            status=NotificationLog.Status.FAILED,
+            error=error_text,
+        )
+        return False
+
+
+def _send_sms_logged(
+    type_: str,
+    *,
+    to_phone: str | None,
+    body: str | None = None,
+    template: str | None = None,
+    context: dict | None = None,
+    user_id: int | None = None,
+    booking_id: int | None = None,
+):
+    if not to_phone:
+        error = "missing destination phone"
+        _log_notification(
+            "sms",
+            type_,
+            NotificationLog.Status.FAILED,
+            user_id=user_id,
+            booking_id=booking_id,
+            error=error,
+        )
+        _log_booking_event(
+            booking_id=booking_id,
+            channel="sms",
+            type_=type_,
+            status=NotificationLog.Status.FAILED,
+            error=error,
+        )
+        logger.warning("notifications: cannot send SMS without destination")
+        return False
+
+    client, from_number = _twilio_client()
+    if not client or not from_number:
+        error = "sms client unavailable"
+        _log_notification(
+            "sms",
+            type_,
+            NotificationLog.Status.FAILED,
+            user_id=user_id,
+            booking_id=booking_id,
+            error=error,
+        )
+        _log_booking_event(
+            booking_id=booking_id,
+            channel="sms",
+            type_=type_,
+            status=NotificationLog.Status.FAILED,
+            error=error,
+        )
+        return False
+
+    sms_body = body
+    if template:
+        template_path = template if template.startswith("sms/") else f"sms/{template}"
+        sms_body = _render(template_path, context or {})
+
+    try:
+        client.messages.create(body=sms_body or "", from_=from_number, to=to_phone)
+        _log_notification(
+            "sms",
+            type_,
+            NotificationLog.Status.SENT,
+            user_id=user_id,
+            booking_id=booking_id,
+        )
+        _log_booking_event(
+            booking_id=booking_id,
+            channel="sms",
+            type_=type_,
+            status=NotificationLog.Status.SENT,
+        )
+        return True
+    except Exception as exc:
+        error_text = str(exc) or exc.__class__.__name__
+        logger.exception(
+            "notifications: sms send failed",
+            extra={"type": type_, "booking_id": booking_id, "user_id": user_id},
+        )
+        _log_notification(
+            "sms",
+            type_,
+            NotificationLog.Status.FAILED,
+            user_id=user_id,
+            booking_id=booking_id,
+            error=error_text,
+        )
+        _log_booking_event(
+            booking_id=booking_id,
+            channel="sms",
+            type_=type_,
+            status=NotificationLog.Status.FAILED,
+            error=error_text,
+        )
+        return False
+
+
+# Backwards-compatible wrappers
 def _send_email(
     subject: str,
     template: str,
@@ -107,55 +396,19 @@ def _send_email(
     html_template: str | None = None,
     attachments: Optional[Sequence[Attachment]] = None,
 ) -> None:
-    if not to_email:
-        logger.warning("notifications: cannot send email without recipient")
-        return
-    context_with_brand = _build_email_context(context)
-    context_with_brand["subject"] = subject
-    text_template_path = f"email/{template}"
-    body = _render(text_template_path, context_with_brand)
-
-    derived_html_template = html_template
-    if not derived_html_template:
-        base_name = template.rsplit(".", 1)[0]
-        derived_html_template = f"{base_name}.html"
-
-    html_body = None
-    if derived_html_template:
-        html_template_path = (
-            derived_html_template
-            if derived_html_template.startswith("email/")
-            else f"email/{derived_html_template}"
-        )
-        try:
-            html_body = _render(html_template_path, context_with_brand)
-        except TemplateDoesNotExist:
-            html_body = None
-
-    message = EmailMultiAlternatives(
+    _send_email_logged(
+        "generic",
+        to_email=to_email,
         subject=subject,
-        body=body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[to_email],
+        template=template,
+        context=context,
+        html_template=html_template,
+        attachments=attachments,
     )
-    if html_body:
-        message.attach_alternative(html_body, "text/html")
-    for attachment in attachments or ():
-        filename, content, mime_type = attachment
-        message.attach(filename, content, mime_type)
-    message.send(fail_silently=False)
 
 
 def _send_sms(template: str, context: dict, to_number: str | None):
-    if not to_number:
-        logger.warning("notifications: cannot send SMS without destination")
-        return
-    client, from_number = _twilio_client()
-    if not client or not from_number:
-        # Already logged; act as a no-op for developer convenience
-        return
-    body = _render(f"sms/{template}", context)
-    client.messages.create(body=body, from_=from_number, to=to_number)
+    _send_sms_logged("generic", to_phone=to_number, template=template, context=context)
 
 
 def _display_name(user: Optional[User]) -> str:
@@ -208,7 +461,14 @@ def send_password_reset_code_email(user_id: int, to_email: str, code: str):
     """Deliver the password reset challenge via email."""
     user = _get_user(user_id)
     context = {"user": user, "code": code}
-    _send_email("Your password reset code", "password_reset_code.txt", context, to_email)
+    _send_email_logged(
+        "password_reset_code",
+        to_email=to_email,
+        subject="Your password reset code",
+        template="password_reset_code.txt",
+        context=context,
+        user_id=user_id,
+    )
 
 
 @shared_task(queue="sms")
@@ -216,7 +476,13 @@ def send_password_reset_code_sms(user_id: int, to_number: str, code: str):
     """Deliver the password reset challenge via SMS."""
     user = _get_user(user_id)
     context = {"user": user, "code": code}
-    _send_sms("password_reset_code.txt", context, to_number)
+    _send_sms_logged(
+        "password_reset_code",
+        to_phone=to_number,
+        template="password_reset_code.txt",
+        context=context,
+        user_id=user_id,
+    )
 
 
 @shared_task(queue="emails")
@@ -224,7 +490,14 @@ def send_two_factor_code_email(user_id: int, to_email: str, code: str):
     """Deliver the login two-factor code via email."""
     user = _get_user(user_id)
     context = {"user": user, "code": code}
-    _send_email("Your login verification code", "two_factor_code.txt", context, to_email)
+    _send_email_logged(
+        "two_factor_code",
+        to_email=to_email,
+        subject="Your login verification code",
+        template="two_factor_code.txt",
+        context=context,
+        user_id=user_id,
+    )
 
 
 @shared_task(queue="sms")
@@ -232,7 +505,13 @@ def send_two_factor_code_sms(user_id: int, to_number: str, code: str):
     """Deliver the login two-factor code via SMS."""
     user = _get_user(user_id)
     context = {"user": user, "code": code}
-    _send_sms("two_factor_code.txt", context, to_number)
+    _send_sms_logged(
+        "two_factor_code",
+        to_phone=to_number,
+        template="two_factor_code.txt",
+        context=context,
+        user_id=user_id,
+    )
 
 
 @shared_task(queue="emails")
@@ -240,7 +519,14 @@ def send_contact_verification_email(user_id: int, to_email: str, code: str):
     """Deliver a verification code for confirming the user's email."""
     user = _get_user(user_id)
     context = {"user": user, "code": code}
-    _send_email("Verify your email address", "contact_verification_code.txt", context, to_email)
+    _send_email_logged(
+        "contact_verification_code",
+        to_email=to_email,
+        subject="Verify your email address",
+        template="contact_verification_code.txt",
+        context=context,
+        user_id=user_id,
+    )
 
 
 @shared_task(queue="sms")
@@ -248,7 +534,13 @@ def send_contact_verification_sms(user_id: int, to_number: str, code: str):
     """Deliver a verification code for confirming the user's phone."""
     user = _get_user(user_id)
     context = {"user": user, "code": code}
-    _send_sms("contact_verification_code.txt", context, to_number)
+    _send_sms_logged(
+        "contact_verification_code",
+        to_phone=to_number,
+        template="contact_verification_code.txt",
+        context=context,
+        user_id=user_id,
+    )
 
 
 @shared_task(queue="emails")
@@ -258,7 +550,14 @@ def send_login_alert_email(user_id: int, ip: str, ua: str):
     if not user:
         return
     context = {"user": user, "ip": ip, "ua": ua}
-    _send_email("New login detected", "login_alert.txt", context, user.email)
+    _send_email_logged(
+        "login_alert",
+        to_email=user.email,
+        subject="New login detected",
+        template="login_alert.txt",
+        context=context,
+        user_id=user_id,
+    )
 
 
 @shared_task(queue="sms")
@@ -268,7 +567,13 @@ def send_login_alert_sms(user_id: int, ip: str, ua: str):
     if not user:
         return
     context = {"user": user, "ip": ip, "ua": ua}
-    _send_sms("login_alert.txt", context, getattr(user, "phone", None))
+    _send_sms_logged(
+        "login_alert",
+        to_phone=getattr(user, "phone", None),
+        template="login_alert.txt",
+        context=context,
+        user_id=user_id,
+    )
 
 
 @shared_task(queue="emails")
@@ -278,7 +583,14 @@ def send_password_changed_email(user_id: int):
     if not user:
         return
     context = {"user": user}
-    _send_email("Your password was changed", "password_changed.txt", context, user.email)
+    _send_email_logged(
+        "password_changed",
+        to_email=user.email,
+        subject="Your password was changed",
+        template="password_changed.txt",
+        context=context,
+        user_id=user_id,
+    )
 
 
 @shared_task(queue="sms")
@@ -288,7 +600,13 @@ def send_password_changed_sms(user_id: int):
     if not user:
         return
     context = {"user": user}
-    _send_sms("password_changed.txt", context, getattr(user, "phone", None))
+    _send_sms_logged(
+        "password_changed",
+        to_phone=getattr(user, "phone", None),
+        template="password_changed.txt",
+        context=context,
+        user_id=user_id,
+    )
 
 
 @shared_task(queue="emails")
@@ -329,11 +647,14 @@ def send_booking_request_email(owner_id: int, booking_id: int):
         "cta_url": f"{frontend_origin}/profile?tab=booking-requests" if frontend_origin else "",
         "check_id_message": CHECK_ID_MESSAGE,
     }
-    _send_email(
-        f"New booking request for {listing_title}",
-        "booking_request_new.txt",
-        context,
-        owner.email,
+    _send_email_logged(
+        "booking_request",
+        to_email=owner.email,
+        subject=f"New booking request for {listing_title}",
+        template="booking_request_new.txt",
+        context=context,
+        user_id=owner_id,
+        booking_id=booking_id,
     )
 
 
@@ -374,11 +695,14 @@ def send_booking_status_email(renter_id: int, booking_id: int, new_status: str):
         "cta_url": f"{frontend_origin}/profile?tab=rentals" if frontend_origin else "",
         "owner": booking.owner,
     }
-    _send_email(
-        f"Your booking for {listing_title} was {status_word}",
-        "booking_status_update.txt",
-        context,
-        getattr(renter, "email", None),
+    _send_email_logged(
+        "booking_status_update",
+        to_email=getattr(renter, "email", None),
+        subject=f"Your booking for {listing_title} was {status_word}",
+        template="booking_status_update.txt",
+        context=context,
+        user_id=renter_id,
+        booking_id=booking_id,
     )
 
 
@@ -425,11 +749,14 @@ def send_booking_expired_email(booking_id: int):
         "recipient_role": "renter",
         "recipient_name": _display_name(renter),
     }
-    _send_email(
-        f"Your booking for {listing_title} expired",
-        "booking_expired.txt",
-        renter_context,
-        getattr(renter, "email", None),
+    _send_email_logged(
+        "booking_expired",
+        to_email=getattr(renter, "email", None),
+        subject=f"Your booking for {listing_title} expired",
+        template="booking_expired.txt",
+        context=renter_context,
+        user_id=getattr(renter, "id", None),
+        booking_id=booking_id,
     )
 
     owner_context = {
@@ -437,11 +764,14 @@ def send_booking_expired_email(booking_id: int):
         "recipient_role": "owner",
         "recipient_name": _display_name(owner),
     }
-    _send_email(
-        f"A booking for {listing_title} expired",
-        "booking_expired.txt",
-        owner_context,
-        getattr(owner, "email", None),
+    _send_email_logged(
+        "booking_expired",
+        to_email=getattr(owner, "email", None),
+        subject=f"A booking for {listing_title} expired",
+        template="booking_expired.txt",
+        context=owner_context,
+        user_id=getattr(owner, "id", None),
+        booking_id=booking_id,
     )
 
 
@@ -489,12 +819,15 @@ def send_booking_payment_receipt_email(user_id: int, booking_id: int):
         "total_paid": totals.get("total_charge") or "0.00",
         "receipt_s3_key": receipt_s3_key,
     }
-    _send_email(
-        "Your rental payment receipt",
-        "booking_payment_receipt.txt",
-        context,
-        user.email,
+    _send_email_logged(
+        "receipt",
+        to_email=user.email,
+        subject="Your rental payment receipt",
+        template="booking_payment_receipt.txt",
+        context=context,
         attachments=attachments or None,
+        user_id=user_id,
+        booking_id=booking_id,
     )
 
 
@@ -537,11 +870,14 @@ def send_booking_completed_email(renter_id: int, booking_id: int) -> None:
         "damage_deposit": totals.get("damage_deposit"),
         "cta_url": f"{frontend_origin}/profile?tab=rentals" if frontend_origin else "",
     }
-    _send_email(
-        subject,
-        "booking_completed.txt",
-        context,
-        renter.email,
+    _send_email_logged(
+        "completed",
+        to_email=renter.email,
+        subject=subject,
+        template="booking_completed.txt",
+        context=context,
+        user_id=renter_id,
+        booking_id=booking_id,
     )
 
 
@@ -600,21 +936,61 @@ def send_promotion_payment_receipt_email(user_id: int, promotion_slot_id: int):
         "total_paid": _format_cents(getattr(slot, "total_price_cents", 0)),
         "receipt_s3_key": receipt_s3_key,
     }
-    _send_email(
-        "Your promotion payment receipt",
-        "promotion_payment_receipt.txt",
-        context,
-        user.email,
+    _send_email_logged(
+        "promotion_receipt",
+        to_email=user.email,
+        subject="Your promotion payment receipt",
+        template="promotion_payment_receipt.txt",
+        context=context,
         attachments=attachments or None,
+        user_id=user_id,
     )
 
 
 @shared_task(queue="emails")
 def send_dispute_missing_evidence_email(dispute_id: int):
     """
-    Placeholder for notifying filers to complete dispute evidence intake.
+    Notify filer to complete dispute evidence intake within 24h.
     """
-    logger.info("notifications: dispute %s missing evidence email placeholder", dispute_id)
+    try:
+        from disputes.models import DisputeCase
+
+        dispute = (
+            DisputeCase.objects.select_related("booking", "booking__listing", "opened_by")
+            .filter(pk=dispute_id)
+            .first()
+        )
+    except Exception:
+        logger.exception(
+            "notifications: failed to load dispute %s for missing evidence email", dispute_id
+        )
+        return
+
+    if not dispute or not dispute.booking:
+        logger.warning(
+            "notifications: missing booking for dispute %s missing evidence email", dispute_id
+        )
+        return
+
+    user = getattr(dispute, "opened_by", None)
+    to_email = getattr(user, "email", None)
+    listing_title = getattr(getattr(dispute.booking, "listing", None), "title", "your booking")
+    due_at = getattr(dispute, "intake_evidence_due_at", None)
+    subject = "Action needed: upload dispute evidence"
+    body = (
+        f"We need additional evidence for your dispute on booking #{dispute.booking_id} "
+        f"({listing_title}). Please upload evidence within 24 hours."
+    )
+    if due_at:
+        body += f" Due by: {due_at}."
+    _send_email_logged(
+        "dispute_missing_evidence",
+        to_email=to_email,
+        subject=subject,
+        body=body,
+        user_id=getattr(user, "id", None),
+        booking_id=getattr(dispute.booking, "id", None),
+    )
 
 
 @shared_task(queue="emails")
@@ -667,11 +1043,14 @@ def send_dispute_rebuttal_started_email(dispute_id: int, recipient_id: int):
         "date_range_display": date_range_display,
         "cta_url": cta_url,
     }
-    _send_email(
-        f"Dispute opened on booking #{booking.id}",
-        "dispute_rebuttal_started.txt",
-        context,
-        getattr(user, "email", None),
+    _send_email_logged(
+        "dispute_rebuttal_started",
+        to_email=getattr(user, "email", None),
+        subject=f"Dispute opened on booking #{booking.id}",
+        template="dispute_rebuttal_started.txt",
+        context=context,
+        user_id=getattr(user, "id", None),
+        booking_id=getattr(booking, "id", None),
     )
 
 
@@ -711,7 +1090,50 @@ def send_dispute_rebuttal_started_sms(dispute_id: int, recipient_id: int):
         "booking": booking,
         "listing_title": listing_title,
     }
-    _send_sms("dispute_rebuttal_started.txt", context, to_number)
+    _send_sms_logged(
+        "dispute_rebuttal_started",
+        to_phone=to_number,
+        template="dispute_rebuttal_started.txt",
+        context=context,
+        user_id=getattr(user, "id", None),
+        booking_id=getattr(booking, "id", None),
+    )
+
+
+@shared_task(queue="sms")
+def send_dispute_missing_evidence_sms(dispute_id: int):
+    """SMS reminder to upload evidence within 24h."""
+    try:
+        from disputes.models import DisputeCase
+
+        dispute = (
+            DisputeCase.objects.select_related("booking", "opened_by").filter(pk=dispute_id).first()
+        )
+    except Exception:
+        logger.exception(
+            "notifications: failed to load dispute %s for missing evidence sms", dispute_id
+        )
+        return
+
+    if not dispute or not dispute.booking:
+        return
+    user = getattr(dispute, "opened_by", None)
+    to_number = getattr(user, "phone", None) if user else None
+    if not to_number:
+        return
+
+    listing_title = getattr(getattr(dispute.booking, "listing", None), "title", "your booking")
+    body = (
+        f"Dispute for booking #{dispute.booking_id} ({listing_title}) needs evidence. "
+        "Please upload within 24h."
+    )
+    _send_sms_logged(
+        "dispute_missing_evidence",
+        to_phone=to_number,
+        body=body,
+        user_id=getattr(user, "id", None),
+        booking_id=getattr(dispute.booking, "id", None),
+    )
 
 
 @shared_task(queue="emails")
@@ -764,11 +1186,90 @@ def send_dispute_rebuttal_ended_email(dispute_id: int, recipient_id: int):
         "date_range_display": date_range_display,
         "cta_url": cta_url,
     }
-    _send_email(
-        f"Rebuttal window ended for booking #{booking.id}",
-        "dispute_rebuttal_ended.txt",
-        context,
-        getattr(user, "email", None),
+    _send_email_logged(
+        "dispute_rebuttal_ended",
+        to_email=getattr(user, "email", None),
+        subject=f"Rebuttal window ended for booking #{booking.id}",
+        template="dispute_rebuttal_ended.txt",
+        context=context,
+        user_id=getattr(user, "id", None),
+        booking_id=getattr(booking, "id", None),
+    )
+
+
+@shared_task(queue="emails")
+def send_dispute_rebuttal_reminder_email(dispute_id: int, recipient_id: int):
+    """Reminder that rebuttal deadline is approaching."""
+    user = _get_user(recipient_id)
+    if not user or not getattr(user, "email", None):
+        return
+    try:
+        from disputes.models import DisputeCase
+
+        dispute = (
+            DisputeCase.objects.select_related("booking", "booking__listing", "opened_by")
+            .filter(pk=dispute_id)
+            .first()
+        )
+    except Exception:
+        logger.exception(
+            "notifications: failed to load dispute %s for rebuttal reminder email", dispute_id
+        )
+        return
+    if not dispute or not dispute.booking:
+        return
+    listing_title = getattr(getattr(dispute.booking, "listing", None), "title", "your rental")
+    due_at = getattr(dispute, "rebuttal_due_at", None)
+    subject = f"Reminder: respond to dispute for booking #{dispute.booking_id}"
+    body = (
+        f"A dispute on booking #{dispute.booking_id} ({listing_title}) needs your response. "
+        "Please submit a rebuttal before the deadline."
+    )
+    if due_at:
+        body += f" Due by: {due_at}."
+    _send_email_logged(
+        "dispute_rebuttal_reminder",
+        to_email=user.email,
+        subject=subject,
+        body=body,
+        user_id=recipient_id,
+        booking_id=getattr(dispute.booking, "id", None),
+    )
+
+
+@shared_task(queue="sms")
+def send_dispute_rebuttal_reminder_sms(dispute_id: int, recipient_id: int):
+    """SMS reminder for approaching rebuttal deadline."""
+    user = _get_user(recipient_id)
+    to_number = getattr(user, "phone", None) if user else None
+    if not user or not to_number:
+        return
+    try:
+        from disputes.models import DisputeCase
+
+        dispute = (
+            DisputeCase.objects.select_related("booking", "booking__listing")
+            .filter(pk=dispute_id)
+            .first()
+        )
+    except Exception:
+        logger.exception(
+            "notifications: failed to load dispute %s for rebuttal reminder sms", dispute_id
+        )
+        return
+    if not dispute or not dispute.booking:
+        return
+    listing_title = getattr(getattr(dispute.booking, "listing", None), "title", "your rental")
+    body = (
+        f"Reminder: respond to dispute for booking #{dispute.booking_id} ({listing_title}) "
+        "before the rebuttal deadline."
+    )
+    _send_sms_logged(
+        "dispute_rebuttal_reminder",
+        to_phone=to_number,
+        body=body,
+        user_id=recipient_id,
+        booking_id=getattr(dispute.booking, "id", None),
     )
 
 
@@ -798,13 +1299,23 @@ def send_deposit_failed_renter(booking_id: int, refund_amount: str):
         "end_date_display": end_display,
         "date_range_display": date_range_display,
     }
-    _send_email(
-        "Booking canceled: deposit could not be authorized",
-        "deposit_failed_renter.txt",
-        context,
-        getattr(renter, "email", None),
+    _send_email_logged(
+        "deposit_failed_renter",
+        to_email=getattr(renter, "email", None),
+        subject="Booking canceled: deposit could not be authorized",
+        template="deposit_failed_renter.txt",
+        context=context,
+        user_id=getattr(renter, "id", None),
+        booking_id=booking_id,
     )
-    _send_sms("deposit_failed_renter.txt", context, getattr(renter, "phone", None))
+    _send_sms_logged(
+        "deposit_failed_renter",
+        to_phone=getattr(renter, "phone", None),
+        template="deposit_failed_renter.txt",
+        context=context,
+        user_id=getattr(renter, "id", None),
+        booking_id=booking_id,
+    )
 
 
 @shared_task(queue="emails")
@@ -833,10 +1344,95 @@ def send_deposit_failed_owner(booking_id: int, owner_amount: str):
         "end_date_display": end_display,
         "date_range_display": date_range_display,
     }
-    _send_email(
-        "Booking canceled: renter deposit failed",
-        "deposit_failed_owner.txt",
-        context,
-        getattr(owner, "email", None),
+    _send_email_logged(
+        "deposit_failed_owner",
+        to_email=getattr(owner, "email", None),
+        subject="Booking canceled: renter deposit failed",
+        template="deposit_failed_owner.txt",
+        context=context,
+        user_id=getattr(owner, "id", None),
+        booking_id=booking_id,
     )
-    _send_sms("deposit_failed_owner.txt", context, getattr(owner, "phone", None))
+    _send_sms_logged(
+        "deposit_failed_owner",
+        to_phone=getattr(owner, "phone", None),
+        template="deposit_failed_owner.txt",
+        context=context,
+        user_id=getattr(owner, "id", None),
+        booking_id=booking_id,
+    )
+
+
+@shared_task(queue="default")
+def detect_missing_notifications(days: int = 7):
+    """
+    Scan recent bookings and detect missing required notifications.
+    """
+    from bookings.models import Booking
+
+    params = {"days": days}
+    since = timezone.now() - timedelta(days=days)
+    try:
+        recent_bookings = (
+            Booking.objects.filter(updated_at__gte=since)
+            .only("id", "status", "created_at", "updated_at", "charge_payment_intent_id")
+            .order_by("-updated_at")
+        )
+        booking_ids = list(recent_bookings.values_list("id", flat=True))
+        logs = NotificationLog.objects.filter(
+            booking_id__in=booking_ids, status=NotificationLog.Status.SENT
+        ).values("booking_id", "type")
+        sent_map: dict[int, set[str]] = {}
+        for log in logs:
+            bid = log["booking_id"]
+            sent_map.setdefault(bid, set()).add(log["type"])
+
+        missing_by_type: dict[str, int] = {}
+        missing_bookings: list[dict] = []
+        missing_any_total = 0
+
+        REQUIRED_BY_STATUS = {
+            Booking.Status.REQUESTED: {"booking_request"},
+            Booking.Status.CONFIRMED: {"booking_request", "status_update"},
+            Booking.Status.PAID: {"booking_request", "status_update", "receipt"},
+            Booking.Status.CANCELED: {"booking_request", "status_update"},
+            Booking.Status.COMPLETED: {"booking_request", "status_update", "receipt", "completed"},
+        }
+
+        for booking in recent_bookings:
+            required = set(REQUIRED_BY_STATUS.get(booking.status, {"booking_request"}))
+            if "receipt" in required and not getattr(booking, "charge_payment_intent_id", ""):
+                required.discard("receipt")
+            sent = sent_map.get(booking.id, set())
+            missing = sorted(required - sent)
+            if missing:
+                missing_any_total += 1
+                for m in missing:
+                    missing_by_type[m] = missing_by_type.get(m, 0) + 1
+                if len(missing_bookings) < 200:
+                    missing_bookings.append({"booking_id": booking.id, "missing": missing})
+
+        result = {
+            "totals_scanned": len(booking_ids),
+            "bookings_missing_any_count": missing_any_total,
+            "missing_by_type": missing_by_type,
+            "missing_bookings": missing_bookings,
+        }
+        OperatorJobRun.objects.create(
+            job_name="detect_missing_notifications",
+            params_json=params,
+            result_json=result,
+            status=OperatorJobRun.Status.OK,
+            error="",
+        )
+        return result
+    except Exception as exc:
+        OperatorJobRun.objects.create(
+            job_name="detect_missing_notifications",
+            params_json=params,
+            result_json=None,
+            status=OperatorJobRun.Status.FAILED,
+            error=str(exc),
+        )
+        logger.exception("notifications: detect_missing_notifications failed")
+        return None

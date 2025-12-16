@@ -335,6 +335,30 @@ export const operatorAPI = {
   bookingDetail(bookingId: number) {
     return jsonFetch<OperatorBookingDetail>(`/operator/bookings/${bookingId}/`, { method: "GET" });
   },
+  forceCancelBooking(bookingId: number, payload: { actor: "system" | "owner" | "renter" | "no_show"; reason: string }) {
+    return jsonFetch<{ ok: boolean; booking_id: number; status: string }>(
+      `/operator/bookings/${bookingId}/force-cancel/`,
+      { method: "POST", body: payload },
+    );
+  },
+  forceCompleteBooking(bookingId: number, payload: { reason: string }) {
+    return jsonFetch<{ ok: boolean; booking_id: number; status: string }>(
+      `/operator/bookings/${bookingId}/force-complete/`,
+      { method: "POST", body: payload },
+    );
+  },
+  adjustBookingDates(bookingId: number, payload: { start_date: string; end_date: string; reason: string }) {
+    return jsonFetch<{ ok: boolean; booking_id: number; status: string; start_date: string; end_date: string; totals: unknown }>(
+      `/operator/bookings/${bookingId}/adjust-dates/`,
+      { method: "POST", body: payload },
+    );
+  },
+  resendBookingNotifications(bookingId: number, payload: { types: string[]; reason?: string }) {
+    return jsonFetch<{ ok: boolean; booking_id: number; status: string; queued: string[]; failed?: string[] | null }>(
+      `/operator/bookings/${bookingId}/resend-notifications/`,
+      { method: "POST", body: payload },
+    );
+  },
 };
 
 export function formatOperatorUserName(user: Pick<OperatorUserListItem, "first_name" | "last_name" | "username" | "email">) {

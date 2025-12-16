@@ -65,3 +65,25 @@ class OperatorNote(models.Model):
 
     class Meta:
         indexes = [models.Index(fields=["created_at"])]
+
+
+class OperatorJobRun(models.Model):
+    class Status(models.TextChoices):
+        OK = "ok", "OK"
+        FAILED = "failed", "Failed"
+
+    job_name = models.CharField(max_length=128)
+    params_json = models.JSONField(null=True, blank=True)
+    result_json = models.JSONField(null=True, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices)
+    error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["job_name", "created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.job_name} ({self.status})"
