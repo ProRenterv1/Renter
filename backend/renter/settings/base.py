@@ -31,6 +31,7 @@ INSTALLED_APPS = [
     "operator_users",
     "operator_listings",
     "operator_bookings",
+    "operator_finance",
     "bookings.apps.BookingsConfig",
     "payments.apps.PaymentsConfig",
     "disputes",
@@ -215,9 +216,21 @@ CELERY_BEAT_SCHEDULE.update(
             "task": "disputes.auto_flag_unanswered_rebuttals",
             "schedule": crontab(minute=0),  # every hour on the hour
         },
+        "disputes_auto_close_missing_evidence_hourly": {
+            "task": "disputes.auto_close_missing_evidence",
+            "schedule": crontab(minute=15),
+        },
+        "disputes_rebuttal_reminders_hourly": {
+            "task": "disputes.send_rebuttal_reminders",
+            "schedule": crontab(minute=30),
+        },
         "listings_purge_soft_deleted_nightly": {
             "task": "listings.purge_soft_deleted_listings",
             "schedule": crontab(hour=4, minute=0),
+        },
+        "notifications_detect_missing": {
+            "task": "notifications.detect_missing_notifications",
+            "schedule": crontab(hour=2, minute=15),
         },
     }
 )

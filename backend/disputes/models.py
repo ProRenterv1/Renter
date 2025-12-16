@@ -93,6 +93,8 @@ class DisputeCase(models.Model):
         default=False,
         help_text="Mirror flag to block deposit auto-release while this dispute is active.",
     )
+    intake_evidence_due_at = models.DateTimeField(null=True, blank=True)
+    rebuttal_12h_reminder_sent_at = models.DateTimeField(null=True, blank=True)
     decision_notes = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

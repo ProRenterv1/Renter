@@ -1,4 +1,5 @@
 from django.apps import apps
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -154,10 +155,11 @@ class OperatorBookingDetailSerializer(OperatorBookingListSerializer):
         _append(getattr(obj, "deposit_released_at", None), "deposit_released", {})
 
         derived.sort(
-            key=lambda e: e["created_at"] or timezone.datetime.min.replace(tzinfo=timezone.utc)
+            key=lambda e: e["created_at"] or timezone.datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
         )
         for idx, item in enumerate(derived):
-            item["id"] = -(len(derived) - idx)
+            item["id"] = -(idx + 1)
         return derived
 
     def get_disputes(self, obj: Booking):
@@ -176,3 +178,33 @@ class OperatorBookingDetailSerializer(OperatorBookingListSerializer):
                 }
             )
         return payload
+
+
+class ForceCancelBookingSerializer(serializers.Serializer):
+    actor = serializers.ChoiceField(choices=["system", "owner", "renter", "no_show"])
+    reason = serializers.CharField(required=False, allow_blank=True, trim_whitespace=True)
+
+
+class AdjustBookingDatesSerializer(serializers.Serializer):
+    start_date = serializers.DateField()
+    end_date = serializers.DateField()
+    reason = serializers.CharField(required=False, allow_blank=True, trim_whitespace=True)
+
+    def validate(self, attrs):
+        start = attrs.get("start_date")
+        end = attrs.get("end_date")
+        try:
+            from bookings.domain import validate_booking_dates
+
+            validate_booking_dates(start, end)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.message_dict)
+        return attrs
+
+
+class ResendBookingNotificationsSerializer(serializers.Serializer):
+    TYPES = ("booking_request", "status_update", "receipt", "completed", "dispute_missing_evidence")
+    types = serializers.ListField(
+        child=serializers.ChoiceField(choices=TYPES), allow_empty=False, allow_null=False
+    )
+    reason = serializers.CharField(required=False, allow_blank=True, trim_whitespace=True)

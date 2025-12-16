@@ -91,20 +91,22 @@ def update_dispute_intake_status(dispute_id: int) -> Optional[DisputeCase]:
             new_status: Optional[str]
             now = timezone.now()
             new_rebuttal_due_at = dispute.rebuttal_due_at
+            new_intake_due_at = dispute.intake_evidence_due_at
             status_changed = False
             trigger_rebuttal_task = False
 
             if not minimum_met:
                 new_status = DisputeCase.Status.INTAKE_MISSING_EVIDENCE
-                if new_rebuttal_due_at is None:
-                    filed_at = dispute.filed_at or now
-                    new_rebuttal_due_at = filed_at + timedelta(hours=24)
+                filed_at = dispute.filed_at or now
+                new_intake_due_at = filed_at + timedelta(hours=24)
+                new_rebuttal_due_at = filed_at + timedelta(hours=24)
             else:
                 new_status = DisputeCase.Status.AWAITING_REBUTTAL
                 if dispute.status != DisputeCase.Status.AWAITING_REBUTTAL:
                     new_rebuttal_due_at = now + timedelta(hours=24)
                 elif new_rebuttal_due_at is None:
                     new_rebuttal_due_at = now + timedelta(hours=24)
+                new_intake_due_at = None
 
             update_fields: list[str] = []
             if dispute.status != new_status:
@@ -116,6 +118,9 @@ def update_dispute_intake_status(dispute_id: int) -> Optional[DisputeCase]:
             if new_rebuttal_due_at and dispute.rebuttal_due_at != new_rebuttal_due_at:
                 dispute.rebuttal_due_at = new_rebuttal_due_at
                 update_fields.append("rebuttal_due_at")
+            if dispute.intake_evidence_due_at != new_intake_due_at:
+                dispute.intake_evidence_due_at = new_intake_due_at
+                update_fields.append("intake_evidence_due_at")
 
             if update_fields:
                 update_fields.append("updated_at")
@@ -124,6 +129,7 @@ def update_dispute_intake_status(dispute_id: int) -> Optional[DisputeCase]:
             if status_changed and dispute.status == DisputeCase.Status.INTAKE_MISSING_EVIDENCE:
                 try:
                     notification_tasks.send_dispute_missing_evidence_email.delay(dispute.id)
+                    notification_tasks.send_dispute_missing_evidence_sms.delay(dispute.id)
                 except Exception:
                     logger.info(
                         "dispute intake: could not queue missing evidence email for dispute %s",

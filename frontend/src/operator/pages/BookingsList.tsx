@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { format } from "date-fns";
+import { addDays, format, parse } from "date-fns";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
 import { Badge } from "../../components/ui/badge";
@@ -22,12 +22,31 @@ import {
   type OperatorBookingListParams,
 } from "../api";
 
+const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+
 function toIsoDate(value: string) {
   if (!value) return undefined;
   const parsed = new Date(`${value}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) return undefined;
   return parsed.toISOString();
 }
+
+const parseBookingDate = (value?: string | null) => {
+  if (!value) return undefined;
+  if (DATE_ONLY_REGEX.test(value)) {
+    const parsed = parse(value, "yyyy-MM-dd", new Date());
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+};
+
+const displayDate = (value?: string | null, offsetDays = 0) => {
+  const parsed = parseBookingDate(value);
+  if (!parsed) return value || "—";
+  const adjusted = offsetDays ? addDays(parsed, offsetDays) : parsed;
+  return format(adjusted, "yyyy-MM-dd");
+};
 
 export function BookingsList() {
   const navigate = useNavigate();
@@ -109,6 +128,7 @@ export function BookingsList() {
   const displayStatus = (booking: OperatorBookingListItem) => {
     const status = booking.status?.toLowerCase?.() || "";
     const today = new Date().toISOString().slice(0, 10);
+    if (status === "completed") return "Completed";
     if (status === "canceled") return "Canceled";
     if ((booking as any).after_photos_uploaded_at) return "Completed";
     if ((booking as any).returned_by_renter_at || (booking as any).return_confirmed_at) return "Waiting After Photo";
@@ -256,8 +276,8 @@ export function BookingsList() {
                       </td>
                       <td className="p-4">
                         <div className="text-sm">
-                          <div>{booking.start_date}</div>
-                          <div className="text-muted-foreground">to {booking.end_date}</div>
+                          <div>{displayDate(booking.start_date)}</div>
+                          <div className="text-muted-foreground">to {displayDate(booking.end_date, -1)}</div>
                         </div>
                       </td>
                       <td className="p-4">

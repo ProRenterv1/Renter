@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import Optional
 
 from celery import shared_task
+from django.apps import apps
 from django.db import transaction
 from django.utils import timezone
 
@@ -25,6 +26,22 @@ def get_counterparty_user_id(dispute: DisputeCase) -> Optional[int]:
     if dispute.opened_by_role == DisputeCase.OpenedByRole.OWNER:
         return booking.renter_id
     return None
+
+
+def _log_booking_event(booking_id: int | None, type_value: str, payload: dict) -> None:
+    if not booking_id:
+        return
+    try:
+        BookingEvent = apps.get_model("operator_bookings", "BookingEvent")
+        Booking = apps.get_model("bookings", "Booking")
+        booking = Booking.objects.filter(pk=booking_id).first() if Booking else None
+        if booking and BookingEvent:
+            BookingEvent.objects.create(booking=booking, type=type_value, payload=payload)
+    except Exception:
+        logger.exception(
+            "disputes: failed to log booking event",
+            extra={"booking_id": booking_id, "type": type_value},
+        )
 
 
 @shared_task(name="disputes.start_rebuttal_window")
@@ -199,3 +216,127 @@ def auto_flag_unanswered_rebuttals() -> int:
         updated_count,
     )
     return updated_count
+
+
+@shared_task(name="disputes.auto_close_missing_evidence")
+def auto_close_missing_evidence() -> int:
+    """Auto-close disputes missing evidence after deadline."""
+    now = timezone.now()
+    active_statuses = {
+        DisputeCase.Status.OPEN,
+        DisputeCase.Status.INTAKE_MISSING_EVIDENCE,
+        DisputeCase.Status.AWAITING_REBUTTAL,
+        DisputeCase.Status.UNDER_REVIEW,
+    }
+    candidates = (
+        DisputeCase.objects.filter(
+            status=DisputeCase.Status.INTAKE_MISSING_EVIDENCE,
+            intake_evidence_due_at__isnull=False,
+            intake_evidence_due_at__lt=now,
+        )
+        .select_related("booking")
+        .iterator()
+    )
+    closed_count = 0
+    for dispute in candidates:
+        booking = dispute.booking
+        try:
+            with transaction.atomic():
+                locked = (
+                    DisputeCase.objects.select_for_update()
+                    .select_related("booking")
+                    .get(pk=dispute.id)
+                )
+                if locked.status != DisputeCase.Status.INTAKE_MISSING_EVIDENCE:
+                    continue
+                locked.status = DisputeCase.Status.CLOSED_AUTO
+                locked.resolved_at = now
+                locked.decision_notes = "Auto-closed: evidence not provided"
+                locked.updated_at = now
+                locked.save(update_fields=["status", "resolved_at", "decision_notes", "updated_at"])
+                closed_count += 1
+
+                if booking:
+                    other_active = DisputeCase.objects.filter(
+                        booking=booking, status__in=active_statuses
+                    ).exclude(pk=locked.id)
+                    if not other_active.exists():
+                        booking.deposit_locked = False
+                        booking.save(update_fields=["deposit_locked", "updated_at"])
+                _log_booking_event(
+                    getattr(booking, "id", None),
+                    "operator_action",
+                    {"action": "dispute_auto_closed_missing_evidence", "dispute_id": locked.id},
+                )
+        except Exception:
+            logger.exception(
+                "disputes.auto_close_missing_evidence: failed for dispute %s", dispute.id
+            )
+            continue
+    return closed_count
+
+
+@shared_task(name="disputes.send_rebuttal_reminders")
+def send_rebuttal_reminders() -> int:
+    """Send 12h prior reminders for rebuttal deadlines."""
+    now = timezone.now()
+    upcoming = now + timedelta(hours=12)
+    candidates = (
+        DisputeCase.objects.filter(
+            status=DisputeCase.Status.AWAITING_REBUTTAL,
+            rebuttal_due_at__isnull=False,
+            rebuttal_due_at__lte=upcoming,
+            rebuttal_due_at__gt=now,
+        )
+        .filter(rebuttal_12h_reminder_sent_at__isnull=True)
+        .select_related("booking")
+        .iterator()
+    )
+    sent = 0
+    for dispute in candidates:
+        counterparty_id = get_counterparty_user_id(dispute)
+        if not counterparty_id:
+            continue
+        try:
+            with transaction.atomic():
+                locked = (
+                    DisputeCase.objects.select_for_update()
+                    .select_related("booking")
+                    .get(pk=dispute.id)
+                )
+                if locked.rebuttal_12h_reminder_sent_at:
+                    continue
+                locked.rebuttal_12h_reminder_sent_at = now
+                locked.save(update_fields=["rebuttal_12h_reminder_sent_at", "updated_at"])
+                sent += 1
+        except Exception:
+            logger.exception(
+                "disputes.send_rebuttal_reminders: failed locking dispute %s", dispute.id
+            )
+            continue
+
+        try:
+            notification_tasks.send_dispute_rebuttal_reminder_email.delay(
+                dispute.id, counterparty_id
+            )
+        except Exception:
+            logger.info(
+                "disputes.send_rebuttal_reminders: failed email enqueue",
+                extra={"dispute_id": dispute.id, "counterparty_id": counterparty_id},
+                exc_info=True,
+            )
+        try:
+            notification_tasks.send_dispute_rebuttal_reminder_sms.delay(dispute.id, counterparty_id)
+        except Exception:
+            logger.info(
+                "disputes.send_rebuttal_reminders: failed sms enqueue",
+                extra={"dispute_id": dispute.id, "counterparty_id": counterparty_id},
+                exc_info=True,
+            )
+
+        _log_booking_event(
+            getattr(dispute.booking, "id", None),
+            "operator_action",
+            {"action": "dispute_rebuttal_reminder", "dispute_id": dispute.id},
+        )
+    return sent
