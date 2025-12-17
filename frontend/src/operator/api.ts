@@ -1,4 +1,5 @@
 import { jsonFetch } from "@/lib/api";
+import { AuthStore } from "@/lib/auth";
 import type { ContactVerificationChannel } from "@/lib/api";
 
 export type OperatorDashboardMetrics = {
@@ -86,6 +87,7 @@ export type OperatorBookingDetail = OperatorBookingListItem & {
   totals: Record<string, unknown>;
   charge_payment_intent_id: string | null;
   deposit_hold_id: string | null;
+   deposit_locked?: boolean;
   events: OperatorBookingEvent[];
   disputes: { id: number; status: string; category: string; created_at: string }[];
   pickup_confirmed_at?: string | null;
@@ -184,6 +186,39 @@ export type OperatorNote = {
   tags: string[];
   author: { id: number; email: string | null; name: string | null } | null;
   created_at: string;
+};
+
+export type OperatorTransactionUser = {
+  id: number;
+  email: string | null;
+  name?: string | null;
+};
+
+export type OperatorTransaction = {
+  id: number;
+  created_at: string;
+  kind: string;
+  amount: string | number;
+  currency: string;
+  stripe_id: string | null;
+  booking_id: number | null;
+  user: OperatorTransactionUser | null;
+};
+
+export type OperatorTransactionListResponse = {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: OperatorTransaction[];
+};
+
+export type OperatorBookingFinance = {
+  booking_id: number;
+  stripe: {
+    charge_payment_intent_id: string | null;
+    deposit_hold_id: string | null;
+  };
+  ledger: OperatorTransaction[];
 };
 
 type ReasonPayload = { reason: string };
@@ -358,6 +393,73 @@ export const operatorAPI = {
       `/operator/bookings/${bookingId}/resend-notifications/`,
       { method: "POST", body: payload },
     );
+  },
+
+  financeTransactions(
+    params: Partial<{
+      kind: string;
+      booking: number | string;
+      user: number | string;
+      created_at_after: string;
+      created_at_before: string;
+    }> = {},
+  ) {
+    const query = buildQuery(params as Record<string, string | number>);
+    return jsonFetch<OperatorTransactionListResponse | OperatorTransaction[]>(`/operator/transactions/${query}`, {
+      method: "GET",
+    });
+  },
+
+  bookingFinance(bookingId: number) {
+    return jsonFetch<OperatorBookingFinance>(`/operator/bookings/${bookingId}/finance`, { method: "GET" });
+  },
+
+  refundBooking(
+    bookingId: number,
+    payload: { amount?: string | number; reason: string; notify_user?: boolean },
+  ) {
+    return jsonFetch<{ ok: boolean; booking_id: number; refund_id?: string | null; refunded_cents?: number | null }>(
+      `/operator/bookings/${bookingId}/refund`,
+      { method: "POST", body: payload },
+    );
+  },
+
+  captureDeposit(bookingId: number, payload: { amount: string | number; reason: string }) {
+    return jsonFetch<{ ok: boolean; booking_id: number; payment_intent_id?: string | null; captured_cents?: number | null }>(
+      `/operator/bookings/${bookingId}/deposit/capture`,
+      { method: "POST", body: payload },
+    );
+  },
+
+  releaseDeposit(bookingId: number, payload: { reason: string }) {
+    return jsonFetch<{ ok: boolean; booking_id: number; deposit_hold_id?: string | null }>(
+      `/operator/bookings/${bookingId}/deposit/release`,
+      { method: "POST", body: payload },
+    );
+  },
+
+  async downloadPlatformRevenue(params: { from?: string; to?: string }) {
+    const query = buildQuery(params as Record<string, string>);
+    const token = AuthStore.getAccess();
+    const res = await fetch(`/api/operator/exports/platform-revenue.csv${query}`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    if (!res.ok) throw new Error("Unable to download platform revenue export");
+    return res.blob();
+  },
+
+  async downloadOwnerLedger(params: { owner_id?: number | string; from?: string; to?: string }) {
+    const query = buildQuery(params as Record<string, string | number>);
+    const token = AuthStore.getAccess();
+    const res = await fetch(`/api/operator/exports/owner-ledger.csv${query}`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    if (!res.ok) throw new Error("Unable to download owner ledger export");
+    return res.blob();
   },
 };
 

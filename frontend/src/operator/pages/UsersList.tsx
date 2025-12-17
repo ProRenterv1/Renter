@@ -5,7 +5,7 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { Card, CardContent } from '../../components/ui/card';
 import { Skeleton } from '../../components/ui/skeleton';
-import { AlertTriangle, CheckCircle2, Mail, Phone, Shield, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Hash, Mail, Phone, Shield, XCircle } from 'lucide-react';
 import { DataTable } from '../components/DataTable';
 import { FilterBar } from '../components/FilterBar';
 import { RightDrawer } from '../components/RightDrawer';
@@ -104,6 +104,13 @@ export function UsersList() {
     : selectedUser
       ? formatOperatorUserName(selectedUser)
       : 'User';
+  const drawerDescription = (() => {
+    const user = previewUser ?? selectedUser;
+    if (!user) return undefined;
+    const parts = [`ID: ${user.id}`];
+    if (user.email) parts.push(user.email);
+    return parts.join(' • ');
+  })();
 
   // Debounce search input
   useEffect(() => {
@@ -404,7 +411,7 @@ export function UsersList() {
         open={drawerOpen}
         onOpenChange={setDrawerOpen}
         title={drawerTitle}
-        description={selectedUser?.email}
+        description={drawerDescription}
         footer={
           selectedUser ? (
             <div className="flex gap-2 p-4">
@@ -475,6 +482,19 @@ export function UsersList() {
                 </div>
 
                 <div className="space-y-3 rounded-xl border border-border bg-muted/40 p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Hash className="h-4 w-4 text-muted-foreground" />
+                      <span>#{user.id}</span>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => copyToClipboard(String(user.id), 'User ID')}
+                    >
+                      Copy
+                    </Button>
+                  </div>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Mail className="h-4 w-4 text-muted-foreground" />
