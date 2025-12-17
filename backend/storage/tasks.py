@@ -15,6 +15,7 @@ from django.utils import timezone
 from PIL import Image, UnidentifiedImageError
 
 from core.redis import push_event
+from core.settings_resolver import get_int
 from notifications import tasks as notification_tasks
 
 from . import s3 as s3util
@@ -278,7 +279,8 @@ def _finalize_booking_photo_record(
                 transitioned_to_completed = True
 
             if booking.dispute_window_expires_at is None:
-                booking.dispute_window_expires_at = now + timedelta(hours=24)
+                filing_window_hours = get_int("DISPUTE_FILING_WINDOW_HOURS", 24)
+                booking.dispute_window_expires_at = now + timedelta(hours=filing_window_hours)
                 updated_fields.append("dispute_window_expires_at")
 
             if booking.deposit_release_scheduled_at is None and booking.end_date:

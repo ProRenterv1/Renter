@@ -6,6 +6,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
+from core.settings_resolver import get_int
 from bookings.domain import (
     assert_can_cancel,
     assert_can_complete,
@@ -148,7 +149,8 @@ def force_complete_booking(booking: Booking, *, operator_user=None) -> Booking:
     booking.status = Booking.Status.COMPLETED
     if booking.dispute_window_expires_at is None:
         anchor = booking.return_confirmed_at or now
-        booking.dispute_window_expires_at = anchor + timedelta(hours=24)
+        filing_window_hours = get_int("DISPUTE_FILING_WINDOW_HOURS", 24)
+        booking.dispute_window_expires_at = anchor + timedelta(hours=filing_window_hours)
         update_fields.insert(2, "dispute_window_expires_at")
 
     with transaction.atomic():

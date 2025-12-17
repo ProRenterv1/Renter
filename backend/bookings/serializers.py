@@ -11,6 +11,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
+from core.settings_resolver import get_int
 from identity.models import is_user_identity_verified
 from listings.models import Listing, ListingPhoto
 from listings.services import compute_booking_totals
@@ -205,7 +206,7 @@ class BookingSerializer(serializers.ModelSerializer):
         is_verified = is_user_identity_verified(user)
 
         if listing and start_date and end_date and not is_verified:
-            max_days = settings.UNVERIFIED_MAX_BOOKING_DAYS
+            max_days = get_int("MAX_BOOKING_DAYS", settings.UNVERIFIED_MAX_BOOKING_DAYS)
             max_repl = settings.UNVERIFIED_MAX_REPLACEMENT_CAD
             max_dep = settings.UNVERIFIED_MAX_DEPOSIT_CAD
 
@@ -233,7 +234,7 @@ class BookingSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"non_field_errors": [message]})
 
         if listing and start_date and end_date and is_verified:
-            max_days_verified = settings.VERIFIED_MAX_BOOKING_DAYS
+            max_days_verified = get_int("MAX_BOOKING_DAYS", settings.VERIFIED_MAX_BOOKING_DAYS)
             if rental_days is not None and rental_days > max_days_verified:
                 raise serializers.ValidationError(
                     {

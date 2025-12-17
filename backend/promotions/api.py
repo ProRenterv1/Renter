@@ -13,6 +13,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from core.settings_resolver import get_int
 from listings.models import Listing
 from notifications import tasks as notification_tasks
 from payments.ledger import compute_owner_available_balance, log_transaction
@@ -57,7 +58,8 @@ def _parse_iso_date(value: str | None, field_name: str) -> date:
 
 
 def _promotion_price_per_day() -> int:
-    cents = getattr(settings, "PROMOTION_PRICE_CENTS", 0)
+    cents_default = getattr(settings, "PROMOTION_PRICE_CENTS", 0)
+    cents = get_int("PROMOTION_PRICE_CENTS", cents_default)
     if cents <= 0:
         raise StripeConfigurationError("Promotion price is not configured.")
     return cents
