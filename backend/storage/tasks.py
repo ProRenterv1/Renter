@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import subprocess
 from datetime import datetime, time, timedelta
 from typing import Dict, Optional, Tuple
 
 import boto3
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 from celery import shared_task
 from django.conf import settings
 from django.db import transaction
@@ -36,11 +37,15 @@ def _s3_client():
 
 
 def _download_bytes(key: str) -> bytes:
+    if not getattr(settings, "USE_S3", False):
+        return b""
+    if not os.getenv("AWS_ACCESS_KEY_ID") and not os.getenv("AWS_SECRET_ACCESS_KEY"):
+        return b""
     try:
         buffer = io.BytesIO()
         _s3_client().download_fileobj(settings.AWS_STORAGE_BUCKET_NAME, key, buffer)
         return buffer.getvalue()
-    except (BotoCoreError, ClientError) as exc:
+    except (BotoCoreError, ClientError, NoCredentialsError) as exc:
         raise RuntimeError(f"Unable to download object {key}: {exc}") from exc
 
 
