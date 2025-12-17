@@ -1,1 +1,1 @@
-
+"""Operator settings app configuration."""
