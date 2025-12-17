@@ -233,6 +233,10 @@ CELERY_BEAT_SCHEDULE.update(
             "task": "notifications.detect_missing_notifications",
             "schedule": crontab(hour=2, minute=15),
         },
+        "operator_health_ping_minutely": {
+            "task": "operator_health_ping",
+            "schedule": crontab(),  # every minute
+        },
     }
 )
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

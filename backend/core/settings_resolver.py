@@ -7,9 +7,9 @@ from decimal import Decimal, InvalidOperation
 from threading import Lock
 from typing import Any
 
-
 _CACHE_TTL_SECONDS = 5.0
 _MISSING = object()
+_NO_CACHE_ENTRY = object()
 
 
 @dataclass(frozen=True)
@@ -33,14 +33,14 @@ def _clone_if_mutable(value: Any) -> Any:
     return value
 
 
-def _cache_get(key: str, now: float) -> object | None:
+def _cache_get(key: str, now: float) -> object:
     with _cache_lock:
         entry = _cache.get(key)
         if entry is None:
-            return None
+            return _NO_CACHE_ENTRY
         if now >= entry.expires_at:
             _cache.pop(key, None)
-            return None
+            return _NO_CACHE_ENTRY
         return entry.value
 
 
@@ -66,7 +66,7 @@ def get_setting(key: str, default: Any) -> Any:
 
     now_mono = time.monotonic()
     cached = _cache_get(key, now_mono)
-    if cached is not None:
+    if cached is not _NO_CACHE_ENTRY:
         return default if cached is _MISSING else _clone_if_mutable(cached)
 
     value: object = _MISSING
@@ -107,7 +107,9 @@ def get_int(key: str, default: int = 0) -> int:
     return value if type(value) is int else default
 
 
-def get_decimal(key: str, default: Decimal = Decimal("0")) -> Decimal:
+def get_decimal(key: str, default: Decimal | None = None) -> Decimal:
+    if default is None:
+        default = Decimal("0")
     value = get_setting(key, default)
     if isinstance(value, Decimal):
         return value
@@ -129,4 +131,3 @@ def get_json(key: str, default: Any | None = None) -> Any:
         default = {}
     value = get_setting(key, default)
     return value if isinstance(value, (dict, list)) else default
-

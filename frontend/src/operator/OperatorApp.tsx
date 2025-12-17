@@ -15,6 +15,15 @@ import { BookingFinancePage } from "./pages/BookingFinancePage";
 import { ExportsPage } from "./pages/ExportsPage";
 import { OwnerEarningsPage } from "./pages/OwnerEarningsPage";
 import { FinancePage } from "./pages/FinancePage";
+import { OperatorSessionProvider } from "./session";
+import { SettingsPage } from "./pages/settings/SettingsPage";
+import { PlatformRulesPage } from "./pages/settings/PlatformRulesPage";
+import { FeesPage } from "./pages/settings/FeesPage";
+import { FeatureFlagsPage } from "./pages/settings/FeatureFlagsPage";
+import { MaintenanceModePage } from "./pages/settings/MaintenanceModePage";
+import { HealthPage } from "./pages/health/HealthPage";
+import { SystemHealthPage } from "./pages/health/SystemHealthPage";
+import { JobsPage } from "./pages/health/JobsPage";
 
 interface OperatorAppProps {
   darkMode: boolean;
@@ -138,40 +147,56 @@ export function OperatorApp({ darkMode, onToggleTheme }: OperatorAppProps) {
   }
 
   return (
-    <OperatorLayout
-      darkMode={darkMode}
-      onToggleTheme={onToggleTheme}
-      operatorName={operator.name}
-      operatorRole={operatorRoleLabel}
-      operatorEmail={operator.email}
-      operatorAvatarUrl={operator.avatarUrl}
-      onLogout={handleLogout}
+    <OperatorSessionProvider
+      value={{ id: operator.id, email: operator.email, name: displayName, roles: operator.roles || [] }}
     >
-      <Routes>
-        <Route index element={<Navigate to="dashboard" replace />} />
-        <Route path="dashboard" element={<Dashboard />} />
-        <Route path="users" element={<UsersList />} />
-        <Route path="users/:userId" element={<UserDetail />} />
-        <Route path="listings" element={<ListingsList />} />
-        <Route path="listings/:listingId" element={<ListingDetail />} />
-        <Route path="bookings" element={<BookingsList />} />
-        <Route path="bookings/:bookingId" element={<BookingDetail />} />
-        <Route path="finance/bookings/:bookingId" element={<BookingFinancePage />} />
-        <Route path="finance" element={<FinancePage />}>
-          <Route index element={<Navigate to="general" replace />} />
-          <Route path="general" element={<TransactionsPage />} />
-          <Route path="transactions" element={<Navigate to="../general" replace />} />
-          <Route path="exports" element={<ExportsPage />} />
-          <Route path="owners" element={<OwnerEarningsPage />} />
-          <Route path="owners/:ownerId" element={<OwnerEarningsPage />} />
-        </Route>
-        <Route path="disputes" element={<div>Disputes page coming soon...</div>} />
-        <Route path="promotions" element={<div>Promotions page coming soon...</div>} />
-        <Route path="comms" element={<div>Communications page coming soon...</div>} />
-        <Route path="settings" element={<div>Settings page coming soon...</div>} />
-        <Route path="health" element={<div>System Health page coming soon...</div>} />
-      </Routes>
-    </OperatorLayout>
+      <OperatorLayout
+        darkMode={darkMode}
+        onToggleTheme={onToggleTheme}
+        operatorName={displayName}
+        operatorRole={operatorRoleLabel}
+        operatorEmail={operator.email}
+        operatorAvatarUrl={operator.avatarUrl}
+        onLogout={handleLogout}
+      >
+        <Routes>
+          <Route index element={<Navigate to="dashboard" replace />} />
+          <Route path="dashboard" element={<Dashboard />} />
+          <Route path="users" element={<UsersList />} />
+          <Route path="users/:userId" element={<UserDetail />} />
+          <Route path="listings" element={<ListingsList />} />
+          <Route path="listings/:listingId" element={<ListingDetail />} />
+          <Route path="bookings" element={<BookingsList />} />
+          <Route path="bookings/:bookingId" element={<BookingDetail />} />
+          <Route path="finance/bookings/:bookingId" element={<BookingFinancePage />} />
+          <Route path="finance" element={<FinancePage />}>
+            <Route index element={<Navigate to="general" replace />} />
+            <Route path="general" element={<TransactionsPage />} />
+            <Route path="transactions" element={<Navigate to="../general" replace />} />
+            <Route path="exports" element={<ExportsPage />} />
+            <Route path="owners" element={<OwnerEarningsPage />} />
+            <Route path="owners/:ownerId" element={<OwnerEarningsPage />} />
+          </Route>
+          <Route path="disputes" element={<div>Disputes page coming soon...</div>} />
+          <Route path="promotions" element={<div>Promotions page coming soon...</div>} />
+          <Route path="comms" element={<div>Communications page coming soon...</div>} />
+
+          <Route path="settings" element={<SettingsPage />}>
+            <Route index element={<Navigate to="platform-rules" replace />} />
+            <Route path="platform-rules" element={<PlatformRulesPage />} />
+            <Route path="fees" element={<FeesPage />} />
+            <Route path="feature-flags" element={<FeatureFlagsPage />} />
+            <Route path="maintenance" element={<MaintenanceModePage />} />
+          </Route>
+
+          <Route path="health" element={<HealthPage />}>
+            <Route index element={<Navigate to="system" replace />} />
+            <Route path="system" element={<SystemHealthPage />} />
+            <Route path="jobs" element={<JobsPage />} />
+          </Route>
+        </Routes>
+      </OperatorLayout>
+    </OperatorSessionProvider>
   );
 }
 
