@@ -20,6 +20,7 @@ import {
   Check,
   XCircle,
   CalendarClock,
+  Wallet,
 } from "lucide-react";
 import { Skeleton } from "../../components/ui/skeleton";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../../components/ui/dialog";
@@ -266,10 +267,20 @@ export function BookingDetail() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <CardTitle>Financial Breakdown</CardTitle>
-                <Button variant="outline" size="sm" onClick={handleCopyStripeIds}>
-                  <Copy className="w-4 h-4 mr-2" />
-                  Copy Stripe IDs
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => navigate(`/operator/finance/bookings/${booking.id}`)}
+                  >
+                    <Wallet className="w-4 h-4 mr-2" />
+                    Open Finance
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={handleCopyStripeIds}>
+                    <Copy className="w-4 h-4 mr-2" />
+                    Copy Stripe IDs
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">

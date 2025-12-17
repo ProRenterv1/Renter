@@ -10,6 +10,11 @@ import { ListingsList } from "./pages/ListingsList";
 import { ListingDetail } from "./pages/ListingDetail";
 import { BookingsList } from "./pages/BookingsList";
 import { BookingDetail } from "./pages/BookingDetail";
+import { TransactionsPage } from "./pages/TransactionsPage";
+import { BookingFinancePage } from "./pages/BookingFinancePage";
+import { ExportsPage } from "./pages/ExportsPage";
+import { OwnerEarningsPage } from "./pages/OwnerEarningsPage";
+import { FinancePage } from "./pages/FinancePage";
 
 interface OperatorAppProps {
   darkMode: boolean;
@@ -151,7 +156,15 @@ export function OperatorApp({ darkMode, onToggleTheme }: OperatorAppProps) {
         <Route path="listings/:listingId" element={<ListingDetail />} />
         <Route path="bookings" element={<BookingsList />} />
         <Route path="bookings/:bookingId" element={<BookingDetail />} />
-        <Route path="finance" element={<div>Finance page coming soon...</div>} />
+        <Route path="finance/bookings/:bookingId" element={<BookingFinancePage />} />
+        <Route path="finance" element={<FinancePage />}>
+          <Route index element={<Navigate to="general" replace />} />
+          <Route path="general" element={<TransactionsPage />} />
+          <Route path="transactions" element={<Navigate to="../general" replace />} />
+          <Route path="exports" element={<ExportsPage />} />
+          <Route path="owners" element={<OwnerEarningsPage />} />
+          <Route path="owners/:ownerId" element={<OwnerEarningsPage />} />
+        </Route>
         <Route path="disputes" element={<div>Disputes page coming soon...</div>} />
         <Route path="promotions" element={<div>Promotions page coming soon...</div>} />
         <Route path="comms" element={<div>Communications page coming soon...</div>} />

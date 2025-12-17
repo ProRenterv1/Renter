@@ -10,10 +10,20 @@ def _format_money(value) -> str:
     return f"{Decimal(value).quantize(Decimal('0.01'))}"
 
 
+class OperatorTransactionUserSerializer(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True)
+    email = serializers.EmailField(read_only=True)
+    name = serializers.SerializerMethodField()
+
+    def get_name(self, obj):
+        full_name = (obj.get_full_name() or "").strip()
+        if full_name:
+            return full_name
+        return obj.username or obj.email or ""
+
+
 class OperatorTransactionSerializer(serializers.ModelSerializer):
-    user_email = serializers.EmailField(source="user.email", read_only=True)
-    booking_status = serializers.CharField(source="booking.status", read_only=True)
-    listing_title = serializers.CharField(source="booking.listing.title", read_only=True)
+    user = OperatorTransactionUserSerializer(read_only=True)
     amount = serializers.SerializerMethodField()
     currency = serializers.SerializerMethodField()
 
@@ -21,16 +31,13 @@ class OperatorTransactionSerializer(serializers.ModelSerializer):
         model = Transaction
         fields = [
             "id",
+            "created_at",
             "kind",
             "amount",
             "currency",
             "stripe_id",
-            "user_id",
-            "user_email",
             "booking_id",
-            "booking_status",
-            "listing_title",
-            "created_at",
+            "user",
         ]
         read_only_fields = fields
 
@@ -42,21 +49,18 @@ class OperatorTransactionSerializer(serializers.ModelSerializer):
         return code or "CAD"
 
 
-class OperatorBookingFinanceSerializer(serializers.ModelSerializer):
-    transactions = OperatorTransactionSerializer(many=True, read_only=True)
+class BookingFinanceSerializer(serializers.ModelSerializer):
+    booking_id = serializers.IntegerField(source="id", read_only=True)
+    stripe = serializers.SerializerMethodField()
+    ledger = OperatorTransactionSerializer(source="transactions", many=True, read_only=True)
 
     class Meta:
         model = Booking
-        fields = [
-            "id",
-            "status",
-            "charge_payment_intent_id",
-            "deposit_hold_id",
-            "deposit_authorized_at",
-            "deposit_released_at",
-            "deposit_release_scheduled_at",
-            "deposit_locked",
-            "totals",
-            "transactions",
-        ]
+        fields = ["booking_id", "stripe", "ledger"]
         read_only_fields = fields
+
+    def get_stripe(self, obj: Booking) -> dict:
+        return {
+            "charge_payment_intent_id": obj.charge_payment_intent_id,
+            "deposit_hold_id": obj.deposit_hold_id,
+        }
