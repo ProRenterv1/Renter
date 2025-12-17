@@ -26,7 +26,9 @@ class DbSetting(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["key", "effective_at", "updated_at"], name="opset_db_key_eff_upd_idx"),
+            models.Index(
+                fields=["key", "effective_at", "updated_at"], name="opset_db_key_eff_upd_idx"
+            ),
             models.Index(fields=["updated_at"], name="opset_db_updated_at_idx"),
         ]
         ordering = ["-updated_at"]

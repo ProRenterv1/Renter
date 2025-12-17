@@ -15,8 +15,8 @@ from rest_framework import permissions, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from core.settings_resolver import get_bool
 from bookings.models import Booking
+from core.settings_resolver import get_bool
 from listings.models import ListingPhoto
 from storage.s3 import booking_object_key, guess_content_type, presign_put
 from storage.tasks import scan_and_finalize_dispute_evidence

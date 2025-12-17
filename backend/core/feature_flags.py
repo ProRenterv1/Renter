@@ -65,4 +65,3 @@ def get_maintenance_banner() -> Dict[str, Any]:
         }
     except Exception:
         return default_banner
-

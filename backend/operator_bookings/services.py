@@ -6,7 +6,6 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from core.settings_resolver import get_int
 from bookings.domain import (
     assert_can_cancel,
     assert_can_complete,
@@ -18,6 +17,7 @@ from bookings.domain import (
 from bookings.models import Booking
 from chat.models import Message as ChatMessage
 from chat.models import create_system_message
+from core.settings_resolver import get_int
 from listings.services import compute_booking_totals
 from notifications import tasks as notification_tasks
 from operator_bookings.models import BookingEvent

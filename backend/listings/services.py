@@ -71,7 +71,9 @@ def compute_booking_totals(
         )
     )
     default_owner_fee_bps = int(
-        (settings.BOOKING_OWNER_FEE_RATE * Decimal("10000")).to_integral_value(rounding=ROUND_HALF_UP)
+        (settings.BOOKING_OWNER_FEE_RATE * Decimal("10000")).to_integral_value(
+            rounding=ROUND_HALF_UP
+        )
     )
     platform_fee_bps = get_int("BOOKING_PLATFORM_FEE_BPS", default_platform_fee_bps)
     owner_fee_bps = get_int("BOOKING_OWNER_FEE_BPS", default_owner_fee_bps)
