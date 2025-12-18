@@ -16,6 +16,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from bookings.models import Booking
+from core.settings_resolver import get_bool
 from listings.models import ListingPhoto
 from storage.s3 import booking_object_key, guess_content_type, presign_put
 from storage.tasks import scan_and_finalize_dispute_evidence
@@ -229,6 +230,8 @@ class DisputeCaseSerializer(serializers.ModelSerializer):
 
         category = validated_data.get("category")
         is_safety_fraud = category == DisputeCase.Category.SAFETY_OR_FRAUD
+        allow_late_safety_fraud = get_bool("DISPUTE_ALLOW_LATE_SAFETY_FRAUD", True)
+        safety_fraud_exempt = is_safety_fraud and allow_late_safety_fraud
         now = timezone.now()
         auto_close = False
         expires_at = booking.dispute_window_expires_at
@@ -243,13 +246,13 @@ class DisputeCaseSerializer(serializers.ModelSerializer):
                 )
 
             window_expired = bool(expires_at and now > expires_at)
-            if window_expired and not is_safety_fraud and not booking.deposit_hold_id:
+            if window_expired and not safety_fraud_exempt and not booking.deposit_hold_id:
                 raise serializers.ValidationError(
                     {"non_field_errors": ["Dispute window expired for this booking."]}
                 )
 
         window_expired = bool(expires_at and now > expires_at)
-        if window_expired and not is_safety_fraud and not user.is_staff:
+        if window_expired and not safety_fraud_exempt and not user.is_staff:
             auto_close = True
 
         has_deposit_hold = bool(getattr(booking, "deposit_hold_id", ""))

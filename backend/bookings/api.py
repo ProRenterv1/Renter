@@ -18,6 +18,7 @@ from rest_framework.response import Response
 from chat.models import Message as ChatMessage
 from chat.models import create_system_message
 from core.redis import push_event
+from core.settings_resolver import get_int
 from listings.models import Listing
 from listings.services import compute_booking_totals
 from notifications import tasks as notification_tasks
@@ -589,13 +590,16 @@ class BookingViewSet(viewsets.ModelViewSet):
             return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
 
         now = timezone.now()
+        filing_window_hours = get_int("DISPUTE_FILING_WINDOW_HOURS", 24)
         update_fields = ["status", "updated_at"]
         booking.status = Booking.Status.COMPLETED
         if booking.return_confirmed_at and booking.dispute_window_expires_at is None:
-            booking.dispute_window_expires_at = booking.return_confirmed_at + timedelta(hours=24)
+            booking.dispute_window_expires_at = booking.return_confirmed_at + timedelta(
+                hours=filing_window_hours
+            )
             update_fields.insert(1, "dispute_window_expires_at")
         elif booking.dispute_window_expires_at is None:
-            booking.dispute_window_expires_at = now + timedelta(hours=24)
+            booking.dispute_window_expires_at = now + timedelta(hours=filing_window_hours)
             update_fields.insert(1, "dispute_window_expires_at")
 
         booking.save(update_fields=update_fields)
@@ -671,7 +675,8 @@ class BookingViewSet(viewsets.ModelViewSet):
 
         now = timezone.now()
         booking.return_confirmed_at = now
-        booking.dispute_window_expires_at = now + timedelta(hours=24)
+        filing_window_hours = get_int("DISPUTE_FILING_WINDOW_HOURS", 24)
+        booking.dispute_window_expires_at = now + timedelta(hours=filing_window_hours)
         booking.save(
             update_fields=["return_confirmed_at", "dispute_window_expires_at", "updated_at"]
         )

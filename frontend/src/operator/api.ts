@@ -221,6 +221,73 @@ export type OperatorBookingFinance = {
   ledger: OperatorTransaction[];
 };
 
+export type DbSettingValueType = "bool" | "int" | "decimal" | "str" | "json";
+
+export type OperatorDbSetting = {
+  id: number;
+  key: string;
+  value_type: DbSettingValueType;
+  value_json: unknown;
+  description: string;
+  effective_at: string | null;
+  updated_at: string;
+  updated_by_id: number | null;
+};
+
+export type OperatorEffectiveSetting = {
+  key: string;
+  value_type: DbSettingValueType;
+  value_json: unknown;
+  description: string;
+  effective_at: string | null;
+  updated_at: string | null;
+  updated_by_id: number | null;
+  source: "db" | "default";
+};
+
+export type OperatorFeatureFlag = {
+  id: number;
+  key: string;
+  enabled: boolean;
+  updated_at: string;
+  updated_by_id: number | null;
+};
+
+export type MaintenanceSeverity = "info" | "warning" | "error";
+
+export type OperatorMaintenanceBanner = {
+  id?: number;
+  enabled: boolean;
+  severity: MaintenanceSeverity;
+  message: string;
+  updated_at: string | null;
+  updated_by_id: number | null;
+};
+
+export type OperatorHealthResponse = {
+  ok: boolean;
+  checks: Record<string, Record<string, unknown>>;
+};
+
+export type OperatorHealthResult = {
+  status: number;
+  latency_ms: number;
+  data: OperatorHealthResponse | null;
+};
+
+export type OperatorJobStatus = "queued" | "running" | "succeeded" | "failed";
+
+export type OperatorJobRun = {
+  id: number;
+  name: string;
+  params: Record<string, unknown>;
+  status: OperatorJobStatus;
+  output_json: unknown | null;
+  requested_by_id: number | null;
+  created_at: string;
+  finished_at: string | null;
+};
+
 type ReasonPayload = { reason: string };
 type SuspiciousPayload = ReasonPayload & { level: string; category: string; note?: string | null };
 type RestrictionsPayload = ReasonPayload & { can_rent?: boolean; can_list?: boolean };
@@ -256,6 +323,58 @@ function buildQuery(params: Record<string, string | number | boolean | undefined
 export const operatorAPI = {
   dashboard() {
     return jsonFetch<OperatorDashboardMetrics>("/operator/dashboard/", { method: "GET" });
+  },
+  settings() {
+    return jsonFetch<OperatorDbSetting[]>("/operator/settings/", { method: "GET" });
+  },
+  settingsCurrent() {
+    return jsonFetch<OperatorEffectiveSetting[]>("/operator/settings/current/", { method: "GET" });
+  },
+  putSetting(payload: {
+    key: string;
+    value_type: DbSettingValueType;
+    value: unknown;
+    description?: string;
+    effective_at?: string | null;
+    reason: string;
+  }) {
+    return jsonFetch<OperatorDbSetting>("/operator/settings/", { method: "PUT", body: payload });
+  },
+  featureFlags() {
+    return jsonFetch<OperatorFeatureFlag[]>("/operator/feature-flags/", { method: "GET" });
+  },
+  putFeatureFlag(payload: { key: string; enabled: boolean; reason: string }) {
+    return jsonFetch<OperatorFeatureFlag>("/operator/feature-flags/", { method: "PUT", body: payload });
+  },
+  maintenance() {
+    return jsonFetch<OperatorMaintenanceBanner>("/operator/maintenance/", { method: "GET" });
+  },
+  putMaintenance(payload: { enabled: boolean; severity: MaintenanceSeverity; message?: string; reason: string }) {
+    return jsonFetch<OperatorMaintenanceBanner>("/operator/maintenance/", { method: "PUT", body: payload });
+  },
+  async health(): Promise<OperatorHealthResult> {
+    const token = AuthStore.getAccess();
+    const started = Date.now();
+    const resp = await fetch("/api/operator/health/", {
+      method: "GET",
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        Accept: "application/json",
+      },
+    });
+    const latency_ms = Date.now() - started;
+    const text = await resp.text();
+    const data = text ? (JSON.parse(text) as OperatorHealthResponse) : null;
+    return { status: resp.status, latency_ms, data };
+  },
+  testEmail(payload: { to?: string }) {
+    return jsonFetch<{ ok: boolean; to: string }>("/operator/health/test-email/", { method: "POST", body: payload });
+  },
+  jobRuns() {
+    return jsonFetch<OperatorJobRun[]>("/operator/jobs/", { method: "GET" });
+  },
+  runJob(payload: { name: string; params?: Record<string, unknown>; reason: string }) {
+    return jsonFetch<{ ok: boolean; job_run_id: number }>("/operator/jobs/run/", { method: "POST", body: payload });
   },
   users(params: OperatorUserListParams = {}) {
     const query = buildQuery({

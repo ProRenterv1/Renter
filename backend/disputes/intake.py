@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from bookings.models import BookingPhoto
 from core.redis import push_event
+from core.settings_resolver import get_int
 from notifications import tasks as notification_tasks
 
 from .models import DisputeCase, DisputeEvidence
@@ -90,6 +91,8 @@ def update_dispute_intake_status(dispute_id: int) -> Optional[DisputeCase]:
 
             new_status: Optional[str]
             now = timezone.now()
+            filing_window_hours = get_int("DISPUTE_FILING_WINDOW_HOURS", 24)
+            rebuttal_window_hours = get_int("DISPUTE_REBUTTAL_WINDOW_HOURS", 24)
             new_rebuttal_due_at = dispute.rebuttal_due_at
             new_intake_due_at = dispute.intake_evidence_due_at
             status_changed = False
@@ -98,14 +101,14 @@ def update_dispute_intake_status(dispute_id: int) -> Optional[DisputeCase]:
             if not minimum_met:
                 new_status = DisputeCase.Status.INTAKE_MISSING_EVIDENCE
                 filed_at = dispute.filed_at or now
-                new_intake_due_at = filed_at + timedelta(hours=24)
-                new_rebuttal_due_at = filed_at + timedelta(hours=24)
+                new_intake_due_at = filed_at + timedelta(hours=filing_window_hours)
+                new_rebuttal_due_at = filed_at + timedelta(hours=rebuttal_window_hours)
             else:
                 new_status = DisputeCase.Status.AWAITING_REBUTTAL
                 if dispute.status != DisputeCase.Status.AWAITING_REBUTTAL:
-                    new_rebuttal_due_at = now + timedelta(hours=24)
+                    new_rebuttal_due_at = now + timedelta(hours=rebuttal_window_hours)
                 elif new_rebuttal_due_at is None:
-                    new_rebuttal_due_at = now + timedelta(hours=24)
+                    new_rebuttal_due_at = now + timedelta(hours=rebuttal_window_hours)
                 new_intake_due_at = None
 
             update_fields: list[str] = []

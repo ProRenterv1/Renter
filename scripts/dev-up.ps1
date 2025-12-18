@@ -1,9 +1,9 @@
 Set-Location $PSScriptRoot\..\infra
 
 # Rebuild all images from scratch so containers always start from fresh artifacts
-docker compose build --no-cache web_build web_build_ops api worker
+docker compose build --no-cache web_build web_build_ops api worker beat
 
 # Force recreation so every run gets brand-new containers and regenerated files
 docker compose up --force-recreate -d db redis
 docker compose up --force-recreate -d web_build web_build_ops
-docker compose up --force-recreate -d api worker nginx nginx_ops
+docker compose up --force-recreate -d api worker beat nginx nginx_ops

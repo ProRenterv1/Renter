@@ -9,6 +9,7 @@ from django.apps import apps
 from django.db import transaction
 from django.utils import timezone
 
+from core.settings_resolver import get_int
 from notifications import tasks as notification_tasks
 
 from .models import DisputeCase, DisputeEvidence, DisputeMessage
@@ -70,7 +71,8 @@ def start_rebuttal_window(dispute_id: int) -> int:
 
             new_rebuttal_due_at = dispute.rebuttal_due_at
             if new_rebuttal_due_at is None or new_rebuttal_due_at <= now:
-                new_rebuttal_due_at = now + timedelta(hours=24)
+                rebuttal_window_hours = get_int("DISPUTE_REBUTTAL_WINDOW_HOURS", 24)
+                new_rebuttal_due_at = now + timedelta(hours=rebuttal_window_hours)
             if dispute.rebuttal_due_at != new_rebuttal_due_at:
                 dispute.rebuttal_due_at = new_rebuttal_due_at
                 update_fields.append("rebuttal_due_at")
@@ -131,12 +133,13 @@ def auto_flag_unanswered_rebuttals() -> int:
 
     updated_count = 0
 
+    rebuttal_window_hours = get_int("DISPUTE_REBUTTAL_WINDOW_HOURS", 24)
     for dispute in candidates:
         counterparty_id = get_counterparty_user_id(dispute)
         if not counterparty_id or not dispute.rebuttal_due_at:
             continue
 
-        window_start = dispute.rebuttal_due_at - timedelta(hours=24)
+        window_start = dispute.rebuttal_due_at - timedelta(hours=rebuttal_window_hours)
 
         has_message = DisputeMessage.objects.filter(
             dispute_id=dispute.id,

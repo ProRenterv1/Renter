@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     "operator_listings",
     "operator_bookings",
     "operator_finance",
+    "operator_settings",
     "bookings.apps.BookingsConfig",
     "payments.apps.PaymentsConfig",
     "disputes",
@@ -231,6 +232,10 @@ CELERY_BEAT_SCHEDULE.update(
         "notifications_detect_missing": {
             "task": "notifications.detect_missing_notifications",
             "schedule": crontab(hour=2, minute=15),
+        },
+        "operator_health_ping_minutely": {
+            "task": "operator_health_ping",
+            "schedule": crontab(),  # every minute
         },
     }
 )
