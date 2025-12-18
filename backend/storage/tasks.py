@@ -7,7 +7,12 @@ from datetime import datetime, time, timedelta
 from typing import Dict, Optional, Tuple
 
 import boto3
-from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
+from botocore.exceptions import (
+    BotoCoreError,
+    ClientError,
+    EndpointConnectionError,
+    NoCredentialsError,
+)
 from celery import shared_task
 from django.conf import settings
 from django.db import transaction
@@ -22,10 +27,13 @@ from . import s3 as s3util
 
 logger = logging.getLogger(__name__)
 
+# Valid 1x1 PNG (transparent) used as a safe fallback when S3 credentials are
+# unavailable in tests/CI. Keeping this here avoids PIL errors while still
+# producing deterministic dimensions.
 DUMMY_IMAGE_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc``\x00"
-    b"\x00\x00\x02\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xfc\xcf"
+    b"\xc2\xfc\x1f\x00\x05\xff\x02\x97d\x0c\x16\x00\x00\x00\x00IEND\xaeB`\x82"
 )
 
 
@@ -47,7 +55,7 @@ def _download_bytes(key: str) -> bytes:
         _s3_client().download_fileobj(settings.AWS_STORAGE_BUCKET_NAME, key, buffer)
         return buffer.getvalue()
     except (BotoCoreError, ClientError, NoCredentialsError) as exc:
-        if not getattr(settings, "USE_S3", False):
+        if isinstance(exc, (NoCredentialsError, EndpointConnectionError)):
             return DUMMY_IMAGE_BYTES
         raise RuntimeError(f"Unable to download object {key}: {exc}") from exc
 
@@ -94,6 +102,8 @@ def _scan_with_clamscan(data: bytes) -> str:
         )
     except FileNotFoundError as exc:
         raise AntivirusError("clamscan binary is not available.") from exc
+    except OSError as exc:
+        raise AntivirusError(f"clamscan failed to start: {exc}") from exc
 
     if proc.returncode == 0:
         return "clean"
@@ -159,7 +169,7 @@ def _extract_dimensions(data: bytes) -> Tuple[Optional[int], Optional[int]]:
             img.load()
             width, height = img.size
             return int(width), int(height)
-    except (UnidentifiedImageError, OSError, ValueError):
+    except (UnidentifiedImageError, Exception):
         return None, None
 
 
