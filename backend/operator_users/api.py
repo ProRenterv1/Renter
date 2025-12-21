@@ -15,11 +15,12 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics, status
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
-from rest_framework.views import APIView
 
 from bookings.models import Booking
 from notifications import tasks as notification_tasks
+from operator_core.api_base import OperatorAPIView, OperatorThrottleMixin
 from operator_core.audit import audit
 from operator_core.models import OperatorAuditEvent
 from operator_core.permissions import HasOperatorRole, IsOperator
@@ -39,6 +40,12 @@ ALLOWED_OPERATOR_ROLES = (
 )
 
 ZERO_INT = Value(0, output_field=IntegerField())
+
+
+class OperatorUserPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 200
 
 
 def _annotated_staff_queryset():
@@ -77,11 +84,12 @@ def _annotated_staff_queryset():
     )
 
 
-class OperatorUserListView(generics.ListAPIView):
+class OperatorUserListView(OperatorThrottleMixin, generics.ListAPIView):
     serializer_class = OperatorUserListSerializer
     permission_classes = [IsOperator, HasOperatorRole.with_roles(ALLOWED_OPERATOR_ROLES)]
     filter_backends = [DjangoFilterBackend]
     filterset_class = OperatorUserFilter
+    pagination_class = OperatorUserPagination
     http_method_names = ["get"]
 
     def get_queryset(self):
@@ -105,7 +113,7 @@ class OperatorUserListView(generics.ListAPIView):
         return qs
 
 
-class OperatorUserDetailView(generics.RetrieveAPIView):
+class OperatorUserDetailView(OperatorThrottleMixin, generics.RetrieveAPIView):
     serializer_class = OperatorUserDetailSerializer
     permission_classes = [IsOperator, HasOperatorRole.with_roles(ALLOWED_OPERATOR_ROLES)]
     http_method_names = ["get"]
@@ -129,7 +137,7 @@ def _request_ip_and_ua(request):
     return ip, user_agent
 
 
-class OperatorUserActionBase(APIView):
+class OperatorUserActionBase(OperatorAPIView):
     permission_classes = [IsOperator, HasOperatorRole.with_roles(ALLOWED_OPERATOR_ROLES)]
 
     def _get_user(self, pk: int) -> User:
@@ -467,3 +475,47 @@ class OperatorUserResendVerificationView(OperatorUserActionBase):
                 raw_code,
             )
         return challenge
+
+
+class OperatorUserRevealView(OperatorUserActionBase):
+    http_method_names = ["post"]
+    allowed_fields = {"email", "phone", "street_address", "postal_code"}
+
+    def post(self, request, pk: int):
+        user = self._get_user(pk)
+        payload = request.data if isinstance(request.data, dict) else {}
+        reason = self._require_reason(payload)
+        if not reason:
+            return Response({"detail": "reason is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        fields = payload.get("fields") or ["email", "phone"]
+        if not isinstance(fields, list):
+            return Response({"detail": "fields must be a list"}, status=status.HTTP_400_BAD_REQUEST)
+
+        normalized = []
+        for item in fields:
+            name = (item or "").strip()
+            if name:
+                normalized.append(name)
+        if not normalized:
+            normalized = ["email", "phone"]
+
+        invalid = [f for f in normalized if f not in self.allowed_fields]
+        if invalid:
+            return Response(
+                {"detail": f"invalid fields: {', '.join(sorted(set(invalid)))}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        response_payload = {field: getattr(user, field, None) for field in normalized}
+
+        self._audit_user(
+            request,
+            user,
+            action="operator.user.reveal_pii",
+            reason=reason,
+            before=None,
+            after=None,
+            meta={"fields": normalized},
+        )
+        return Response(response_payload, status=status.HTTP_200_OK)

@@ -22,6 +22,7 @@ import { copyToClipboard } from '../utils/clipboard';
 type AdvancedFilters = {
   canRent: boolean | null;
   canList: boolean | null;
+  userId?: string;
   joinedAfter?: string;
   joinedBefore?: string;
 };
@@ -81,7 +82,7 @@ export function UsersList() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  const [pageSize, setPageSize] = useState(20);
   const [total, setTotal] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -145,6 +146,13 @@ export function UsersList() {
       }
       if (advancedFilters.canList !== null) {
         params.can_list = advancedFilters.canList;
+      }
+      if (advancedFilters.userId) {
+        const trimmedId = advancedFilters.userId.trim();
+        const parsedId = Number(trimmedId);
+        if (trimmedId && Number.isFinite(parsedId)) {
+          params.id = parsedId;
+        }
       }
       if (advancedFilters.joinedAfter) {
         params.date_joined_after = toISODate(advancedFilters.joinedAfter);

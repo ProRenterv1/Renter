@@ -93,7 +93,11 @@ class OperatorDashboardView(APIView):
         today_status_counts, today_gmv = _booking_stats(bookings_today)
         last7_status_counts, last7_gmv = _booking_stats(bookings_last_7)
 
-        overdue_bookings_count = Booking.objects.filter(end_date__lt=today).count()
+        overdue_bookings_count = Booking.objects.filter(
+            end_date__lt=today,
+            return_confirmed_at__isnull=True,
+            status__in=[Booking.Status.CONFIRMED, Booking.Status.PAID],
+        ).count()
         disputed_bookings_count = Booking.objects.filter(is_disputed=True).count()
 
         open_statuses = [

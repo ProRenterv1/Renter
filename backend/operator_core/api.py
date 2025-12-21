@@ -1,6 +1,8 @@
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
-from rest_framework import status
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import generics, status
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -8,8 +10,13 @@ from bookings.models import Booking
 from disputes.models import DisputeCase
 from listings.models import Listing
 from operator_core.audit import audit
+from operator_core.filters import OperatorAuditEventFilter
 from operator_core.models import OperatorAuditEvent, OperatorNote, OperatorTag
 from operator_core.permissions import HasOperatorRole, IsOperator
+from operator_core.serializers import (
+    OperatorAuditEventDetailSerializer,
+    OperatorAuditEventListSerializer,
+)
 
 User = get_user_model()
 ALLOWED_OPERATOR_ROLES = (
@@ -71,6 +78,34 @@ class OperatorAuditTestMutation(APIView):
             {"ok": True, "audit_event_id": event.id},
             status=status.HTTP_201_CREATED,
         )
+
+
+class OperatorAuditPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 200
+
+
+class OperatorAuditEventListView(generics.ListAPIView):
+    serializer_class = OperatorAuditEventListSerializer
+    permission_classes = [IsOperator, HasOperatorRole.with_roles(ALLOWED_OPERATOR_ROLES)]
+    filter_backends = [DjangoFilterBackend]
+    filterset_class = OperatorAuditEventFilter
+    pagination_class = OperatorAuditPagination
+    http_method_names = ["get"]
+
+    def get_queryset(self):
+        return OperatorAuditEvent.objects.select_related("actor").order_by("-created_at")
+
+
+class OperatorAuditEventDetailView(generics.RetrieveAPIView):
+    serializer_class = OperatorAuditEventDetailSerializer
+    permission_classes = [IsOperator, HasOperatorRole.with_roles(ALLOWED_OPERATOR_ROLES)]
+    lookup_field = "pk"
+    http_method_names = ["get"]
+
+    def get_queryset(self):
+        return OperatorAuditEvent.objects.select_related("actor")
 
 
 NOTE_ENTITY_MODELS = {

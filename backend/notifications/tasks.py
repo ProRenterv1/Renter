@@ -14,6 +14,7 @@ from django.template import TemplateDoesNotExist
 from django.template.loader import render_to_string
 from django.utils import timezone
 
+from core.redis import push_event
 from notifications.models import NotificationLog
 from operator_core.models import OperatorJobRun
 from payments.receipts import upload_booking_receipt_pdf, upload_promotion_receipt_pdf
@@ -53,6 +54,94 @@ def _twilio_client():
 def _render(template: str, context: dict) -> str:
     """Render a template relative to the notifications app."""
     return render_to_string(template, context).strip()
+
+
+def notify_dispute_update(dispute_id: int, target: str = "both") -> bool:
+    """
+    Best-effort notifier for operator dispute updates.
+
+    Emits a lightweight push event to the requested parties.
+    """
+
+    try:
+        DisputeCase = apps.get_model("disputes", "DisputeCase")
+        dispute = (
+            DisputeCase.objects.select_related("booking", "booking__owner", "booking__renter")
+            .filter(pk=dispute_id)
+            .first()
+        )
+    except Exception:
+        logger.exception("notifications: failed to load dispute %s", dispute_id)
+        return False
+
+    if not dispute or not getattr(dispute, "booking", None):
+        return False
+
+    booking = dispute.booking
+    target_normalized = (target or "both").lower()
+    user_ids = []
+    if target_normalized in {"owner", "both"} and booking.owner_id:
+        user_ids.append(booking.owner_id)
+    if target_normalized in {"renter", "both"} and booking.renter_id:
+        user_ids.append(booking.renter_id)
+
+    payload = {"dispute_id": dispute.id, "status": dispute.status}
+    ok = False
+    for uid in user_ids:
+        try:
+            push_event(uid, "dispute:update", payload)
+            ok = True
+        except Exception:
+            logger.info(
+                "notifications: failed to push dispute update",
+                extra={"user_id": uid, "dispute_id": dispute_id},
+                exc_info=True,
+            )
+    return ok
+
+
+def notify_dispute_resolved(dispute_id: int) -> bool:
+    """
+    Best-effort notifier for dispute resolution.
+
+    Sends a push event to both parties with resolution details.
+    """
+
+    try:
+        DisputeCase = apps.get_model("disputes", "DisputeCase")
+        dispute = (
+            DisputeCase.objects.select_related("booking", "booking__owner", "booking__renter")
+            .filter(pk=dispute_id)
+            .first()
+        )
+    except Exception:
+        logger.exception("notifications: failed to load dispute %s for resolved notify", dispute_id)
+        return False
+
+    if not dispute or not getattr(dispute, "booking", None):
+        return False
+
+    booking = dispute.booking
+    payload = {
+        "dispute_id": dispute.id,
+        "status": dispute.status,
+        "refund_amount_cents": getattr(dispute, "refund_amount_cents", None),
+        "deposit_capture_amount_cents": getattr(dispute, "deposit_capture_amount_cents", None),
+    }
+    ok = False
+    for uid in (booking.owner_id, booking.renter_id):
+        if not uid:
+            continue
+        try:
+            push_event(uid, "dispute:resolved", payload)
+            ok = True
+        except Exception:
+            logger.info(
+                "notifications: failed to push dispute resolved event",
+                extra={"user_id": uid, "dispute_id": dispute_id},
+                exc_info=True,
+            )
+    return ok
 
 
 def _build_email_context(extra: Optional[dict]) -> dict:

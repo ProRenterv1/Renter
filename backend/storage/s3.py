@@ -123,3 +123,28 @@ def public_url(key: str) -> str:
 
 def guess_content_type(filename: str) -> str:
     return mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+
+def presign_get(
+    key: str, *, expires_in: int = 600, response_content_type: Optional[str] = None
+) -> Dict:
+    """
+    Return a presigned GET URL for the given object key.
+    """
+    if not getattr(settings, "USE_S3", False):
+        url = f"http://example.com/mock-download/{key}"
+        return {"url": url, "headers": {}}
+
+    params = {
+        "Bucket": settings.AWS_STORAGE_BUCKET_NAME,
+        "Key": key,
+    }
+    if response_content_type:
+        params["ResponseContentType"] = response_content_type
+
+    url = _client().generate_presigned_url(
+        ClientMethod="get_object",
+        Params=params,
+        ExpiresIn=expires_in,
+    )
+    return {"url": url, "headers": {}}

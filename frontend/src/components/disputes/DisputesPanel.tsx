@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { AlertTriangle, ArrowLeft, Calendar, Clock, Image as ImageIcon, Shield, User } from "lucide-react";
 import { disputesAPI, type DisputeCase, type DisputeUserSummary } from "@/lib/api";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -24,10 +25,12 @@ export interface UiDispute {
   bookingId: number;
   toolName: string;
   toolImage?: string | null;
+  ownerId?: number | null;
   ownerName: string;
   ownerAvatar?: string | null;
   ownerVerified?: boolean;
   ownerRating?: number | null;
+  renterId?: number | null;
   renterName: string;
   renterAvatar?: string | null;
   renterVerified?: boolean;
@@ -105,10 +108,12 @@ export function mapDisputeToUi(dispute: DisputeCase): UiDispute {
     bookingId: dispute.booking,
     toolName,
     toolImage,
+    ownerId: ownerSummary?.id ?? null,
     ownerName,
     ownerAvatar: ownerSummary?.avatar_url ?? null,
     ownerVerified: ownerSummary?.identity_verified ?? false,
     ownerRating: ownerSummary?.rating ?? null,
+    renterId: renterSummary?.id ?? null,
     renterName,
     renterAvatar: renterSummary?.avatar_url ?? null,
     renterVerified: renterSummary?.identity_verified ?? false,
@@ -121,10 +126,18 @@ export function mapDisputeToUi(dispute: DisputeCase): UiDispute {
 }
 
 export function DisputesPanel({ onCountChange }: DisputesPanelProps) {
+  const navigate = useNavigate();
   const [disputes, setDisputes] = useState<DisputeCase[]>([]);
   const [selectedDisputeId, setSelectedDisputeId] = useState<number | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const handleViewProfile = useCallback(
+    (userId?: number | null) => {
+      if (!userId) return;
+      navigate(`/users/${userId}`);
+    },
+    [navigate],
+  );
 
   const refreshDisputes = useCallback(
     async (nextSelectedId?: number | null) => {
@@ -353,6 +366,8 @@ export function DisputesPanel({ onCountChange }: DisputesPanelProps) {
               avatarUrl={selectedUiDispute.ownerAvatar}
               verified={selectedUiDispute.ownerVerified}
               rating={selectedUiDispute.ownerRating}
+              userId={selectedUiDispute.ownerId}
+              onViewProfile={handleViewProfile}
             />
             <PartyCard
               title="Renter"
@@ -360,6 +375,8 @@ export function DisputesPanel({ onCountChange }: DisputesPanelProps) {
               avatarUrl={selectedUiDispute.renterAvatar}
               verified={selectedUiDispute.renterVerified}
               rating={selectedUiDispute.renterRating}
+              userId={selectedUiDispute.renterId}
+              onViewProfile={handleViewProfile}
             />
           </div>
 
@@ -383,15 +400,18 @@ interface PartyCardProps {
   avatarUrl?: string | null;
   verified?: boolean;
   rating?: number | null;
+  userId?: number | null;
+  onViewProfile?: (userId: number) => void;
 }
 
-function PartyCard({ title, name, avatarUrl, verified, rating }: PartyCardProps) {
+function PartyCard({ title, name, avatarUrl, verified, rating, userId, onViewProfile }: PartyCardProps) {
   const hasRating = typeof rating === "number";
   const subtitle = hasRating
     ? `Rating: ${rating.toFixed(1)} ★`
     : verified
       ? "Verified member"
       : "Member";
+  const canViewProfile = typeof userId === "number" && Boolean(onViewProfile);
   return (
     <div className="bg-card border rounded-lg p-4">
       <h3 className="text-sm text-muted-foreground mb-3">{title}</h3>
@@ -412,7 +432,16 @@ function PartyCard({ title, name, avatarUrl, verified, rating }: PartyCardProps)
           </div>
           <p className="text-sm text-muted-foreground">{subtitle}</p>
         </div>
-        <button className="px-3 py-1.5 text-sm bg-[var(--primary)] text-[var(--primary-foreground)] rounded-lg hover:opacity-90 transition-opacity">
+        <button
+          type="button"
+          className="px-3 py-1.5 text-sm bg-[var(--primary)] text-[var(--primary-foreground)] rounded-lg hover:opacity-90 transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+          onClick={() => {
+            if (userId && onViewProfile) {
+              onViewProfile(userId);
+            }
+          }}
+          disabled={!canViewProfile}
+        >
           View Profile
         </button>
       </div>

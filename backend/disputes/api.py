@@ -18,7 +18,7 @@ from rest_framework.response import Response
 from bookings.models import Booking
 from core.settings_resolver import get_bool
 from listings.models import ListingPhoto
-from storage.s3 import booking_object_key, guess_content_type, presign_put
+from storage.s3 import booking_object_key, guess_content_type, presign_put, public_url
 from storage.tasks import scan_and_finalize_dispute_evidence
 
 from .intake import update_dispute_intake_status
@@ -62,6 +62,8 @@ class DisputeMessageSerializer(serializers.ModelSerializer):
 class DisputeEvidenceSerializer(serializers.ModelSerializer):
     """Serialize dispute evidence uploads (read-only for now)."""
 
+    url = serializers.SerializerMethodField()
+
     class Meta:
         model = DisputeEvidence
         fields = [
@@ -70,6 +72,7 @@ class DisputeEvidenceSerializer(serializers.ModelSerializer):
             "uploaded_by",
             "kind",
             "s3_key",
+            "url",
             "filename",
             "content_type",
             "size",
@@ -78,6 +81,11 @@ class DisputeEvidenceSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+    def get_url(self, obj: DisputeEvidence) -> str | None:
+        if not getattr(obj, "s3_key", ""):
+            return None
+        return public_url(obj.s3_key)
 
 
 class DisputeCaseSerializer(serializers.ModelSerializer):

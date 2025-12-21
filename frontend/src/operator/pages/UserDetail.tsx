@@ -50,6 +50,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../../components/ui/select";
+import { EmptyState } from "@/operator/components/EmptyState";
 import { listingsAPI, type Listing } from "@/lib/api";
 import { formatCurrency, parseMoney } from "@/lib/utils";
 import {
@@ -1174,16 +1175,6 @@ function VerificationItem({ icon: Icon, label, verified }: { icon: React.Element
           Not Verified
         </Badge>
       )}
-    </div>
-  );
-}
-
-function EmptyState({ icon: Icon, title, description }: { icon: React.ElementType; title: string; description: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-12 text-center">
-      <Icon className="w-12 h-12 text-muted-foreground mb-3" />
-      <h3 className="mb-1">{title}</h3>
-      <p className="text-sm text-muted-foreground m-0">{description}</p>
     </div>
   );
 }

@@ -21,6 +21,7 @@ const viewLabels: Record<string, string> = {
   finance: 'Finance',
   disputes: 'Disputes',
   promotions: 'Promotions',
+  audit: 'Audit Log',
   comms: 'Communications',
   settings: 'Settings',
   health: 'System Health',

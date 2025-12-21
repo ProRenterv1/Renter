@@ -653,6 +653,7 @@ export interface DisputeEvidence {
   uploaded_by: number;
   kind: "photo" | "video" | "other";
   s3_key: string;
+  url?: string | null;
   filename: string;
   content_type: string;
   size: number | null;

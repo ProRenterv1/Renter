@@ -218,7 +218,7 @@ export default function Booking({
   const reviews: Review[] = [];
   const averageRating = reviews.length
     ? reviews.reduce((sum, review) => sum + review.rating, 0) / reviews.length
-    : 5;
+    : 0;
 
   const rawDescription = listing.description ?? "";
   const hasCustomDescription = Boolean(rawDescription.trim().length);
