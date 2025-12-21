@@ -12,11 +12,7 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 
 from disputes.models import DisputeCase, DisputeEvidence, DisputeMessage
-from disputes.services.settlement import (
-    capture_deposit_amount_cents,
-    refund_booking_charge,
-    release_deposit_hold_if_needed,
-)
+from disputes.services import settlement
 from listings.models import ListingPhoto
 from notifications import tasks as notification_tasks
 from operator_core.api_base import OperatorAPIView, OperatorThrottleMixin
@@ -661,19 +657,21 @@ class OperatorDisputeResolveView(OperatorDisputeActionBase):
         capture_id = None
         try:
             if refund_amount_cents > 0:
-                refund_id = refund_booking_charge(booking, refund_amount_cents)
+                refund_id = settlement.refund_booking_charge(booking, refund_amount_cents)
         except StripePaymentError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             if deposit_capture_amount_cents > 0:
-                capture_id = capture_deposit_amount_cents(booking, deposit_capture_amount_cents)
+                capture_id = settlement.capture_deposit_amount_cents(
+                    booking, deposit_capture_amount_cents
+                )
         except StripePaymentError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         if deposit_hold_id:
             try:
-                release_deposit_hold_if_needed(booking)
+                settlement.release_deposit_hold_if_needed(booking)
             except StripePaymentError as exc:
                 logger.info("Failed to release deposit hold for booking %s: %s", booking.id, exc)
 

@@ -148,7 +148,15 @@ class OperatorUserActionBase(OperatorAPIView):
         return reason or None
 
     def _audit_user(
-        self, request, user: User, *, action: str, reason: str, before=None, after=None
+        self,
+        request,
+        user: User,
+        *,
+        action: str,
+        reason: str,
+        before=None,
+        after=None,
+        meta=None,
     ):
         ip, ua = _request_ip_and_ua(request)
         audit(
@@ -159,7 +167,7 @@ class OperatorUserActionBase(OperatorAPIView):
             reason=reason,
             before=before,
             after=after,
-            meta=None,
+            meta=meta,
             ip=ip,
             user_agent=ua,
         )
