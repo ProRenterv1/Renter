@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { operatorAPI, type DbSettingValueType, type OperatorEffectiveSetting } from "@/operator/api";
 import { EditPlatformSettingModal } from "@/operator/components/modals/EditPlatformSettingModal";
 import { PermissionGate } from "@/operator/components/PermissionGate";
-import { OPERATOR_ADMIN_ROLE } from "@/operator/lib/permissions";
+import { OPERATOR_ADMIN_ROLE } from "@/operator/utils/permissions";
 import { useIsOperatorAdmin } from "@/operator/session";
 import { formatCurrency, parseMoney, pluralize } from "@/lib/utils";
 import { RefreshCw } from "lucide-react";

@@ -17,7 +17,7 @@ import {
 import { DataTable } from "../components/DataTable";
 import { CancelPromotionModal } from "../components/promotions/modals/CancelPromotionModal";
 import { GrantPromotionModal } from "../components/promotions/modals/GrantPromotionModal";
-import { formatCadCents } from "../lib/money";
+import { formatCadCents } from "../utils/money";
 import {
   operatorAPI,
   type OperatorPromotionCancelPayload,

@@ -11,7 +11,7 @@ import { RefundModal } from "../components/modals/RefundModal";
 import { DepositActionModal } from "../components/modals/DepositActionModal";
 import { toast } from "sonner";
 import { PermissionGate } from "../components/PermissionGate";
-import { OPERATOR_ADMIN_ROLE, OPERATOR_FINANCE_ROLE } from "../lib/permissions";
+import { OPERATOR_ADMIN_ROLE, OPERATOR_FINANCE_ROLE } from "../utils/permissions";
 
 export function BookingFinancePage() {
   const { bookingId } = useParams();

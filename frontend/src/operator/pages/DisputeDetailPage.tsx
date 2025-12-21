@@ -27,8 +27,8 @@ import { AppealModal } from "../components/disputes/modals/AppealModal";
 import { CloseCaseModal } from "../components/disputes/modals/CloseCaseModal";
 import { RequestMoreEvidenceModal } from "../components/disputes/modals/RequestMoreEvidenceModal";
 import { ResolveDisputeModal } from "../components/disputes/modals/ResolveDisputeModal";
-import { formatCadCents } from "../lib/money";
-import { OPERATOR_ADMIN_ROLE, OPERATOR_FINANCE_ROLE } from "../lib/permissions";
+import { formatCadCents } from "../utils/money";
+import { OPERATOR_ADMIN_ROLE, OPERATOR_FINANCE_ROLE } from "../utils/permissions";
 import {
   operatorAPI,
   type OperatorDisputeDetail,

@@ -1,7 +1,7 @@
 import type React from "react";
 
 import { useOperatorRoles } from "@/operator/session";
-import { hasRequiredRoles, type PermissionMode } from "@/operator/lib/permissions";
+import { hasRequiredRoles, type PermissionMode } from "@/operator/utils/permissions";
 
 type PermissionGateProps = {
   roles?: string[];
