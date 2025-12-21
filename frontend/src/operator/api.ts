@@ -3,6 +3,30 @@ import { AuthStore } from "@/lib/auth";
 import type { ContactVerificationChannel } from "@/lib/api";
 import { parseMoney } from "@/lib/utils";
 
+export type OperatorDashboardOverdueItem = {
+  booking_id: number;
+  listing_id?: number | null;
+  listing_title?: string | null;
+  renter_name?: string | null;
+  renter_email?: string | null;
+  end_date?: string | null;
+  overdue_days?: number;
+};
+
+export type OperatorDashboardDisputedItem = {
+  dispute_id: number;
+  booking_id: number;
+  filed_at?: string | null;
+};
+
+export type OperatorDashboardFailedPaymentItem = {
+  booking_id: number;
+  renter_name?: string | null;
+  renter_email?: string | null;
+  amount?: number | string | null;
+  created_at?: string | null;
+};
+
 export type OperatorDashboardMetrics = {
   today: {
     new_users: number;
@@ -19,6 +43,12 @@ export type OperatorDashboardMetrics = {
   risk: {
     overdue_bookings_count: number;
     disputed_bookings_count: number;
+    failed_payments_count?: number;
+  };
+  risk_items?: {
+    overdue_bookings: OperatorDashboardOverdueItem[];
+    disputed_bookings: OperatorDashboardDisputedItem[];
+    failed_payments: OperatorDashboardFailedPaymentItem[];
   };
   open_disputes_count: number;
   rebuttals_due_soon_count: number;

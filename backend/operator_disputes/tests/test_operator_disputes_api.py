@@ -11,6 +11,7 @@ from rest_framework.test import APIClient
 import renter.urls as renter_urls
 from bookings.models import Booking
 from disputes.models import DisputeCase, DisputeEvidence, DisputeMessage
+from listings.models import Listing
 from operator_core.models import OperatorAuditEvent
 
 pytestmark = pytest.mark.django_db
@@ -80,8 +81,18 @@ def owner_user():
 
 @pytest.fixture
 def booking(owner_user, renter_user):
+    listing = Listing.objects.create(
+        owner=owner_user,
+        title="Drill",
+        description="desc",
+        daily_price_cad="10.00",
+        replacement_value_cad="0",
+        damage_deposit_cad="0",
+        city="Edmonton",
+        postal_code="T0T0T0",
+    )
     return Booking.objects.create(
-        listing_id=1,
+        listing=listing,
         owner=owner_user,
         renter=renter_user,
         start_date=datetime.utcnow().date(),
