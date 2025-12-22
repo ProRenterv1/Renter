@@ -50,6 +50,10 @@ class OperatorBookingListSerializer(serializers.ModelSerializer):
     listing_title = serializers.CharField(source="listing.title", read_only=True)
     is_overdue = serializers.SerializerMethodField()
     total_charge = serializers.SerializerMethodField()
+    pickup_confirmed_at = serializers.DateTimeField(read_only=True)
+    returned_by_renter_at = serializers.DateTimeField(read_only=True)
+    return_confirmed_at = serializers.DateTimeField(read_only=True)
+    after_photos_uploaded_at = serializers.DateTimeField(read_only=True)
 
     class Meta:
         model = Booking
@@ -63,6 +67,10 @@ class OperatorBookingListSerializer(serializers.ModelSerializer):
             "start_date",
             "end_date",
             "is_overdue",
+            "pickup_confirmed_at",
+            "returned_by_renter_at",
+            "return_confirmed_at",
+            "after_photos_uploaded_at",
             "total_charge",
             "created_at",
         ]

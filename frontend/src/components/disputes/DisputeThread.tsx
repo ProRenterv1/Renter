@@ -93,7 +93,7 @@ export function DisputeThread({ disputeId }: DisputeThreadProps) {
             const isVideo = ev.content_type?.startsWith("video/");
             const description =
               (ev as DisputeEvidenceWithDescription).description ?? ev.filename ?? ev.kind;
-            const evidenceUrl = ev.s3_key;
+            const evidenceUrl = ev.url || ev.s3_key;
             return (
               <div key={ev.id} className="border rounded-lg p-4">
                 <div className="flex items-start gap-4">

@@ -33,6 +33,8 @@ INSTALLED_APPS = [
     "operator_bookings",
     "operator_finance",
     "operator_settings",
+    "operator_disputes",
+    "operator_promotions",
     "bookings.apps.BookingsConfig",
     "payments.apps.PaymentsConfig",
     "disputes",
@@ -101,21 +103,23 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
-    ),
-    "DEFAULT_FILTER_BACKENDS": [
-        "django_filters.rest_framework.DjangoFilterBackend",
-        "rest_framework.filters.SearchFilter",
-        "rest_framework.filters.OrderingFilter",
-    ],
-    "DEFAULT_THROTTLE_CLASSES":[
-        "rest_framework.throttling.AnonRateThrottle",
-        "rest_framework.throttling.UserRateThrottle",
-    ],
-    "DEFAULT_THROTTLE_RATES":{
-        "anon": "100/hour",
-        "user": "1000/hour",
-    }
+    "rest_framework_simplejwt.authentication.JWTAuthentication",
+),
+"DEFAULT_FILTER_BACKENDS": [
+    "django_filters.rest_framework.DjangoFilterBackend",
+    "rest_framework.filters.SearchFilter",
+    "rest_framework.filters.OrderingFilter",
+],
+"DEFAULT_THROTTLE_CLASSES":[
+    "rest_framework.throttling.AnonRateThrottle",
+    "rest_framework.throttling.UserRateThrottle",
+    "rest_framework.throttling.ScopedRateThrottle",
+],
+"DEFAULT_THROTTLE_RATES":{
+    "anon": "100/hour",
+    "user": "1000/hour",
+    "operator": "6000/hour",
+}
 }
 
 CORS_ALLOW_ALL_ORIGINS = True

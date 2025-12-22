@@ -10,6 +10,8 @@ import { operatorAPI, type OperatorBookingFinance, type OperatorBookingDetail } 
 import { RefundModal } from "../components/modals/RefundModal";
 import { DepositActionModal } from "../components/modals/DepositActionModal";
 import { toast } from "sonner";
+import { PermissionGate } from "../components/PermissionGate";
+import { OPERATOR_ADMIN_ROLE, OPERATOR_FINANCE_ROLE } from "../utils/permissions";
 
 export function BookingFinancePage() {
   const { bookingId } = useParams();
@@ -45,25 +47,42 @@ export function BookingFinancePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookingId]);
 
+  const financeRoles = [OPERATOR_ADMIN_ROLE, OPERATOR_FINANCE_ROLE];
+
   const handleRefund = async (payload: { amount?: string; reason: string; notify_user: boolean }) => {
     if (!bookingId) return;
-    await operatorAPI.refundBooking(Number(bookingId), payload);
-    toast.success("Refund submitted");
-    await load();
+    try {
+      await operatorAPI.refundBooking(Number(bookingId), payload);
+      toast.success("Refund submitted");
+      await load();
+    } catch (err: any) {
+      toast.error(extractErrorMessage(err, "Unable to process refund."));
+      throw err;
+    }
   };
 
   const handleCapture = async (payload: { amount?: string; reason: string }) => {
     if (!bookingId || !payload.amount) return;
-    await operatorAPI.captureDeposit(Number(bookingId), { amount: payload.amount, reason: payload.reason });
-    toast.success("Deposit captured");
-    await load();
+    try {
+      await operatorAPI.captureDeposit(Number(bookingId), { amount: payload.amount, reason: payload.reason });
+      toast.success("Deposit captured");
+      await load();
+    } catch (err: any) {
+      toast.error(extractErrorMessage(err, "Unable to capture deposit."));
+      throw err;
+    }
   };
 
   const handleRelease = async (payload: { reason: string }) => {
     if (!bookingId) return;
-    await operatorAPI.releaseDeposit(Number(bookingId), { reason: payload.reason });
-    toast.success("Deposit released");
-    await load();
+    try {
+      await operatorAPI.releaseDeposit(Number(bookingId), { reason: payload.reason });
+      toast.success("Deposit released");
+      await load();
+    } catch (err: any) {
+      toast.error(extractErrorMessage(err, "Unable to release deposit."));
+      throw err;
+    }
   };
 
   const depositLocked = booking?.deposit_locked;
@@ -100,24 +119,60 @@ export function BookingFinancePage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button
-            className="border border-[#F1C2C6] bg-[#FDEEEF] text-[#8C2A2F] hover:bg-[#F1C2C6] dark:border-[#4A252A] dark:bg-[#241517] dark:text-[#F2B4B9] dark:hover:bg-[#4A252A]"
-            onClick={() => setRefundOpen(true)}
+          <PermissionGate
+            roles={financeRoles}
+            fallback={
+              <Button
+                disabled
+                className="border border-[#F1C2C6] bg-[#FDEEEF] text-[#8C2A2F] opacity-60 dark:border-[#4A252A] dark:bg-[#241517] dark:text-[#F2B4B9]"
+              >
+                Refund (finance only)
+              </Button>
+            }
           >
-            Refund
-          </Button>
-          <Button
-            className="border border-[#F3D2A8] bg-[#FFF3E3] text-[#7F5A23] hover:bg-[#FFE0BC] dark:border-[#3E3426] dark:bg-[#1F1A13] dark:text-[#F2D2A6] dark:hover:bg-[#3E3426]"
-            onClick={() => setCaptureOpen(true)}
+            <Button
+              className="border border-[#F1C2C6] bg-[#FDEEEF] text-[#8C2A2F] hover:bg-[#F1C2C6] dark:border-[#4A252A] dark:bg-[#241517] dark:text-[#F2B4B9] dark:hover:bg-[#4A252A]"
+              onClick={() => setRefundOpen(true)}
+            >
+              Refund
+            </Button>
+          </PermissionGate>
+          <PermissionGate
+            roles={financeRoles}
+            fallback={
+              <Button
+                disabled
+                className="border border-[#F3D2A8] bg-[#FFF3E3] text-[#7F5A23] opacity-60 dark:border-[#3E3426] dark:bg-[#1F1A13] dark:text-[#F2D2A6]"
+              >
+                Capture deposit (finance only)
+              </Button>
+            }
           >
-            Capture deposit
-          </Button>
-          <Button
-            className="border border-[#B9E7D1] bg-[#EAF7F1] text-[#256C46] hover:bg-[#B9E7D1] dark:border-[#1E3B2E] dark:bg-[#0F231B] dark:text-[#AEE8CF] dark:hover:bg-[#1E3B2E]"
-            onClick={() => setReleaseOpen(true)}
+            <Button
+              className="border border-[#F3D2A8] bg-[#FFF3E3] text-[#7F5A23] hover:bg-[#FFE0BC] dark:border-[#3E3426] dark:bg-[#1F1A13] dark:text-[#F2D2A6] dark:hover:bg-[#3E3426]"
+              onClick={() => setCaptureOpen(true)}
+            >
+              Capture deposit
+            </Button>
+          </PermissionGate>
+          <PermissionGate
+            roles={financeRoles}
+            fallback={
+              <Button
+                disabled
+                className="border border-[#B9E7D1] bg-[#EAF7F1] text-[#256C46] opacity-60 dark:border-[#1E3B2E] dark:bg-[#0F231B] dark:text-[#AEE8CF]"
+              >
+                Release deposit (finance only)
+              </Button>
+            }
           >
-            Release deposit
-          </Button>
+            <Button
+              className="border border-[#B9E7D1] bg-[#EAF7F1] text-[#256C46] hover:bg-[#B9E7D1] dark:border-[#1E3B2E] dark:bg-[#0F231B] dark:text-[#AEE8CF] dark:hover:bg-[#1E3B2E]"
+              onClick={() => setReleaseOpen(true)}
+            >
+              Release deposit
+            </Button>
+          </PermissionGate>
         </div>
       </div>
 
@@ -236,4 +291,8 @@ export function BookingFinancePage() {
       />
     </div>
   );
+}
+
+function extractErrorMessage(err: any, fallback: string) {
+  return err?.data?.detail || fallback;
 }

@@ -6,6 +6,7 @@ User = get_user_model()
 
 
 class OperatorUserFilter(filters.FilterSet):
+    id = filters.NumberFilter(field_name="id")
     email = filters.CharFilter(field_name="email", lookup_expr="iexact")
     name = filters.CharFilter(method="filter_name")
     phone = filters.CharFilter(field_name="phone", lookup_expr="icontains")
@@ -22,6 +23,7 @@ class OperatorUserFilter(filters.FilterSet):
     class Meta:
         model = User
         fields = [
+            "id",
             "email",
             "name",
             "phone",

@@ -22,6 +22,7 @@ type FilterSelectOption = {
 type AdvancedFiltersState = {
   canRent: boolean | null;
   canList: boolean | null;
+  userId?: string;
   joinedAfter?: string;
   joinedBefore?: string;
 };
@@ -82,10 +83,15 @@ export function FilterBar({
     onAdvancedChange({ [key]: value || undefined });
   };
 
+  const handleUserIdChange = (value: string) => {
+    onAdvancedChange({ userId: value || undefined });
+  };
+
   const resetAdvancedFilters = () => {
     onAdvancedChange({
       canList: null,
       canRent: null,
+      userId: undefined,
       joinedAfter: undefined,
       joinedBefore: undefined,
     });
@@ -163,6 +169,16 @@ export function FilterBar({
                   <DrawerTitle>Advanced filters</DrawerTitle>
                 </DrawerHeader>
                 <div className="space-y-4 p-4">
+                  <div className="space-y-1">
+                    <div className="text-sm text-muted-foreground">User ID</div>
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      placeholder="e.g. 12452"
+                      value={advancedFilters.userId ?? ""}
+                      onChange={(e) => handleUserIdChange(e.target.value)}
+                    />
+                  </div>
                   <div className="flex items-center justify-between rounded-lg border border-border p-3">
                   <div>
                     <div className="font-medium">Can rent</div>

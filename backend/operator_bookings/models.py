@@ -11,6 +11,7 @@ class BookingEvent(models.Model):
         SMS_FAILED = "sms_failed", "SMS failed"
         OPERATOR_ACTION = "operator_action", "Operator action"
         DISPUTE_OPENED = "dispute_opened", "Dispute opened"
+        DISPUTE_RESOLVED = "dispute_resolved", "Dispute resolved"
 
     booking = models.ForeignKey(
         "bookings.Booking",

@@ -636,6 +636,7 @@ function displayStatus(booking: BookingDetailType) {
   if (booking.end_date && booking.end_date === today) return "Waiting return";
   if (booking.pickup_confirmed_at) return "In progress";
   if (status === "paid") return "Waiting pick up";
+  if (status === "confirmed") return "Approved by owner";
   return booking.status || "Unknown";
 }
 

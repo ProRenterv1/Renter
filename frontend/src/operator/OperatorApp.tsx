@@ -15,6 +15,10 @@ import { BookingFinancePage } from "./pages/BookingFinancePage";
 import { ExportsPage } from "./pages/ExportsPage";
 import { OwnerEarningsPage } from "./pages/OwnerEarningsPage";
 import { FinancePage } from "./pages/FinancePage";
+import { DisputesListPage } from "./pages/DisputesListPage";
+import { DisputeDetailPage } from "./pages/DisputeDetailPage";
+import { PromotionsPage } from "./pages/PromotionsPage";
+import { AuditLogPage } from "./pages/AuditLogPage";
 import { OperatorSessionProvider } from "./session";
 import { SettingsPage } from "./pages/settings/SettingsPage";
 import { PlatformRulesPage } from "./pages/settings/PlatformRulesPage";
@@ -177,8 +181,10 @@ export function OperatorApp({ darkMode, onToggleTheme }: OperatorAppProps) {
             <Route path="owners" element={<OwnerEarningsPage />} />
             <Route path="owners/:ownerId" element={<OwnerEarningsPage />} />
           </Route>
-          <Route path="disputes" element={<div>Disputes page coming soon...</div>} />
-          <Route path="promotions" element={<div>Promotions page coming soon...</div>} />
+          <Route path="disputes" element={<DisputesListPage />} />
+          <Route path="disputes/:disputeId" element={<DisputeDetailPage />} />
+          <Route path="promotions" element={<PromotionsPage />} />
+          <Route path="audit" element={<AuditLogPage />} />
           <Route path="comms" element={<div>Communications page coming soon...</div>} />
 
           <Route path="settings" element={<SettingsPage />}>

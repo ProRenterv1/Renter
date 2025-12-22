@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { formatDistanceToNow } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
@@ -84,6 +85,78 @@ export function Dashboard() {
     const bookingsChange = formatChange(todayBookings, weekBookings / 7);
     const gmvChange = formatChange(gmvToday, gmv7d / 7);
 
+    const overdueCount = safeMetrics?.risk?.overdue_bookings_count ?? 0;
+    const disputedCount = safeMetrics?.risk?.disputed_bookings_count ?? 0;
+    const failedPaymentsCount = safeMetrics?.risk?.failed_payments_count ?? 0;
+    const riskItems = {
+      overdue_bookings: safeMetrics?.risk_items?.overdue_bookings ?? [],
+      disputed_bookings: safeMetrics?.risk_items?.disputed_bookings ?? [],
+      failed_payments: safeMetrics?.risk_items?.failed_payments ?? [],
+    };
+
+    const overdueItems = riskItems.overdue_bookings.map((booking) => {
+      const renterLabel =
+        booking.renter_name || booking.renter_email || `Booking #${booking.booking_id}`;
+      const listingLabel =
+        booking.listing_title ||
+        (booking.listing_id ? `Listing #${booking.listing_id}` : 'Listing');
+      const listingShort = truncateText(listingLabel, 22);
+      const overdueDays = typeof booking.overdue_days === 'number' ? booking.overdue_days : 0;
+      const secondary = overdueDays > 0 ? `${listingShort} - ${overdueDays}d overdue` : listingShort;
+      return { primary: renterLabel, secondary };
+    });
+
+    if (!overdueItems.length) {
+      overdueItems.push({
+        primary:
+          overdueCount > 0
+            ? `${overdueCount} bookings past end date`
+            : 'No overdue bookings right now',
+        secondary: 'Bookings ending before today',
+      });
+    }
+
+    const disputedItems = riskItems.disputed_bookings.map((dispute) => {
+      const primary = dispute.booking_id ? `#BK-${dispute.booking_id}` : `Dispute #${dispute.dispute_id}`;
+      const filedAt = dispute.filed_at ? new Date(dispute.filed_at) : null;
+      const secondary =
+        filedAt && !Number.isNaN(filedAt.getTime())
+          ? formatDistanceToNow(filedAt, { addSuffix: true })
+          : undefined;
+      return { primary, secondary };
+    });
+
+    if (!disputedItems.length) {
+      disputedItems.push({
+        primary:
+          disputedCount > 0
+            ? `${disputedCount} active disputes`
+            : 'No open disputes right now',
+        secondary: 'Includes intake, rebuttals, and reviews',
+      });
+    }
+
+    const failedPaymentItems = riskItems.failed_payments.map((payment) => {
+      const renterLabel =
+        payment.renter_name || payment.renter_email || `Booking #${payment.booking_id}`;
+      const amountValue =
+        payment.amount === null || payment.amount === undefined || payment.amount === ''
+          ? null
+          : parseMoney(payment.amount);
+      const secondary = amountValue === null ? '--' : formatCurrency(amountValue);
+      return { primary: renterLabel, secondary };
+    });
+
+    if (!failedPaymentItems.length) {
+      failedPaymentItems.push({
+        primary:
+          failedPaymentsCount > 0
+            ? `${failedPaymentsCount} failed payments`
+            : 'No failed payments reported',
+        secondary: 'Stripe + ledger sync',
+      });
+    }
+
     return {
       cards: [
         {
@@ -116,8 +189,14 @@ export function Dashboard() {
         },
       ],
       risk: {
-        overdue: safeMetrics?.risk?.overdue_bookings_count ?? 0,
-        disputed: safeMetrics?.risk?.disputed_bookings_count ?? 0,
+        overdue: overdueCount,
+        disputed: disputedCount,
+        failedPayments: failedPaymentsCount,
+      },
+      riskItems: {
+        overdue: overdueItems,
+        disputed: disputedItems,
+        failedPayments: failedPaymentItems,
       },
       openDisputes: safeMetrics?.open_disputes_count ?? 0,
       rebuttalsDue: safeMetrics?.rebuttals_due_soon_count ?? 0,
@@ -163,15 +242,7 @@ export function Dashboard() {
           count={metricsSummary.risk.overdue}
           severity="high"
           icon={Clock}
-          items={[
-            {
-              text:
-                metricsSummary.risk.overdue > 0
-                  ? `${metricsSummary.risk.overdue} bookings past end date`
-                  : 'No overdue bookings right now',
-              meta: 'Bookings ending before today',
-            },
-          ]}
+          items={metricsSummary.riskItems.overdue}
           loading={loading}
           onViewAll={() => navigate('/operator/bookings?filter=overdue')}
         />
@@ -181,30 +252,17 @@ export function Dashboard() {
           count={metricsSummary.risk.disputed}
           severity="medium"
           icon={Scale}
-          items={[
-            {
-              text:
-                metricsSummary.risk.disputed > 0
-                  ? `${metricsSummary.risk.disputed} active disputes`
-                  : 'No open disputes right now',
-              meta: 'Includes intake, rebuttals, and reviews',
-            },
-          ]}
+          items={metricsSummary.riskItems.disputed}
           loading={loading}
           onViewAll={() => navigate('/operator/disputes')}
         />
         
         <RiskTile
           title="Failed Payments"
-          count={0}
+          count={metricsSummary.risk.failedPayments}
           severity="low"
           icon={XCircle}
-          items={[
-            {
-              text: 'No failed payments reported',
-              meta: 'Stripe + ledger sync',
-            },
-          ]}
+          items={metricsSummary.riskItems.failedPayments}
           loading={loading}
           onViewAll={() => navigate('/operator/finance?filter=failed')}
         />
@@ -232,6 +290,11 @@ export function Dashboard() {
       </div>
     </div>
   );
+}
+
+function truncateText(value: string, limit = 20) {
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit)}...`;
 }
 
 interface MetricCardProps {
@@ -269,12 +332,17 @@ function MetricCard({ title, value, change, icon: Icon, trend, loading }: Metric
   );
 }
 
+interface RiskTileItem {
+  primary: string;
+  secondary?: string;
+}
+
 interface RiskTileProps {
   title: string;
   count: number;
   severity: 'high' | 'medium' | 'low';
   icon: React.ElementType;
-  items: any[];
+  items: RiskTileItem[];
   loading?: boolean;
   onViewAll: () => void;
 }
@@ -319,25 +387,16 @@ function RiskTile({ title, count, severity, icon: Icon, items, onViewAll, loadin
               </div>
             ) : (
               items.slice(0, 5).map((item, index) => (
-                <div key={index} className="text-sm p-2 rounded bg-muted/40 hover:bg-muted transition-colors flex items-center justify-between">
-                  {item.user && (
-                    <>
-                      <span className="truncate">{item.user}</span>
-                      <span className="text-muted-foreground ml-2">
-                        {item.tool && `${item.tool.substring(0, 20)}...`}
-                        {item.amount && item.amount}
-                        {item.overdueDays && `${item.overdueDays}d overdue`}
-                      </span>
-                    </>
-                  )}
-                  {!item.user && !item.booking && (
-                    <>
-                      <span className="truncate">{item.text}</span>
-                      {item.meta ? (
-                        <span className="text-muted-foreground ml-2 text-xs">{item.meta}</span>
-                      ) : null}
-                    </>
-                  )}
+                <div
+                  key={index}
+                  className="text-sm p-2 rounded bg-muted/40 hover:bg-muted transition-colors flex items-center justify-between gap-3"
+                >
+                  <span className="truncate">{item.primary}</span>
+                  {item.secondary ? (
+                    <span className="text-muted-foreground ml-2 whitespace-nowrap">
+                      {item.secondary}
+                    </span>
+                  ) : null}
                 </div>
               ))
             )}

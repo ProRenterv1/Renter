@@ -21,6 +21,8 @@ interface ReviewModalProps {
   otherPartyName: string;
   onClose: () => void;
   onSubmitted?: (review: Review) => void;
+  onViewProfile?: () => void;
+  viewProfileLabel?: string;
 }
 
 const roleHeading: Record<ReviewRole, string> = {
@@ -35,6 +37,8 @@ export function ReviewModal({
   otherPartyName,
   onClose,
   onSubmitted,
+  onViewProfile,
+  viewProfileLabel = "View profile",
 }: ReviewModalProps) {
   const [rating, setRating] = useState<number | null>(null);
   const [text, setText] = useState("");
@@ -157,6 +161,19 @@ export function ReviewModal({
         </div>
 
         <DialogFooter className="gap-2">
+          {onViewProfile ? (
+            <Button
+              variant="outline"
+              onClick={() => {
+                if (!submitting) {
+                  onViewProfile();
+                }
+              }}
+              disabled={submitting}
+            >
+              {viewProfileLabel}
+            </Button>
+          ) : null}
           <Button
             variant="outline"
             onClick={() => {

@@ -8,7 +8,8 @@ import {
   Megaphone,
   MessageSquare,
   Settings,
-  Activity
+  Activity,
+  ScrollText
 } from 'lucide-react';
 import { cn } from '../../components/ui/utils';
 
@@ -28,6 +29,7 @@ const navItems = [
   { id: 'finance', label: 'Finance', icon: DollarSign },
   { id: 'disputes', label: 'Disputes', icon: Scale },
   { id: 'promotions', label: 'Promotions', icon: Megaphone },
+  { id: 'audit', label: 'Audit Log', icon: ScrollText },
   { id: 'comms', label: 'Comms', icon: MessageSquare },
   { id: 'settings', label: 'Settings', icon: Settings },
   { id: 'health', label: 'Health', icon: Activity },

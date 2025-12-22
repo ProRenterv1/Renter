@@ -21,6 +21,7 @@ class OperatorDashboardSerializer(serializers.Serializer):
     today = serializers.DictField()
     last_7d = serializers.DictField()
     risk = serializers.DictField()
+    risk_items = serializers.DictField()
     open_disputes_count = serializers.IntegerField()
     rebuttals_due_soon_count = serializers.IntegerField()
 
@@ -31,6 +32,29 @@ ALLOWED_OPERATOR_ROLES = (
     "operator_finance",
     "operator_admin",
 )
+
+
+def _display_name(user) -> str:
+    if not user:
+        return ""
+    name = (user.get_full_name() or "").strip()
+    if name:
+        return name
+    for attr in ("username", "email"):
+        value = (getattr(user, attr, "") or "").strip()
+        if value:
+            return value
+    if getattr(user, "id", None):
+        return f"User {user.id}"
+    return ""
+
+
+def _total_charge_label(booking: Booking) -> str:
+    totals = booking.totals if isinstance(booking.totals, dict) else {}
+    raw = totals.get("total_charge") or totals.get("rental_subtotal") or ""
+    if raw is None:
+        return ""
+    return str(raw)
 
 
 def _gmv_from_totals_dict(totals: dict | None) -> Decimal:
@@ -93,7 +117,12 @@ class OperatorDashboardView(APIView):
         today_status_counts, today_gmv = _booking_stats(bookings_today)
         last7_status_counts, last7_gmv = _booking_stats(bookings_last_7)
 
-        overdue_bookings_count = Booking.objects.filter(end_date__lt=today).count()
+        overdue_qs = Booking.objects.filter(
+            end_date__lt=today,
+            return_confirmed_at__isnull=True,
+            status__in=[Booking.Status.CONFIRMED, Booking.Status.PAID],
+        )
+        overdue_bookings_count = overdue_qs.count()
         disputed_bookings_count = Booking.objects.filter(is_disputed=True).count()
 
         open_statuses = [
@@ -102,12 +131,60 @@ class OperatorDashboardView(APIView):
             DisputeCase.Status.AWAITING_REBUTTAL,
             DisputeCase.Status.UNDER_REVIEW,
         ]
-        open_disputes_count = DisputeCase.objects.filter(status__in=open_statuses).count()
+        open_disputes_qs = DisputeCase.objects.filter(status__in=open_statuses)
+        open_disputes_count = open_disputes_qs.count()
         rebuttals_due_soon_count = DisputeCase.objects.filter(
             status=DisputeCase.Status.AWAITING_REBUTTAL,
             rebuttal_due_at__lte=now + timedelta(hours=12),
             rebuttal_due_at__gte=now,
         ).count()
+
+        failed_payments_qs = Booking.objects.filter(
+            status=Booking.Status.CONFIRMED,
+            charge_payment_intent_id="",
+        )
+        failed_payments_count = failed_payments_qs.count()
+
+        overdue_items = []
+        for booking in overdue_qs.select_related("listing", "renter").order_by("end_date")[:5]:
+            end_date = booking.end_date
+            overdue_days = (today - end_date).days if end_date else 0
+            listing_title = getattr(booking.listing, "title", None) if booking.listing_id else None
+            overdue_items.append(
+                {
+                    "booking_id": booking.id,
+                    "listing_id": booking.listing_id,
+                    "listing_title": listing_title,
+                    "renter_name": _display_name(booking.renter),
+                    "renter_email": getattr(booking.renter, "email", None),
+                    "end_date": end_date.isoformat() if end_date else None,
+                    "overdue_days": max(overdue_days, 0),
+                }
+            )
+
+        disputed_items = []
+        for dispute in open_disputes_qs.select_related("booking").order_by("-created_at")[:5]:
+            filed_at = dispute.created_at
+            disputed_items.append(
+                {
+                    "dispute_id": dispute.id,
+                    "booking_id": dispute.booking_id,
+                    "filed_at": filed_at.isoformat() if filed_at else None,
+                }
+            )
+
+        failed_payment_items = []
+        for booking in failed_payments_qs.select_related("renter").order_by("-created_at")[:5]:
+            renter = booking.renter
+            failed_payment_items.append(
+                {
+                    "booking_id": booking.id,
+                    "renter_name": _display_name(renter),
+                    "renter_email": getattr(renter, "email", None),
+                    "amount": _total_charge_label(booking),
+                    "created_at": booking.created_at.isoformat() if booking.created_at else None,
+                }
+            )
 
         data = {
             "today": {
@@ -125,6 +202,12 @@ class OperatorDashboardView(APIView):
             "risk": {
                 "overdue_bookings_count": overdue_bookings_count,
                 "disputed_bookings_count": disputed_bookings_count,
+                "failed_payments_count": failed_payments_count,
+            },
+            "risk_items": {
+                "overdue_bookings": overdue_items,
+                "disputed_bookings": disputed_items,
+                "failed_payments": failed_payment_items,
             },
             "open_disputes_count": open_disputes_count,
             "rebuttals_due_soon_count": rebuttals_due_soon_count,

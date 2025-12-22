@@ -130,11 +130,12 @@ export function BookingsList() {
     const today = new Date().toISOString().slice(0, 10);
     if (status === "completed") return "Completed";
     if (status === "canceled") return "Canceled";
-    if ((booking as any).after_photos_uploaded_at) return "Completed";
-    if ((booking as any).returned_by_renter_at || (booking as any).return_confirmed_at) return "Waiting After Photo";
+    if (booking.after_photos_uploaded_at) return "Completed";
+    if (booking.returned_by_renter_at || booking.return_confirmed_at) return "Waiting After Photo";
     if (booking.end_date && booking.end_date === today) return "Waiting return";
-    if ((booking as any).pickup_confirmed_at) return "In progress";
+    if (booking.pickup_confirmed_at) return "In progress";
     if (status === "paid") return "Waiting pick up";
+    if (status === "confirmed") return "Approved by owner";
     return booking.status || "Unknown";
   };
 

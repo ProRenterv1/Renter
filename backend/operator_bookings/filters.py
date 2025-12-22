@@ -21,6 +21,7 @@ class OperatorBookingFilter(filters.FilterSet):
         overdue_q = {
             "end_date__lt": today,
             "return_confirmed_at__isnull": True,
+            "status__in": [Booking.Status.CONFIRMED, Booking.Status.PAID],
         }
         if value is None:
             value = False

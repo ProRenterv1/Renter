@@ -205,6 +205,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   const [ownerReviewTarget, setOwnerReviewTarget] = useState<{
     bookingId: number;
     renterName: string;
+    renterId: number | null;
   } | null>(null);
   const [disputeWizardOpen, setDisputeWizardOpen] = useState(false);
   const [disputeContext, setDisputeContext] = useState<{
@@ -391,7 +392,11 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
               );
               const renterName =
                 (row && resolveRenterDisplayName(row)) || `Renter #${payload.renter_id}`;
-              setOwnerReviewTarget({ bookingId: payload.booking_id, renterName });
+              setOwnerReviewTarget({
+                bookingId: payload.booking_id,
+                renterName,
+                renterId: row?.booking.renter ?? payload.renter_id ?? null,
+              });
             }
           }
         }
@@ -447,6 +452,15 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     }
     const renterId = selectedRequest.booking.renter;
     setSelectedRequest(null);
+    navigate(`/users/${renterId}`);
+  };
+
+  const handleReviewProfileView = () => {
+    if (!ownerReviewTarget?.renterId) {
+      return;
+    }
+    const renterId = ownerReviewTarget.renterId;
+    setOwnerReviewTarget(null);
     navigate(`/users/${renterId}`);
   };
 
@@ -621,10 +635,11 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
         });
       }
       const renterName = resolveRenterDisplayName(afterPhotosTarget);
+      const renterId = afterPhotosTarget?.booking.renter ?? null;
       closeAfterPhotosDialog();
       toast.success("After-photos uploaded. Booking will be completed shortly.");
       if (renterName) {
-        setOwnerReviewTarget({ bookingId, renterName });
+        setOwnerReviewTarget({ bookingId, renterName, renterId });
       }
       void reloadRequests();
     } catch (err) {
@@ -1238,6 +1253,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
         bookingId={ownerReviewTarget?.bookingId ?? 0}
         otherPartyName={ownerReviewTarget?.renterName ?? ""}
         onClose={() => setOwnerReviewTarget(null)}
+        onViewProfile={ownerReviewTarget?.renterId ? handleReviewProfileView : undefined}
         onSubmitted={() => {
           toast.success("Thanks for reviewing your renter.");
         }}

@@ -6,6 +6,7 @@ from operator_users.api import (
     OperatorUserMarkSuspiciousView,
     OperatorUserReinstateView,
     OperatorUserResendVerificationView,
+    OperatorUserRevealView,
     OperatorUserSendPasswordResetView,
     OperatorUserSetRestrictionsView,
     OperatorUserSuspendView,
@@ -39,5 +40,10 @@ urlpatterns = [
         "<int:pk>/resend-verification/",
         OperatorUserResendVerificationView.as_view(),
         name="operator_user_resend_verification",
+    ),
+    path(
+        "<int:pk>/reveal/",
+        OperatorUserRevealView.as_view(),
+        name="operator_user_reveal",
     ),
 ]
