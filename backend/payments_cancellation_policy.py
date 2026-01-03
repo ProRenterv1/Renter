@@ -138,40 +138,39 @@ def compute_refund_amounts(
 
     d = days_until_start(today, booking)
 
-    charge_total = _quantize(rental_subtotal + renter_fee)
-    refund_to_renter = charge_total
+    refundable_charge = _quantize(rental_subtotal)
+    non_refundable_fee = max(_ZERO, renter_fee)
+    refund_to_renter = refundable_charge
     owner_delta = -owner_payout
-    platform_delta = -platform_fee_total
+    platform_delta = non_refundable_fee
     deposit_capture_amount = _ZERO
     deposit_release_amount = damage_deposit
 
     if actor == "renter":
         if d > 1:
-            # Full refund scenario already represented by defaults.
+            # Full rental refund; renter fee is non-refundable.
             pass
         elif d == 1:
-            penalty_charge = rent_per_day + renter_fee_per_day
-            penalty_charge = max(_ZERO, min(penalty_charge, charge_total))
-            refund_to_renter = _quantize(charge_total - penalty_charge)
+            penalty_rent = max(_ZERO, min(rent_per_day, refundable_charge))
+            refund_to_renter = _quantize(refundable_charge - penalty_rent)
             owner_delta = owner_payout_per_day
-            platform_delta = platform_fee_per_day
+            owner_fee_per_day = _ZERO
+            if days > 0:
+                owner_fee_per_day = _quantize(owner_fee / Decimal(days))
+            platform_delta = non_refundable_fee + owner_fee_per_day
         else:
             penalty_rent = _quantize(rental_subtotal * Decimal("0.5"))
-            penalty_fee = _quantize(renter_fee * Decimal("0.5"))
-            penalty_charge = penalty_rent + penalty_fee
-            penalty_charge = max(_ZERO, min(penalty_charge, charge_total))
-            refund_to_renter = _quantize(charge_total - penalty_charge)
+            penalty_rent = max(_ZERO, min(penalty_rent, refundable_charge))
+            refund_to_renter = _quantize(refundable_charge - penalty_rent)
             owner_delta = _ZERO
-            # Treat same-day penalties as net-new platform revenue.
-            platform_delta = penalty_charge
+            # Keep renter fee + same-day penalty rent.
+            platform_delta = non_refundable_fee + penalty_rent
     elif actor == "no_show":
         penalty_rent = _quantize(rental_subtotal * Decimal("0.5"))
-        penalty_fee = _quantize(renter_fee * Decimal("0.5"))
-        penalty_charge = penalty_rent + penalty_fee
-        penalty_charge = max(_ZERO, min(penalty_charge, charge_total))
-        refund_to_renter = _quantize(charge_total - penalty_charge)
+        penalty_rent = max(_ZERO, min(penalty_rent, refundable_charge))
+        refund_to_renter = _quantize(refundable_charge - penalty_rent)
         owner_delta = _ZERO
-        platform_delta = penalty_charge
+        platform_delta = non_refundable_fee + penalty_rent
     elif actor == "owner":
         # Defaults already represent full refund.
         pass
@@ -179,7 +178,7 @@ def compute_refund_amounts(
         # system/unexpected actor -> default to full refund behavior.
         actor = "system"
 
-    refund_to_renter = max(_ZERO, min(refund_to_renter, charge_total))
+    refund_to_renter = max(_ZERO, min(refund_to_renter, refundable_charge))
     deposit_capture_amount = max(_ZERO, min(deposit_capture_amount, damage_deposit))
     remaining_deposit = damage_deposit - deposit_capture_amount
     deposit_release_amount = max(_ZERO, min(deposit_release_amount, remaining_deposit))

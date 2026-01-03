@@ -249,12 +249,12 @@ def settle_and_cancel_for_deposit_failure(booking: Booking) -> None:
     rental_subtotal = _money(_safe_decimal(totals.get("rental_subtotal", "0")))
     service_fee_value = totals.get("service_fee", totals.get("renter_fee", "0"))
     service_fee = _money(_safe_decimal(service_fee_value))
-    charge_amount = _money(rental_subtotal + service_fee)
+    refundable_amount = rental_subtotal
 
     reason = "Insufficient funds for damage deposit"
-    refund_amount = _money(charge_amount * Decimal("0.5"))
-    owner_amount = _money(charge_amount * Decimal("0.3"))
-    platform_amount = _money(charge_amount - refund_amount - owner_amount)
+    refund_amount = _money(refundable_amount * Decimal("0.5"))
+    owner_amount = _money(refundable_amount * Decimal("0.3"))
+    platform_amount = _money(refundable_amount - refund_amount - owner_amount + service_fee)
 
     charge_intent_id = (booking.charge_payment_intent_id or "").strip()
 

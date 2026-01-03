@@ -405,12 +405,21 @@ def test_owner_payouts_instant_payout_executes_and_logs(owner_user, booking_fact
     monkeypatch.setattr(payments_api, "ensure_connect_account", lambda user: payout_account)
 
     captured_call = {}
+    captured_fee_transfer = {}
 
     def _fake_create_instant_payout(**kwargs):
         captured_call.update(kwargs)
         return SimpleNamespace(id="po_test_123")
 
     monkeypatch.setattr(payments_api, "create_instant_payout", _fake_create_instant_payout)
+
+    def _fake_transfer_earnings_to_platform(**kwargs):
+        captured_fee_transfer.update(kwargs)
+        return "tr_fee_123"
+
+    monkeypatch.setattr(
+        payments_api, "transfer_earnings_to_platform", _fake_transfer_earnings_to_platform
+    )
 
     client = _auth_client(owner_user)
     resp = client.post(
@@ -428,6 +437,12 @@ def test_owner_payouts_instant_payout_executes_and_logs(owner_user, booking_fact
     assert captured_call["metadata"]["amount_before_fee"] == "200.00"
     assert captured_call["user"] == owner_user
     assert captured_call["payout_account"] == payout_account
+    assert captured_fee_transfer["payout_account"] == payout_account
+    assert captured_fee_transfer["amount_cents"] == 600
+    assert captured_fee_transfer["metadata"]["kind"] == "instant_payout_fee"
+    assert captured_fee_transfer["metadata"]["payout_id"] == "po_test_123"
+    assert captured_fee_transfer["metadata"]["amount_before_fee"] == "200.00"
+    assert captured_fee_transfer["metadata"]["amount_after_fee"] == "194.00"
 
     payout_account.refresh_from_db()
     assert payout_account.lifetime_instant_payouts == Decimal("250.00")
@@ -437,3 +452,4 @@ def test_owner_payouts_instant_payout_executes_and_logs(owner_user, booking_fact
     assert earnings.filter(amount=Decimal("-200.00")).exists()
     fee_txn = Transaction.objects.get(user=owner_user, kind=Transaction.Kind.PLATFORM_FEE)
     assert fee_txn.amount == Decimal("6.00")
+    assert fee_txn.stripe_id == "tr_fee_123"
