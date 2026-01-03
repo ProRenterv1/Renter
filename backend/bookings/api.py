@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.conf import settings
@@ -31,6 +31,7 @@ from payments.stripe_api import (
     capture_deposit_amount,
     create_booking_charge_intent,
     create_late_fee_payment_intent,
+    create_owner_transfer_for_booking,
     ensure_stripe_customer,
 )
 from payments_cancellation_policy import compute_refund_amounts
@@ -52,6 +53,7 @@ from .domain import (
 )
 from .models import Booking, BookingPhoto
 from .serializers import BookingSerializer
+from .tasks import authorize_deposit_for_start_day
 
 logger = logging.getLogger(__name__)
 _CENT = Decimal("0.01")
@@ -138,6 +140,27 @@ def _pricing_breakdown(booking: Booking) -> dict[str, Decimal | int | dict[str, 
         "platform_fee_per_day": platform_fee_per_day,
         "days": days,
     }
+
+
+def _schedule_deposit_authorization(booking: Booking) -> None:
+    totals = booking.totals or {}
+    try:
+        damage_deposit = Decimal(str(totals.get("damage_deposit", "0")))
+    except (InvalidOperation, TypeError, ValueError):
+        damage_deposit = Decimal("0")
+    if damage_deposit <= Decimal("0"):
+        return
+    if not booking.start_date:
+        return
+
+    run_at = datetime.combine(booking.start_date, time(hour=0, minute=5))
+    if timezone.is_naive(run_at):
+        run_at = timezone.make_aware(run_at, timezone.get_current_timezone())
+
+    if run_at <= timezone.now():
+        authorize_deposit_for_start_day.delay(booking.id)
+    else:
+        authorize_deposit_for_start_day.apply_async(args=[booking.id], eta=run_at)
 
 
 class IsBookingParticipant(permissions.BasePermission):
@@ -1055,6 +1078,31 @@ class BookingViewSet(viewsets.ModelViewSet):
                 "updated_at",
             ]
         )
+        try:
+            create_owner_transfer_for_booking(
+                booking=booking,
+                payment_intent_id=booking.charge_payment_intent_id or "",
+            )
+        except StripeTransientError:
+            logger.warning(
+                "Stripe transient error while transferring owner payout for booking %s",
+                booking.id,
+                exc_info=True,
+            )
+        except StripeConfigurationError:
+            logger.warning(
+                "Stripe configuration error while transferring owner payout for booking %s",
+                booking.id,
+                exc_info=True,
+            )
+        except StripePaymentError:
+            logger.warning(
+                "Stripe payment error while transferring owner payout for booking %s",
+                booking.id,
+                exc_info=True,
+            )
+
+        _schedule_deposit_authorization(booking)
         try:
             notification_tasks.send_booking_payment_receipt_email.delay(
                 booking.renter_id,

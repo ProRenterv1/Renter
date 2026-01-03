@@ -25,6 +25,7 @@ from .stripe_api import (
     create_instant_payout,
     ensure_connect_account,
     get_connect_available_balance,
+    transfer_earnings_to_platform,
     update_connect_bank_account,
 )
 
@@ -136,6 +137,15 @@ def _parse_offset(value: str | None) -> int:
     return parsed
 
 
+def _parse_history_scope(value: str | None) -> str | None:
+    if value is None:
+        return None
+    scope = str(value).strip().lower()
+    if scope not in {"owner", "all"}:
+        raise ValueError("scope must be 'owner' or 'all'.")
+    return scope
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def owner_payouts_summary(request):
@@ -181,8 +191,18 @@ def owner_payouts_history(request):
     """Return paginated ledger rows for owner earnings."""
     user = request.user
     is_owner = bool(getattr(user, "can_list", False))
+    try:
+        scope = _parse_history_scope(request.query_params.get("scope"))
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-    if is_owner:
+    if scope == "all":
+        qs = Transaction.objects.filter(user=user).exclude(
+            kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE,
+        )
+    elif scope == "owner":
+        qs = get_owner_history_queryset(user)
+    elif is_owner:
         qs = get_owner_history_queryset(user)
     else:
         # For renters, show their charges/refunds but hide deposit holds.
@@ -474,6 +494,30 @@ def owner_payouts_instant_payout(request):
     if not stripe_payout_id and hasattr(payout, "get"):
         stripe_payout_id = payout.get("id")  # type: ignore[arg-type]
 
+    fee_transfer_id: str | None = None
+    if fee > Decimal("0"):
+        fee_cents = int((fee * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        try:
+            fee_transfer_id = transfer_earnings_to_platform(
+                payout_account=payout_account,
+                amount_cents=fee_cents,
+                metadata={
+                    "kind": "instant_payout_fee",
+                    "payout_id": str(stripe_payout_id or ""),
+                    "amount_before_fee": str(amount_before_fee),
+                    "amount_after_fee": str(amount_after_fee),
+                },
+            )
+        except Exception as exc:
+            if _is_stripe_api_error(exc):
+                logger.warning(
+                    "payments: instant payout fee transfer failed for user %s: %s",
+                    user.id,
+                    exc,
+                )
+            else:
+                raise
+
     # Update cumulative instant payout tracking
     already_paid = Decimal(getattr(payout_account, "lifetime_instant_payouts", "0.00") or "0.00")
     payout_account.lifetime_instant_payouts = (already_paid + available).quantize(
@@ -500,7 +544,7 @@ def owner_payouts_instant_payout(request):
         kind=Transaction.Kind.PLATFORM_FEE,
         amount=fee,
         currency="cad",
-        stripe_id=stripe_payout_id,
+        stripe_id=fee_transfer_id or stripe_payout_id,
     )
 
     return Response(
