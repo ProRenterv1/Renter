@@ -1214,11 +1214,21 @@ export const paymentsAPI = {
       method: "GET",
     });
   },
-  ownerPayoutsHistory(params: { kind?: string; limit?: number; offset?: number } = {}) {
+  ownerPayoutsHistory(
+    params: {
+      kind?: string;
+      limit?: number;
+      offset?: number;
+      scope?: "owner" | "all";
+    } = {},
+  ) {
     const search = new URLSearchParams();
     if (params.kind) search.set("kind", params.kind);
     if (params.limit !== undefined) search.set("limit", String(params.limit));
     if (params.offset !== undefined) search.set("offset", String(params.offset));
+    if (params.scope) {
+      search.set("scope", params.scope);
+    }
     const query = search.toString();
     const path = `/owner/payouts/history/${query ? `?${query}` : ""}`;
     return jsonFetch<OwnerPayoutHistoryResponse>(path, { method: "GET" });

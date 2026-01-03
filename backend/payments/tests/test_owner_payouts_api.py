@@ -179,6 +179,36 @@ def test_owner_payouts_history_returns_paginated_results(owner_user, booking_fac
     assert resp_filtered.data["results"][0]["direction"] == "debit"
 
 
+def test_owner_payouts_history_includes_booking_charge_with_all_scope(
+    owner_user,
+    booking_factory,
+):
+    booking = booking_factory(
+        start_date=date.today(),
+        end_date=date.today() + timedelta(days=1),
+        status=Booking.Status.PAID,
+    )
+    log_transaction(
+        user=owner_user,
+        booking=booking,
+        kind=Transaction.Kind.BOOKING_CHARGE,
+        amount=Decimal("120.00"),
+    )
+
+    client = _auth_client(owner_user)
+    resp = client.get("/api/owner/payouts/history/?scope=all")
+
+    assert resp.status_code == 200, resp.data
+    kinds = [row["kind"] for row in resp.data["results"]]
+    assert Transaction.Kind.BOOKING_CHARGE in kinds
+
+    charge_row = next(
+        row for row in resp.data["results"] if row["kind"] == Transaction.Kind.BOOKING_CHARGE
+    )
+    assert charge_row["amount"] == "-120.00"
+    assert charge_row["direction"] == "debit"
+
+
 def test_owner_payouts_start_onboarding_returns_link(owner_user, monkeypatch):
     OwnerPayoutAccount.objects.filter(user=owner_user).delete()
     payout_account = OwnerPayoutAccount.objects.create(

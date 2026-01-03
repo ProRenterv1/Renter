@@ -71,7 +71,7 @@ export function Payments() {
         const [methods, summaryRes, historyRes] = await Promise.all([
           paymentsAPI.listPaymentMethods(),
           paymentsAPI.ownerPayoutsSummary(),
-          paymentsAPI.ownerPayoutsHistory({ limit: 50 }),
+          paymentsAPI.ownerPayoutsHistory({ limit: 50, scope: "all" }),
         ]);
         if (cancelled) return;
         setPaymentMethods(methods);
@@ -299,7 +299,9 @@ export function Payments() {
 
       let description = txn.kind;
       if (txn.kind === "BOOKING_CHARGE") {
-        description = "Booking charge";
+        description = txn.listing_title
+          ? `Booking charge – ${txn.listing_title}`
+          : "Booking charge";
       } else if (txn.kind === "OWNER_EARNING" && txn.listing_title) {
         description = `Owner earning – ${txn.listing_title}`;
       } else if (txn.kind === "REFUND") {
