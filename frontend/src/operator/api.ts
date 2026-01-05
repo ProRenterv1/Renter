@@ -259,6 +259,50 @@ export type OperatorDisputeActionResponse = {
   ok: boolean;
 };
 
+export type OperatorCommsParticipant = {
+  user_id: number | null;
+  name: string;
+  email?: string | null;
+  avatar_url?: string | null;
+};
+
+export type OperatorCommsConversationListItem = {
+  id: number;
+  booking_id: number | null;
+  listing_id: number | null;
+  listing_title: string;
+  participants: OperatorCommsParticipant[];
+  status: string;
+  unread_count: number;
+  last_message_at: string | null;
+  created_at: string;
+};
+
+export type OperatorCommsMessage = {
+  id: number;
+  sender_id: number | null;
+  sender_name: string;
+  message_type: "user" | "system";
+  system_kind?: string | null;
+  text: string;
+  created_at: string;
+};
+
+export type OperatorCommsNotification = {
+  id: number;
+  type: string;
+  channel: "email" | "sms";
+  status: "sent" | "failed";
+  created_at: string;
+  user_id: number | null;
+  user_name: string;
+};
+
+export type OperatorCommsConversationDetail = OperatorCommsConversationListItem & {
+  messages: OperatorCommsMessage[];
+  notifications: OperatorCommsNotification[];
+};
+
 export type OperatorPromotionListItem = {
   id: number;
   listing: number;
@@ -1222,6 +1266,15 @@ export const operatorAPI = {
     return jsonFetch<OperatorPromotionListItem>(
       `/operator/promotions/${promotionId}/cancel-early/`,
       { method: "POST", body: payload },
+    );
+  },
+  commsConversations() {
+    return jsonFetch<OperatorCommsConversationListItem[]>("/operator/comms/", { method: "GET" });
+  },
+  commsConversationDetail(conversationId: number) {
+    return jsonFetch<OperatorCommsConversationDetail>(
+      `/operator/comms/${conversationId}/`,
+      { method: "GET" },
     );
   },
   bookingDetail(bookingId: number) {

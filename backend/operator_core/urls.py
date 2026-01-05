@@ -30,4 +30,5 @@ urlpatterns = [
     path("disputes/", include("operator_disputes.urls")),
     path("promotions/", include("operator_promotions.urls")),
     path("users/", include("operator_users.urls")),
+    path("comms/", include("operator_comms.urls")),
 ]

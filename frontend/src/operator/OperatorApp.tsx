@@ -19,6 +19,7 @@ import { DisputesListPage } from "./pages/DisputesListPage";
 import { DisputeDetailPage } from "./pages/DisputeDetailPage";
 import { PromotionsPage } from "./pages/PromotionsPage";
 import { AuditLogPage } from "./pages/AuditLogPage";
+import { Comms } from "./pages/Comms";
 import { OperatorSessionProvider } from "./session";
 import { SettingsPage } from "./pages/settings/SettingsPage";
 import { PlatformRulesPage } from "./pages/settings/PlatformRulesPage";
@@ -185,7 +186,7 @@ export function OperatorApp({ darkMode, onToggleTheme }: OperatorAppProps) {
           <Route path="disputes/:disputeId" element={<DisputeDetailPage />} />
           <Route path="promotions" element={<PromotionsPage />} />
           <Route path="audit" element={<AuditLogPage />} />
-          <Route path="comms" element={<div>Communications page coming soon...</div>} />
+          <Route path="comms" element={<Comms />} />
 
           <Route path="settings" element={<SettingsPage />}>
             <Route index element={<Navigate to="platform-rules" replace />} />
