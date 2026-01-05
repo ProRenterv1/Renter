@@ -12,7 +12,7 @@ from django.utils import timezone
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 from rest_framework import serializers
-from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.exceptions import APIException, AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from identity.models import is_user_identity_verified
@@ -32,6 +32,12 @@ PROVINCE_RE = re.compile(r"^[A-Za-z][A-Za-z\s\.'-]{0,63}$")
 POSTAL_CODE_RE = re.compile(r"^[A-Z0-9][A-Z0-9\s-]{2,15}$")
 
 logger = logging.getLogger(__name__)
+
+
+class GoogleLoginError(APIException):
+    status_code = 400
+    default_code = "invalid"
+    default_detail = "Unable to process Google login."
 
 
 def normalize_phone(raw_phone: Optional[str]) -> Optional[str]:
@@ -404,11 +410,11 @@ class GoogleLoginSerializer(serializers.Serializer):
     def validate(self, attrs: dict) -> dict:
         raw_token = (attrs.get("id_token") or "").strip()
         if not raw_token:
-            raise serializers.ValidationError({"detail": "Google token is required."})
+            raise GoogleLoginError("Google token is required.")
 
         client_id = getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", None)
         if not client_id:
-            raise serializers.ValidationError({"detail": "Google login is not configured."})
+            raise GoogleLoginError("Google login is not configured.")
 
         try:
             idinfo = google_id_token.verify_oauth2_token(
@@ -417,24 +423,20 @@ class GoogleLoginSerializer(serializers.Serializer):
                 audience=client_id,
             )
         except ValueError as exc:
-            raise serializers.ValidationError({"detail": "Invalid Google token."}) from exc
+            raise GoogleLoginError("Invalid Google token.") from exc
 
         if idinfo.get("iss") not in ("accounts.google.com", "https://accounts.google.com"):
-            raise serializers.ValidationError({"detail": "Invalid Google token issuer."})
+            raise GoogleLoginError("Invalid Google token issuer.")
 
         email = (idinfo.get("email") or "").strip().lower()
         if not email:
-            raise serializers.ValidationError(
-                {"detail": "Google account did not provide an email address."}
-            )
+            raise GoogleLoginError("Google account did not provide an email address.")
         if not idinfo.get("email_verified", False):
-            raise serializers.ValidationError({"detail": "Google account email is not verified."})
+            raise GoogleLoginError("Google account email is not verified.")
 
         sub = idinfo.get("sub")
         if not sub:
-            raise serializers.ValidationError(
-                {"detail": "Google account is missing a subject identifier."}
-            )
+            raise GoogleLoginError("Google account is missing a subject identifier.")
 
         provider = SocialIdentity.Provider.GOOGLE
         identity = (
@@ -456,11 +458,11 @@ class GoogleLoginSerializer(serializers.Serializer):
         user = User.objects.filter(email__iexact=email).first()
         if user:
             if not user.email_verified:
-                raise serializers.ValidationError({"detail": "Email exists but is not verified."})
+                raise GoogleLoginError("Email exists but is not verified.")
             if not user.is_active:
                 raise AuthenticationFailed("User account is disabled.")
             if SocialIdentity.objects.filter(provider=provider, user=user).exists():
-                raise serializers.ValidationError({"detail": "Google account already linked."})
+                raise GoogleLoginError("Google account already linked.")
             identity = SocialIdentity.objects.create(
                 user=user,
                 provider=provider,
