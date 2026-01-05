@@ -7,6 +7,7 @@ class Transaction(models.Model):
         BOOKING_CHARGE = "BOOKING_CHARGE", "Booking charge"
         REFUND = "REFUND", "Refund"
         OWNER_EARNING = "OWNER_EARNING", "Owner earning"
+        OWNER_PAYOUT = "OWNER_PAYOUT", "Owner payout"
         PLATFORM_FEE = "PLATFORM_FEE", "Platform fee"
         DAMAGE_DEPOSIT_CAPTURE = "DAMAGE_DEPOSIT_CAPTURE", "Damage deposit capture"
         DAMAGE_DEPOSIT_RELEASE = "DAMAGE_DEPOSIT_RELEASE", "Damage deposit release"

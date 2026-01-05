@@ -74,6 +74,7 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_OPS_BUILD: "0"
+        VITE_GOOGLE_OAUTH_CLIENT_ID: ${VITE_GOOGLE_OAUTH_CLIENT_ID}
     command: ["sh","-c","rm -rf /dist/* && cp -r /app/build/* /dist/ || true"]
     volumes:
       - web_dist:/dist
@@ -83,6 +84,7 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_OPS_BUILD: "1"
+        VITE_GOOGLE_OAUTH_CLIENT_ID: ${VITE_GOOGLE_OAUTH_CLIENT_ID}
     command: ["sh","-c","rm -rf /dist/* && cp -r /app/build/* /dist/ || true"]
     volumes:
       - web_dist_ops:/dist

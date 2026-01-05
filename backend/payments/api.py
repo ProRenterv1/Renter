@@ -532,7 +532,7 @@ def owner_payouts_instant_payout(request):
         user=user,
         booking=None,
         promotion_slot=None,
-        kind=Transaction.Kind.OWNER_EARNING,
+        kind=Transaction.Kind.OWNER_PAYOUT,
         amount=-amount_before_fee,
         currency="cad",
         stripe_id=stripe_payout_id,

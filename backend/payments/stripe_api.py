@@ -1397,6 +1397,56 @@ def charge_promotion_payment(
     return intent.id
 
 
+def _log_owner_payout_event(*, event_type: str, data_object: dict, account_id: str) -> None:
+    if event_type != "payout.paid":
+        return
+    if not account_id:
+        return
+
+    payout_id = data_object.get("id") or ""
+    if not payout_id:
+        return
+
+    if Transaction.objects.filter(
+        stripe_id=str(payout_id),
+        kind__in=[Transaction.Kind.OWNER_PAYOUT, Transaction.Kind.OWNER_EARNING],
+        booking__isnull=True,
+        amount__lt=0,
+    ).exists():
+        return
+
+    payout_account = (
+        OwnerPayoutAccount.objects.filter(stripe_account_id=account_id)
+        .select_related("user")
+        .first()
+    )
+    if payout_account is None:
+        return
+
+    amount_cents = data_object.get("amount")
+    if amount_cents is None:
+        return
+
+    try:
+        amount = (Decimal(amount_cents) / Decimal("100")).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError):
+        return
+
+    if amount <= Decimal("0"):
+        return
+
+    currency = (data_object.get("currency") or "cad").lower()
+    log_transaction(
+        user=payout_account.user,
+        booking=None,
+        promotion_slot=None,
+        kind=Transaction.Kind.OWNER_PAYOUT,
+        amount=-amount,
+        currency=currency,
+        stripe_id=str(payout_id),
+    )
+
+
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([])
@@ -1436,6 +1486,14 @@ def stripe_webhook(request):
                 "stripe_webhook: failed to sync connect account",
                 extra={"account_id": account_id, "error": str(exc)},
             )
+
+    if event_type == "payout.paid":
+        _log_owner_payout_event(
+            event_type=event_type,
+            data_object=data_object,
+            account_id=account_id,
+        )
+        return Response(status=status.HTTP_200_OK)
 
     if event_type == "account.updated":
         if account_data is not None:

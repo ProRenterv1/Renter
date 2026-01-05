@@ -288,44 +288,61 @@ export function Payments() {
   };
 
   const transactions = useMemo(() => {
-    return history.filter((txn) => txn.kind !== "DAMAGE_DEPOSIT_CAPTURE").map((txn) => {
-      const date = txn.created_at
-        ? new Date(txn.created_at).toLocaleDateString(undefined, {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-          })
-        : "";
+    return history
+      .filter((txn) => {
+        if (txn.kind === "DAMAGE_DEPOSIT_CAPTURE") {
+          return false;
+        }
+        if (txn.kind === "PLATFORM_FEE" && !txn.booking_id) {
+          return false;
+        }
+        return true;
+      })
+      .map((txn) => {
+        const date = txn.created_at
+          ? new Date(txn.created_at).toLocaleDateString(undefined, {
+              year: "numeric",
+              month: "short",
+              day: "numeric",
+            })
+          : "";
 
-      let description = txn.kind;
-      if (txn.kind === "BOOKING_CHARGE") {
-        description = txn.listing_title
-          ? `Booking charge – ${txn.listing_title}`
-          : "Booking charge";
-      } else if (txn.kind === "OWNER_EARNING" && txn.listing_title) {
-        description = `Owner earning – ${txn.listing_title}`;
-      } else if (txn.kind === "REFUND") {
-        description = "Refund";
-      } else if (txn.kind === "DAMAGE_DEPOSIT_CAPTURE") {
-        description = "Deposit captured";
-      } else if (txn.kind === "DAMAGE_DEPOSIT_RELEASE") {
-        description = "Deposit released";
-      } else if (txn.kind === "PROMOTION_CHARGE") {
-        description = "Promotion payment";
-      }
+        let description = txn.kind;
+        const isPayout =
+          txn.kind === "OWNER_PAYOUT" ||
+          (txn.kind === "OWNER_EARNING" && txn.direction === "debit" && !txn.booking_id);
+        if (txn.kind === "BOOKING_CHARGE") {
+          description = txn.listing_title
+            ? `Booking charge – ${txn.listing_title}`
+            : "Booking charge";
+        } else if (isPayout) {
+          description = "Payout";
+        } else if (txn.kind === "OWNER_EARNING" && txn.listing_title) {
+          description = `Owner earning – ${txn.listing_title}`;
+        } else if (txn.kind === "OWNER_EARNING") {
+          description = "Owner earning";
+        } else if (txn.kind === "REFUND") {
+          description = "Refund";
+        } else if (txn.kind === "DAMAGE_DEPOSIT_CAPTURE") {
+          description = "Deposit captured";
+        } else if (txn.kind === "DAMAGE_DEPOSIT_RELEASE") {
+          description = "Deposit released";
+        } else if (txn.kind === "PROMOTION_CHARGE") {
+          description = "Promotion payment";
+        }
 
-      const amountNumber = Math.abs(Number(txn.amount || "0"));
-      const signed = txn.direction === "debit" ? -amountNumber : amountNumber;
+        const amountNumber = Math.abs(Number(txn.amount || "0"));
+        const signed = txn.direction === "debit" ? -amountNumber : amountNumber;
 
-      return {
-        id: txn.id,
-        date,
-        description,
-        status: "Completed",
-        amount: signed,
-        currency: (txn.currency || "").toUpperCase(),
-      };
-    });
+        return {
+          id: txn.id,
+          date,
+          description,
+          status: "Completed",
+          amount: signed,
+          currency: (txn.currency || "").toUpperCase(),
+        };
+      });
   }, [history]);
 
   const renderPaymentMethods = () => {

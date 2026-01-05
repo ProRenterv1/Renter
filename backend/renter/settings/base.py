@@ -135,6 +135,9 @@ SIMPLE_JWT = {
     "AUTH_COOKIE_SAMESITE": "Lax",
 }
 
+# --- OAuth ---
+GOOGLE_OAUTH_CLIENT_ID = env("GOOGLE_OAUTH_CLIENT_ID", default=None)
+
 # --- Email / SMS ---
 EMAIL_BACKEND = env(
     "EMAIL_BACKEND",

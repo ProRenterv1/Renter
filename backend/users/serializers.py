@@ -5,11 +5,14 @@ import re
 from datetime import timedelta
 from typing import Optional, Tuple
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.utils import timezone
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 from rest_framework import serializers
-from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.exceptions import APIException, AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from identity.models import is_user_identity_verified
@@ -18,6 +21,7 @@ from .models import (
     ContactVerificationChallenge,
     LoginEvent,
     PasswordResetChallenge,
+    SocialIdentity,
     TwoFactorChallenge,
 )
 
@@ -28,6 +32,12 @@ PROVINCE_RE = re.compile(r"^[A-Za-z][A-Za-z\s\.'-]{0,63}$")
 POSTAL_CODE_RE = re.compile(r"^[A-Z0-9][A-Z0-9\s-]{2,15}$")
 
 logger = logging.getLogger(__name__)
+
+
+class GoogleLoginError(APIException):
+    status_code = 400
+    default_code = "invalid"
+    default_detail = "Unable to process Google login."
 
 
 def normalize_phone(raw_phone: Optional[str]) -> Optional[str]:
@@ -390,6 +400,130 @@ class SignupSerializer(serializers.ModelSerializer):
             candidate = f"{base}{suffix}"
             suffix += 1
         return candidate
+
+
+class GoogleLoginSerializer(serializers.Serializer):
+    """Validate a Google ID token and resolve the matching user."""
+
+    id_token = serializers.CharField()
+
+    def validate(self, attrs: dict) -> dict:
+        raw_token = (attrs.get("id_token") or "").strip()
+        if not raw_token:
+            raise GoogleLoginError("Google token is required.")
+
+        client_id = getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", None)
+        if not client_id:
+            raise GoogleLoginError("Google login is not configured.")
+
+        try:
+            idinfo = google_id_token.verify_oauth2_token(
+                raw_token,
+                google_requests.Request(),
+                audience=client_id,
+            )
+        except ValueError as exc:
+            raise GoogleLoginError("Invalid Google token.") from exc
+
+        if idinfo.get("iss") not in ("accounts.google.com", "https://accounts.google.com"):
+            raise GoogleLoginError("Invalid Google token issuer.")
+
+        email = (idinfo.get("email") or "").strip().lower()
+        if not email:
+            raise GoogleLoginError("Google account did not provide an email address.")
+        if not idinfo.get("email_verified", False):
+            raise GoogleLoginError("Google account email is not verified.")
+
+        sub = idinfo.get("sub")
+        if not sub:
+            raise GoogleLoginError("Google account is missing a subject identifier.")
+
+        provider = SocialIdentity.Provider.GOOGLE
+        identity = (
+            SocialIdentity.objects.filter(provider=provider, provider_user_id=sub)
+            .select_related("user")
+            .first()
+        )
+        if identity:
+            user = identity.user
+            if not user.is_active:
+                raise AuthenticationFailed("User account is disabled.")
+            if identity.email != email:
+                identity.email = email
+                identity.save(update_fields=["email"])
+            attrs["user"] = user
+            attrs["identity"] = identity
+            return attrs
+
+        user = User.objects.filter(email__iexact=email).first()
+        if user:
+            if not user.email_verified:
+                raise GoogleLoginError("Email exists but is not verified.")
+            if not user.is_active:
+                raise AuthenticationFailed("User account is disabled.")
+            if SocialIdentity.objects.filter(provider=provider, user=user).exists():
+                raise GoogleLoginError("Google account already linked.")
+            identity = SocialIdentity.objects.create(
+                user=user,
+                provider=provider,
+                provider_user_id=sub,
+                email=email,
+            )
+            attrs["user"] = user
+            attrs["identity"] = identity
+            return attrs
+
+        user = self._create_user_from_google(email, idinfo)
+        identity = SocialIdentity.objects.create(
+            user=user,
+            provider=provider,
+            provider_user_id=sub,
+            email=email,
+        )
+        attrs["user"] = user
+        attrs["identity"] = identity
+        return attrs
+
+    def _create_user_from_google(self, email: str, idinfo: dict) -> User:
+        first_name = (idinfo.get("given_name") or "").strip()
+        last_name = (idinfo.get("family_name") or "").strip()
+        if not first_name and not last_name:
+            full_name = (idinfo.get("name") or "").strip()
+            if full_name:
+                parts = full_name.split()
+                first_name = parts[0]
+                if len(parts) > 1:
+                    last_name = " ".join(parts[1:])
+
+        username = SignupSerializer()._generate_username({"email": email})
+        user = User.objects.create_user(
+            username=username,
+            email=email,
+            first_name=first_name,
+            last_name=last_name,
+            password=None,
+        )
+        user.email_verified = True
+        user.save(update_fields=["email_verified"])
+
+        if user.can_list:
+            from payments.stripe_api import (
+                StripeConfigurationError,
+                StripePaymentError,
+                StripeTransientError,
+                ensure_connect_account,
+            )
+
+            try:
+                ensure_connect_account(user)
+            except (StripeConfigurationError, StripeTransientError, StripePaymentError) as exc:
+                logger.warning(
+                    "Stripe Connect account creation skipped during Google signup for user %s: %s",
+                    user.id,
+                    exc,
+                )
+
+        return user
 
 
 class FlexibleTokenObtainPairSerializer(TokenObtainPairSerializer):
