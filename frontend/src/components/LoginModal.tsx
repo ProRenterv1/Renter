@@ -141,6 +141,32 @@ const isGisDebugEnabled = () => {
   return Boolean((window as Window & { __GIS_DEBUG__?: boolean }).__GIS_DEBUG__);
 };
 
+const GoogleLogo = () => (
+  <svg
+    aria-hidden="true"
+    className="h-5 w-5"
+    viewBox="0 0 48 48"
+    focusable="false"
+  >
+    <path
+      fill="#EA4335"
+      d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.82 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.04 17.77 9.5 24 9.5z"
+    />
+    <path
+      fill="#4285F4"
+      d="M46.98 24.55c0-1.57-.14-3.09-.39-4.55H24v9.02h12.97c-.59 3.19-2.37 5.89-5.06 7.71l7.74 6.01C43.98 39.1 46.98 32.42 46.98 24.55z"
+    />
+    <path
+      fill="#FBBC05"
+      d="M10.54 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.98-6.19z"
+    />
+    <path
+      fill="#34A853"
+      d="M24 48c6.48 0 11.93-2.13 15.91-5.81l-7.74-6.01c-2.15 1.45-4.92 2.3-8.17 2.3-6.23 0-11.57-3.54-13.48-8.73l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
+    />
+  </svg>
+);
+
 const GoogleButtonSlot = memo(
   ({
     clientId,
@@ -151,17 +177,42 @@ const GoogleButtonSlot = memo(
     ready: boolean;
     buttonRef: Ref<HTMLDivElement>;
   }) => {
+    const isInteractive = Boolean(clientId && ready);
+    const buttonContent = (
+      <>
+        <GoogleLogo />
+        <span>Google</span>
+      </>
+    );
+
     if (!clientId) {
       return (
-        <Button type="button" variant="outline" className="h-11" disabled>
-          Google
+        <Button type="button" variant="outline" className="h-11 w-full justify-center gap-2" disabled>
+          {buttonContent}
         </Button>
       );
     }
 
     return (
-      <div ref={buttonRef} className="h-11 min-h-11 w-full flex items-center justify-center">
-        {!ready && <span className="text-sm text-muted-foreground">Google</span>}
+      <div className="relative w-full group">
+        <div
+          ref={buttonRef}
+          className={`absolute inset-0 z-10 opacity-0 ${
+            isInteractive ? "cursor-pointer" : "pointer-events-none"
+          }`}
+        />
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!isInteractive}
+          className={`h-11 w-full justify-center gap-2 pointer-events-none ${
+            isInteractive ? "group-hover:bg-accent group-hover:text-accent-foreground" : ""
+          }`}
+          tabIndex={isInteractive ? -1 : undefined}
+          aria-hidden={isInteractive}
+        >
+          {buttonContent}
+        </Button>
       </div>
     );
   },
@@ -909,18 +960,12 @@ export function LoginModal({
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-3">
           <GoogleButtonSlot
             clientId={googleClientId}
             ready={googleReady}
             buttonRef={setGoogleButtonRef}
           />
-          <Button type="button" variant="outline" className="h-11">
-            <svg className="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
-            </svg>
-            Facebook
-          </Button>
         </div>
       </form>
     );
