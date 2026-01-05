@@ -309,7 +309,8 @@ export function Payments() {
 
         let description = txn.kind;
         const isPayout =
-          txn.kind === "OWNER_EARNING" && txn.direction === "debit" && !txn.booking_id;
+          txn.kind === "OWNER_PAYOUT" ||
+          (txn.kind === "OWNER_EARNING" && txn.direction === "debit" && !txn.booking_id);
         if (txn.kind === "BOOKING_CHARGE") {
           description = txn.listing_title
             ? `Booking charge – ${txn.listing_title}`

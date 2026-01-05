@@ -15,6 +15,7 @@ OWNER_EARNING_KINDS = [
     Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE,
     Transaction.Kind.DAMAGE_DEPOSIT_RELEASE,
 ]
+OWNER_HISTORY_KINDS = OWNER_EARNING_KINDS + [Transaction.Kind.OWNER_PAYOUT]
 TWO_PLACES = Decimal("0.01")
 
 
@@ -56,13 +57,17 @@ def get_owner_history_queryset(user: User):
     """Return the queryset of owner-facing transactions including promotion charges."""
     return Transaction.objects.filter(
         user=user,
-        kind__in=OWNER_EARNING_KINDS + [Transaction.Kind.PROMOTION_CHARGE],
+        kind__in=OWNER_HISTORY_KINDS + [Transaction.Kind.PROMOTION_CHARGE],
     ).order_by("-created_at")
 
 
 def compute_owner_available_balance(user: User) -> Decimal:
     """Return the owner's spendable balance based purely on ledger transactions."""
-    spendable_kinds = [Transaction.Kind.OWNER_EARNING, Transaction.Kind.REFUND]
+    spendable_kinds = [
+        Transaction.Kind.OWNER_EARNING,
+        Transaction.Kind.REFUND,
+        Transaction.Kind.OWNER_PAYOUT,
+    ]
     total = Transaction.objects.filter(user=user, kind__in=spendable_kinds).aggregate(
         total=Sum("amount")
     ).get("total") or Decimal("0.00")

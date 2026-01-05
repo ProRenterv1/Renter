@@ -479,7 +479,8 @@ def test_owner_payouts_instant_payout_executes_and_logs(owner_user, booking_fact
 
     earnings = Transaction.objects.filter(user=owner_user, kind=Transaction.Kind.OWNER_EARNING)
     assert earnings.filter(amount=Decimal("200.00")).exists()
-    assert earnings.filter(amount=Decimal("-200.00")).exists()
+    payouts = Transaction.objects.filter(user=owner_user, kind=Transaction.Kind.OWNER_PAYOUT)
+    assert payouts.filter(amount=Decimal("-200.00")).exists()
     fee_txn = Transaction.objects.get(user=owner_user, kind=Transaction.Kind.PLATFORM_FEE)
     assert fee_txn.amount == Decimal("6.00")
     assert fee_txn.stripe_id == "tr_fee_123"

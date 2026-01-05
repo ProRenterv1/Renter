@@ -13,6 +13,10 @@ export interface LoginRequest {
   password: string;
 }
 
+export interface GoogleLoginPayload {
+  id_token: string;
+}
+
 export type TwoFactorChannel = "email" | "sms";
 
 export interface TwoFactorLoginStartResponse {
@@ -772,6 +776,12 @@ export async function jsonFetch<T>(
 export const authAPI = {
   login(payload: LoginRequest) {
     return jsonFetch<TokenResponse>("/users/token/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  googleLogin(payload: GoogleLoginPayload) {
+    return jsonFetch<TokenResponse>("/users/google/", {
       method: "POST",
       body: payload,
     });

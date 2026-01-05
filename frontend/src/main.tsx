@@ -5,6 +5,7 @@ import App from "./App";
 import "./index.css";
 import { Elements } from "@stripe/react-stripe-js";
 import { loadStripe } from "@stripe/stripe-js";
+import { GoogleIdentityProvider } from "./lib/google-identity";
 
 const rootElement = document.getElementById("root");
 
@@ -21,9 +22,11 @@ if (!isOpsBuild && !stripePublishableKey) {
 }
 
 const app = (
-  <BrowserRouter>
-    <App opsBuild={isOpsBuild} />
-  </BrowserRouter>
+  <GoogleIdentityProvider>
+    <BrowserRouter>
+      <App opsBuild={isOpsBuild} />
+    </BrowserRouter>
+  </GoogleIdentityProvider>
 );
 
 ReactDOM.createRoot(rootElement).render(

@@ -527,6 +527,10 @@ function TimelineItem({ event, isLast }: { event: OperatorBookingEvent; isLast: 
   const description = timelineDescription(event);
   const actor = event.actor?.name || event.actor?.email || "";
   const timestamp = event.created_at ? new Date(event.created_at).toLocaleString() : "";
+  const failureReason = notificationFailureReason(event);
+  const showFailureReason =
+    (event.type === "email_failed" || event.type === "sms_failed") && failureReason;
+  const failureLabel = event.type === "sms_failed" ? "SMS failed" : "Email failed";
 
   return (
     <div className="relative">
@@ -539,6 +543,11 @@ function TimelineItem({ event, isLast }: { event: OperatorBookingEvent; isLast: 
         </div>
         <div className="flex-1 pb-4">
           <p className="text-sm font-medium m-0 mb-1">{description}</p>
+          {showFailureReason ? (
+            <p className="text-xs text-destructive m-0 mb-1">
+              {failureLabel}: {failureReason}
+            </p>
+          ) : null}
           {actor ? <p className="text-xs text-muted-foreground m-0 mb-1">{actor}</p> : null}
           <p className="text-xs text-muted-foreground m-0">{timestamp}</p>
         </div>
@@ -555,7 +564,10 @@ function timelineIcon(type: string) {
     case "email_sent":
       return <MailIcon />;
     case "email_failed":
+    case "sms_failed":
       return <AlertTriangle className="w-5 h-5" />;
+    case "sms_sent":
+      return <Send className="w-5 h-5" />;
     case "dispute_opened":
       return <AlertCircle className="w-5 h-5" />;
     default:
@@ -569,6 +581,7 @@ function timelineColor(type: string) {
       return "text-[var(--success-solid)]";
     case "dispute_opened":
     case "email_failed":
+    case "sms_failed":
       return "text-destructive";
     default:
       return "text-primary";
@@ -610,11 +623,55 @@ function timelineDescription(event: OperatorBookingEvent) {
   if (event.type === "email_failed") {
     return "Email failed";
   }
+  if (event.type === "sms_sent") {
+    return "SMS sent";
+  }
+  if (event.type === "sms_failed") {
+    return "SMS failed";
+  }
   if (event.type === "dispute_opened") {
     const category = (payload as any).category || "dispute";
     return `Dispute opened (${category})`;
   }
   return event.type;
+}
+
+function notificationFailureReason(event: OperatorBookingEvent) {
+  const payload = event.payload || {};
+  const error = (payload as { error?: unknown }).error;
+  return normalizeNotificationError(error);
+}
+
+function normalizeNotificationError(raw: unknown) {
+  if (typeof raw !== "string") return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+
+  const messageMatch = trimmed.match(/["']message["']\s*:\s*["']([^"']+)["']/);
+  if (messageMatch) {
+    const message = messageMatch[1]?.trim();
+    if (!message) return "";
+    const jsonStart = trimmed.indexOf("{");
+    if (jsonStart > 0) {
+      const prefix = trimmed.slice(0, jsonStart).trim();
+      if (prefix) {
+        const separator = prefix.endsWith(":") ? " " : ": ";
+        return `${prefix}${separator}${message}`;
+      }
+    }
+    return message;
+  }
+
+  const jsonStart = trimmed.indexOf("{");
+  if (jsonStart >= 0) {
+    const prefix = trimmed.slice(0, jsonStart).trim();
+    if (prefix) {
+      return prefix.replace(/\s*:\s*$/, "");
+    }
+    return "Unknown error";
+  }
+
+  return trimmed;
 }
 
 function statusVariant(status: string) {
@@ -658,7 +715,10 @@ function breakdownFromTotals(totals?: Record<string, unknown> | null) {
 
 function buildNotificationHistory(events: OperatorBookingEvent[]) {
   const relevant = events.filter((ev) => ["email_sent", "email_failed", "sms_sent", "sms_failed"].includes(ev.type));
-  const latest: Record<string, { status: "sent" | "failed"; at: string; channel: "email" | "sms" }> = {};
+  const latest: Record<
+    string,
+    { status: "sent" | "failed"; at: string; channel: "email" | "sms"; error?: string }
+  > = {};
   relevant.forEach((ev) => {
     const type = (ev.payload?.notification_type as string) || "";
     if (!type) return;
@@ -666,7 +726,8 @@ function buildNotificationHistory(events: OperatorBookingEvent[]) {
     const channel = ev.type.startsWith("email") ? "email" : "sms";
     const existing = latest[type];
     if (!existing || new Date(ev.created_at).getTime() > new Date(existing.at).getTime()) {
-      latest[type] = { status: isFailed ? "failed" : "sent", at: ev.created_at, channel };
+      const error = isFailed ? normalizeNotificationError(ev.payload?.error) : "";
+      latest[type] = { status: isFailed ? "failed" : "sent", at: ev.created_at, channel, error };
     }
   });
   return latest;
@@ -745,7 +806,7 @@ function ActionsSidebar({
           Last notifications:
           <ul className="list-disc list-inside space-y-1 mt-2">
             {Object.entries(lastNotifications).map(([type, info]) => (
-              <li key={type} className="flex items-center gap-2">
+              <li key={type} className="flex flex-wrap items-center gap-2">
                 {info.status === "sent" ? (
                   <Check className="w-3 h-3 text-green-600" />
                 ) : (
@@ -753,6 +814,11 @@ function ActionsSidebar({
                 )}
                 <span className="font-medium">{friendlyNotificationLabel(type)}</span>
                 <span className="text-muted-foreground">• {formatDateTime(info.at)}</span>
+                {info.status === "failed" && info.error ? (
+                  <span className="text-xs text-destructive">
+                    {info.channel === "sms" ? "SMS failed" : "Email failed"}: {info.error}
+                  </span>
+                ) : null}
               </li>
             ))}
             {!Object.keys(lastNotifications).length && <li>No notifications logged yet.</li>}

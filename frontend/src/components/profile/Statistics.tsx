@@ -112,7 +112,9 @@ export function Statistics() {
     return history
       .filter(
         (row) =>
-          row.kind !== "DAMAGE_DEPOSIT_CAPTURE" && row.kind !== "DAMAGE_DEPOSIT_RELEASE",
+          row.kind !== "DAMAGE_DEPOSIT_CAPTURE" &&
+          row.kind !== "DAMAGE_DEPOSIT_RELEASE" &&
+          row.kind !== "OWNER_PAYOUT",
       )
       .map((row) => {
         const amount = parseMoney(row.amount || "0");
