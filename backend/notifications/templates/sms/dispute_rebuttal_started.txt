@@ -1,0 +1,1 @@
+Dispute alert: booking #{{ booking.id }} ({{ listing_title }}). Please respond within 24h in your account.

@@ -11,6 +11,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
+from core.settings_resolver import get_int
 from identity.models import is_user_identity_verified
 from listings.models import Listing, ListingPhoto
 from listings.services import compute_booking_totals
@@ -18,10 +19,10 @@ from notifications import tasks as notification_tasks
 from payments.stripe_api import (
     StripePaymentError,
     StripeTransientError,
-    create_booking_payment_intents,
+    create_booking_charge_intent,
 )
 
-from .domain import ensure_no_conflict, validate_booking_dates
+from .domain import ensure_no_conflict, is_return_initiated, validate_booking_dates
 from .models import Booking
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,14 @@ class BookingSerializer(serializers.ModelSerializer):
             "pickup_confirmed_at",
             "before_photos_required",
             "before_photos_uploaded_at",
+            "returned_by_renter_at",
+            "return_confirmed_at",
+            "after_photos_uploaded_at",
+            "deposit_release_scheduled_at",
+            "deposit_released_at",
+            "dispute_window_expires_at",
+            "deposit_locked",
+            "is_disputed",
             "listing",
             "listing_title",
             "listing_owner_first_name",
@@ -119,6 +128,14 @@ class BookingSerializer(serializers.ModelSerializer):
             "pickup_confirmed_at",
             "before_photos_required",
             "before_photos_uploaded_at",
+            "returned_by_renter_at",
+            "return_confirmed_at",
+            "after_photos_uploaded_at",
+            "deposit_release_scheduled_at",
+            "deposit_released_at",
+            "dispute_window_expires_at",
+            "deposit_locked",
+            "is_disputed",
             "owner",
             "renter",
             "totals",
@@ -185,16 +202,28 @@ class BookingSerializer(serializers.ModelSerializer):
                 }
             )
 
-        if listing and start_date and end_date and not is_user_identity_verified(user):
-            rental_days = (end_date - start_date).days
+        rental_days = (end_date - start_date).days if start_date and end_date else None
+        is_verified = is_user_identity_verified(user)
+
+        if listing and start_date and end_date and not is_verified:
+            max_days = get_int("MAX_BOOKING_DAYS", settings.UNVERIFIED_MAX_BOOKING_DAYS)
             max_repl = settings.UNVERIFIED_MAX_REPLACEMENT_CAD
             max_dep = settings.UNVERIFIED_MAX_DEPOSIT_CAD
-            max_days = settings.UNVERIFIED_MAX_BOOKING_DAYS
 
             replacement = listing.replacement_value_cad or Decimal("0")
             deposit = listing.damage_deposit_cad or Decimal("0")
 
-            if replacement > max_repl or deposit > max_dep or rental_days > max_days:
+            if rental_days is not None and rental_days > max_days:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            f"Unverified renters can book tools for up to {max_days} days. "
+                            "Please shorten your rental or complete ID verification."
+                        ]
+                    }
+                )
+
+            if replacement > max_repl or deposit > max_dep:
                 message = (
                     "This booking is only available to users with ID verification. "
                     "Unverified profiles are limited to tools up to "
@@ -204,12 +233,28 @@ class BookingSerializer(serializers.ModelSerializer):
                 )
                 raise serializers.ValidationError({"non_field_errors": [message]})
 
+        if listing and start_date and end_date and is_verified:
+            max_days_verified = get_int("MAX_BOOKING_DAYS", settings.VERIFIED_MAX_BOOKING_DAYS)
+            if rental_days is not None and rental_days > max_days_verified:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            (
+                                f"Bookings are limited to {max_days_verified} days at a time. "
+                                "Please shorten your rental period."
+                            )
+                        ]
+                    }
+                )
+
         if listing and listing.owner_id == user.id:
             raise serializers.ValidationError(
                 {"listing": ["You cannot create bookings for your own listing."]}
             )
 
         if listing and start_date and end_date:
+            # Conflicts are checked only against confirmed/paid bookings;
+            # requested overlaps are allowed.
             ensure_no_conflict(listing, start_date, end_date)
 
         return attrs
@@ -251,7 +296,7 @@ class BookingSerializer(serializers.ModelSerializer):
 
             if payment_method_id:
                 try:
-                    charge_id, deposit_id = create_booking_payment_intents(
+                    charge_id = create_booking_charge_intent(
                         booking=booking,
                         customer_id=customer_id,
                         payment_method_id=payment_method_id,
@@ -275,11 +320,13 @@ class BookingSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({"non_field_errors": [message]})
 
                 booking.charge_payment_intent_id = charge_id or ""
-                booking.deposit_hold_id = deposit_id or ""
+                booking.renter_stripe_customer_id = customer_id or ""
+                booking.renter_stripe_payment_method_id = payment_method_id or ""
                 booking.save(
                     update_fields=[
                         "charge_payment_intent_id",
-                        "deposit_hold_id",
+                        "renter_stripe_customer_id",
+                        "renter_stripe_payment_method_id",
                         "updated_at",
                     ]
                 )
@@ -316,6 +363,8 @@ class BookingSerializer(serializers.ModelSerializer):
         status_value = booking.status
         if status_value == Booking.Status.REQUESTED and booking.charge_payment_intent_id:
             status_value = Booking.Status.PAID
+        if is_return_initiated(booking):
+            return "Return pending"
         if status_value == Booking.Status.PAID and booking.pickup_confirmed_at:
             return "In progress"
 

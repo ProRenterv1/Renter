@@ -51,6 +51,17 @@ services:
     depends_on: [api, clamav]
     restart: unless-stopped
 
+  beat:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    <<: *default-env
+    command: >
+      celery -A renter beat -l info
+    depends_on:
+      - redis
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "no"]
@@ -61,9 +72,22 @@ services:
     build:
       context: ../frontend
       dockerfile: Dockerfile
+      args:
+        VITE_OPS_BUILD: "0"
+        VITE_GOOGLE_OAUTH_CLIENT_ID: ${VITE_GOOGLE_OAUTH_CLIENT_ID}
     command: ["sh","-c","rm -rf /dist/* && cp -r /app/build/* /dist/ || true"]
     volumes:
       - web_dist:/dist
+  web_build_ops:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_OPS_BUILD: "1"
+        VITE_GOOGLE_OAUTH_CLIENT_ID: ${VITE_GOOGLE_OAUTH_CLIENT_ID}
+    command: ["sh","-c","rm -rf /dist/* && cp -r /app/build/* /dist/ || true"]
+    volumes:
+      - web_dist_ops:/dist
   nginx:
     image: nginx:1.27-alpine
     depends_on: [api, web_build, clamav]
@@ -72,7 +96,16 @@ services:
       - ./nginx/app.conf:/etc/nginx/conf.d/default.conf:ro
       - web_dist:/usr/share/nginx/html:ro
     restart: unless-stopped
+  nginx_ops:
+    image: nginx:1.27-alpine
+    depends_on: [api, web_build_ops, clamav]
+    ports: ["8081:80"]
+    volumes:
+      - ./nginx/ops.conf:/etc/nginx/conf.d/default.conf:ro
+      - web_dist_ops:/usr/share/nginx/html:ro
+    restart: unless-stopped
 
 volumes:  
   pgdata: {}  
   web_dist: {} 
+  web_dist_ops: {} 

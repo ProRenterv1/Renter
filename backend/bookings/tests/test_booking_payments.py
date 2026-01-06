@@ -78,7 +78,7 @@ def booking_payload(listing, start, end, **extra):
     return payload
 
 
-def test_booking_create_charges_and_creates_deposit_hold(renter_user, listing, monkeypatch):
+def test_booking_create_charges_and_defers_deposit_hold(renter_user, listing, monkeypatch):
     client = auth(renter_user)
     start = date.today() + timedelta(days=4)
     end = start + timedelta(days=3)
@@ -111,18 +111,17 @@ def test_booking_create_charges_and_creates_deposit_hold(renter_user, listing, m
 
     booking = Booking.objects.get(pk=resp.data["id"])
     assert booking.charge_payment_intent_id == "pi_charge_123"
-    assert booking.deposit_hold_id == "pi_deposit_456"
+    assert booking.deposit_hold_id == ""
     assert booking.totals
+    assert booking.renter_stripe_customer_id == "cus_123"
+    assert booking.renter_stripe_payment_method_id == "pm_123"
 
-    assert len(created_calls) == 2
-    charge_call, deposit_call = created_calls
+    assert len(created_calls) == 1
+    (charge_call,) = created_calls
 
-    deposit = Decimal(booking.totals["damage_deposit"])
     rental_subtotal = Decimal(booking.totals["rental_subtotal"])
     service_fee = Decimal(booking.totals.get("service_fee", booking.totals.get("renter_fee", "0")))
     expected_charge_cents = int((rental_subtotal + service_fee) * Decimal("100"))
-    deposit = Decimal(booking.totals.get("damage_deposit", "0"))
-    expected_deposit_cents = int(deposit * Decimal("100"))
 
     assert charge_call["amount"] == expected_charge_cents
     assert charge_call["currency"] == "cad"
@@ -130,13 +129,6 @@ def test_booking_create_charges_and_creates_deposit_hold(renter_user, listing, m
     assert charge_call["capture_method"] == "automatic"
     assert charge_call["automatic_payment_methods"]["enabled"] is True
     assert charge_call["automatic_payment_methods"]["allow_redirects"] == "never"
-
-    assert deposit_call["amount"] == expected_deposit_cents
-    assert deposit_call["currency"] == "cad"
-    assert deposit_call["metadata"]["kind"] == "damage_deposit"
-    assert deposit_call["capture_method"] == "manual"
-    assert deposit_call["automatic_payment_methods"]["enabled"] is True
-    assert deposit_call["automatic_payment_methods"]["allow_redirects"] == "never"
 
 
 def test_create_booking_payment_intents_uses_booking_totals(
@@ -165,9 +157,14 @@ def test_create_booking_payment_intents_uses_booking_totals(
     monkeypatch.setattr(stripe_api.stripe.PaymentIntent, "create", fake_create)
     monkeypatch.setattr(stripe_api.stripe.PaymentIntent, "retrieve", lambda *args, **kwargs: None)
 
-    charge_id, deposit_id = stripe_api.create_booking_payment_intents(
+    charge_id = stripe_api.create_booking_charge_intent(
         booking=booking,
-        customer_id="",
+        customer_id="cus_test",
+        payment_method_id="pm_test",
+    )
+    deposit_id = stripe_api.create_booking_deposit_hold_intent(
+        booking=booking,
+        customer_id="cus_test",
         payment_method_id="pm_test",
     )
 
@@ -299,12 +296,13 @@ def test_booking_create_transient_error_is_retry_safe(renter_user, listing, monk
     assert second_resp.status_code == 201, second_resp.data
     booking = Booking.objects.get(pk=second_resp.data["id"])
     assert booking.charge_payment_intent_id == "pi_charge_retry"
-    assert booking.deposit_hold_id == "pi_deposit_retry"
+    assert booking.deposit_hold_id == ""
+    assert booking.renter_stripe_customer_id == "cus_retry"
+    assert booking.renter_stripe_payment_method_id == "pm_retry"
 
-    assert len(created_calls) == 3  # one failed charge, one retried charge, one deposit
+    assert len(created_calls) == 2  # one failed charge, one retried charge
     assert created_calls[0]["metadata"]["kind"] == "booking_charge"
     assert created_calls[1]["metadata"]["kind"] == "booking_charge"
-    assert created_calls[2]["metadata"]["kind"] == "damage_deposit"
 
     # Charge attempts reuse the same idempotency key for retries and match booking-scoped keys.
     assert created_calls[0]["idempotency_key"] == created_calls[1]["idempotency_key"]
@@ -312,10 +310,5 @@ def test_booking_create_transient_error_is_retry_safe(renter_user, listing, monk
     totals = booking.totals or {}
     rental_subtotal = Decimal(totals["rental_subtotal"])
     service_fee = Decimal(totals.get("service_fee", totals.get("renter_fee", "0")))
-    damage_deposit = Decimal(totals.get("damage_deposit", "0"))
     expected_charge_cents = int((rental_subtotal + service_fee) * Decimal("100"))
-    expected_deposit_cents = int(damage_deposit * Decimal("100"))
     assert created_calls[1]["idempotency_key"] == f"{expected_base}:charge:{expected_charge_cents}"
-    assert (
-        created_calls[2]["idempotency_key"] == f"{expected_base}:deposit:{expected_deposit_cents}"
-    )

@@ -1,0 +1,9 @@
+Hi {{ owner.first_name|default:owner.username|default:"there" }},
+
+The booking for {{ listing_title }} was canceled because the renter's card could not authorize the damage deposit.
+
+You will receive a partial payout of ${{ owner_amount }} from the rental charge.
+
+Dates: {{ date_range_display }}
+
+If you have any questions, please contact support.

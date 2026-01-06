@@ -19,10 +19,11 @@ import { Separator } from "../components/ui/separator";
 import { BookingMap } from "../components/BookingMap";
 import { LoginModal } from "../components/LoginModal";
 import { Header } from "../components/Header";
-import { addDays, differenceInDays, format } from "date-fns";
+import { addDays, format } from "date-fns";
 import { useNavigate } from "react-router-dom";
 import { bookingsAPI, usersAPI, type Listing as ApiListing, type PublicProfile } from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
+import { startConversationForListing } from "@/lib/chat";
 import { cn, formatCurrency, parseMoney } from "@/lib/utils";
 import { VerifiedAvatar } from "@/components/VerifiedAvatar";
 
@@ -43,6 +44,22 @@ interface Review {
   date: string;
   comment: string;
   userVerified?: boolean;
+}
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function computeRentalDays(start: Date, end: Date): number {
+  const startMidnight = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const endMidnight = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  return Math.max(
+    0,
+    Math.round((endMidnight.getTime() - startMidnight.getTime()) / MS_PER_DAY),
+  );
+}
+
+function getMaxBookingDaysForCurrentUser(): number {
+  const user = AuthStore.getCurrentUser();
+  return user?.identity_verified ? 5 : 3;
 }
 
 
@@ -201,7 +218,7 @@ export default function Booking({
   const reviews: Review[] = [];
   const averageRating = reviews.length
     ? reviews.reduce((sum, review) => sum + review.rating, 0) / reviews.length
-    : 5;
+    : 0;
 
   const rawDescription = listing.description ?? "";
   const hasCustomDescription = Boolean(rawDescription.trim().length);
@@ -263,6 +280,7 @@ export default function Booking({
       return fallbackJoinedDate;
     }
   })();
+  const isOwner = Boolean(currentUser && listing && currentUser.id === listing.owner);
   const handleViewOwnerProfile = () => {
     navigate(`/users/${listing.owner}`);
   };
@@ -290,7 +308,7 @@ export default function Booking({
 
   const numberOfDays =
     dateRange.from && dateRange.to
-      ? differenceInDays(dateRange.to, dateRange.from) + 1
+      ? computeRentalDays(dateRange.from, addDays(dateRange.to, 1))
       : 0;
   const safeRentalDays = numberOfDays > 0 ? numberOfDays : 0;
   const rentalSubtotal = roundToCents(safeRentalDays * pricePerDay);
@@ -316,9 +334,14 @@ export default function Booking({
   };
 
   const isVerified = Boolean(currentUser?.email_verified && currentUser?.phone_verified);
+  const isIdentityVerified = Boolean(currentUser?.identity_verified);
   const canCreateBooking = Boolean(currentUser && currentUser.can_rent && isVerified);
   const showVerificationBanner = Boolean(currentUser && !isVerified);
   const bookingBlocked = Boolean(currentUser && !canCreateBooking);
+  const maxBookingDays = getMaxBookingDaysForCurrentUser();
+  const bookingDayLimitMessage = isIdentityVerified
+    ? `Bookings are limited to ${maxBookingDays} days at a time.`
+    : `You can book up to ${maxBookingDays} days. Verify your ID to increase this to 5 days.`;
 
   const requireLogin = () => {
     setLoginModalMode("login");
@@ -344,6 +367,28 @@ export default function Booking({
     return true;
   };
 
+  const handleMessageOwner = async () => {
+    if (!listing) return;
+
+    if (!AuthStore.getTokens()) {
+      requireLogin();
+      return;
+    }
+
+    if (isOwner) {
+      return;
+    }
+
+    try {
+      setSubmitError(null);
+      const conversation = await startConversationForListing(listing.id);
+      navigate(`/messages?conversation=${conversation.id}`);
+    } catch (error) {
+      console.error("Failed to start conversation for listing", error);
+      setSubmitError("Unable to start chat right now. Please try again.");
+    }
+  };
+
   async function handleRequestBooking() {
     if (!listing || !dateRange.from || !dateRange.to) return;
 
@@ -355,12 +400,24 @@ export default function Booking({
     if (!ensureBookingPermissions()) {
       return;
     }
+
+    const startDateValue = dateRange.from;
+    const endExclusive = addDays(dateRange.to, 1);
+    const rentalDays = computeRentalDays(startDateValue, endExclusive);
+
+    if (rentalDays > maxBookingDays) {
+      const errorMessage = isIdentityVerified
+        ? `Bookings are limited to ${maxBookingDays} days at a time.`
+        : `You can book tools for up to ${maxBookingDays} days before verifying your ID.`;
+      setSubmitError(errorMessage);
+      return;
+    }
+
     setSubmitting(true);
     setSubmitError(null);
 
     try {
-      const startDate = format(dateRange.from, "yyyy-MM-dd");
-      const endExclusive = addDays(dateRange.to, 1);
+      const startDate = format(startDateValue, "yyyy-MM-dd");
       const endDate = format(endExclusive, "yyyy-MM-dd");
 
       await bookingsAPI.create({
@@ -654,6 +711,9 @@ export default function Booking({
                       className="rounded-md"
                     />
                   </div>
+                  <p className="text-sm text-muted-foreground">
+                    {bookingDayLimitMessage}
+                  </p>
                 </div>
 
                 <div className="space-y-4">
@@ -814,9 +874,16 @@ export default function Booking({
                     <span>Joined {ownerJoinedDate}</span>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-3">
-                    <Button variant="outline" className="rounded-full">
-                      Contact Owner
-                    </Button>
+                    {!isOwner && (
+                      <Button
+                        variant="outline"
+                        className="rounded-full"
+                        type="button"
+                        onClick={handleMessageOwner}
+                      >
+                        Message
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       className="rounded-full"

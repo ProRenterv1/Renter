@@ -4,6 +4,8 @@ from decimal import ROUND_HALF_UP, Decimal
 from django.conf import settings
 from django.db.models import Q, QuerySet
 
+from core.settings_resolver import get_int
+
 from .models import Listing
 
 
@@ -28,7 +30,7 @@ def search_listings(
         qs = qs.filter(city__iexact=city)
     if owner_id is not None:
         qs = qs.filter(owner_id=owner_id)
-    return qs.filter(is_active=True, is_available=True).order_by("-created_at")
+    return qs.filter(is_active=True, is_available=True, is_deleted=False).order_by("-created_at")
 
 
 def compute_booking_totals(
@@ -62,8 +64,26 @@ def compute_booking_totals(
         return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     base_amount = q2(price_per_day * days)
-    renter_fee_rate: Decimal = settings.BOOKING_RENTER_FEE_RATE
-    owner_fee_rate: Decimal = settings.BOOKING_OWNER_FEE_RATE
+
+    default_platform_fee_bps = int(
+        (settings.BOOKING_RENTER_FEE_RATE * Decimal("10000")).to_integral_value(
+            rounding=ROUND_HALF_UP
+        )
+    )
+    default_owner_fee_bps = int(
+        (settings.BOOKING_OWNER_FEE_RATE * Decimal("10000")).to_integral_value(
+            rounding=ROUND_HALF_UP
+        )
+    )
+    platform_fee_bps = get_int("BOOKING_PLATFORM_FEE_BPS", default_platform_fee_bps)
+    owner_fee_bps = get_int("BOOKING_OWNER_FEE_BPS", default_owner_fee_bps)
+    if platform_fee_bps < 0:
+        platform_fee_bps = default_platform_fee_bps
+    if owner_fee_bps < 0:
+        owner_fee_bps = default_owner_fee_bps
+
+    renter_fee_rate = Decimal(platform_fee_bps) / Decimal("10000")
+    owner_fee_rate = Decimal(owner_fee_bps) / Decimal("10000")
 
     renter_fee = q2(base_amount * renter_fee_rate)
     owner_fee = q2(base_amount * owner_fee_rate)

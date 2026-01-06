@@ -7,9 +7,9 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from identity.models import IdentityVerification
 from listings.api import GEOCODE_ENDPOINT
 from listings.models import Category, Listing
+from payments.models import OwnerPayoutAccount
 from promotions.models import PromotedSlot
 
 pytestmark = pytest.mark.django_db
@@ -58,11 +58,21 @@ def listing_limit_error_message(settings) -> str:
 
 
 def mark_user_identity_verified(user) -> None:
-    IdentityVerification.objects.create(
+    OwnerPayoutAccount.objects.update_or_create(
         user=user,
-        session_id=f"vs_listing_{user.id}",
-        status=IdentityVerification.Status.VERIFIED,
-        verified_at=timezone.now(),
+        defaults={
+            "stripe_account_id": f"acct_listing_{user.id}",
+            "payouts_enabled": True,
+            "charges_enabled": True,
+            "is_fully_onboarded": True,
+            "requirements_due": {
+                "currently_due": [],
+                "eventually_due": [],
+                "past_due": [],
+                "disabled_reason": "",
+            },
+            "last_synced_at": timezone.now(),
+        },
     )
 
 

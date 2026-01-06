@@ -13,6 +13,10 @@ export interface LoginRequest {
   password: string;
 }
 
+export interface GoogleLoginPayload {
+  id_token: string;
+}
+
 export type TwoFactorChannel = "email" | "sms";
 
 export interface TwoFactorLoginStartResponse {
@@ -161,6 +165,26 @@ export interface PublicProfile {
   identity_verified?: boolean;
 }
 
+export type ReviewRole = "owner_to_renter" | "renter_to_owner";
+
+export interface Review {
+  id: number;
+  booking: number;
+  author: number;
+  subject: number;
+  role: ReviewRole;
+  rating: number | null;
+  text: string;
+  created_at: string;
+}
+
+export interface CreateReviewPayload {
+  booking: number;
+  role: ReviewRole;
+  rating?: number | null;
+  text?: string;
+}
+
 export interface ListingPhoto {
   id: number;
   listing: number;
@@ -278,15 +302,21 @@ export interface PromotionPricingResponse {
   price_per_day_cents: number;
 }
 
+export interface PromotionAvailabilityRange {
+  start_date: string;
+  end_date: string;
+}
+
 export interface PromotionPaymentPayload {
   listing_id: number;
   promotion_start: string;
   promotion_end: string;
   base_price_cents: number;
   gst_cents: number;
-  stripe_payment_method_id: string;
+  stripe_payment_method_id?: string;
   stripe_customer_id?: string;
   save_payment_method?: boolean;
+  pay_with_earnings?: boolean;
 }
 
 export interface PromotionSlot {
@@ -303,6 +333,81 @@ export interface PromotionSlot {
 
 export interface PromotionPaymentResponse {
   slot: PromotionSlot;
+}
+
+export interface PaymentMethod {
+  id: number;
+  brand: string;
+  last4: string;
+  exp_month: number | null;
+  exp_year: number | null;
+  is_default: boolean;
+  stripe_payment_method_id: string;
+  created_at: string;
+}
+
+export interface OwnerPayoutBalances {
+  lifetime_gross_earnings: string;
+  lifetime_refunds: string;
+  lifetime_deposit_captured: string;
+  lifetime_deposit_released: string;
+  net_earnings: string;
+  last_30_days_net: string;
+  available_earnings: string;
+  connect_available_earnings?: string | null;
+}
+
+export interface OwnerPayoutConnect {
+  has_account: boolean;
+  stripe_account_id: string | null;
+  payouts_enabled: boolean;
+  charges_enabled: boolean;
+  is_fully_onboarded: boolean;
+  lifetime_instant_payouts: string;
+  requirements_due: {
+    currently_due: string[];
+    eventually_due: string[];
+    past_due: string[];
+    disabled_reason: string | null;
+  };
+  bank_details: {
+    transit_number: string;
+    institution_number: string;
+    account_last4: string;
+  } | null;
+}
+
+export interface OwnerPayoutSummary {
+  connect: OwnerPayoutConnect;
+  balances: OwnerPayoutBalances;
+}
+
+export interface OwnerPayoutHistoryRow {
+  id: number;
+  created_at: string;
+  kind: string;
+  amount: string;
+  currency: string;
+  booking_id: number | null;
+  booking_status: string | null;
+  listing_title: string | null;
+  direction: "credit" | "debit";
+  stripe_id?: string | null;
+}
+
+export interface OwnerPayoutHistoryResponse {
+  results: OwnerPayoutHistoryRow[];
+  count: number;
+  next_offset: number | null;
+}
+
+export interface InstantPayoutResponse {
+  executed: boolean;
+  currency: string;
+  amount_before_fee: string;
+  amount_after_fee: string;
+  ok?: boolean;
+  stripe_payout_id?: string;
 }
 
 export type BookingStatus = "requested" | "confirmed" | "paid" | "canceled" | "completed";
@@ -346,6 +451,9 @@ export interface Booking {
   totals: BookingTotals | null;
   charge_payment_intent_id?: string;
   deposit_hold_id: string;
+  deposit_locked?: boolean;
+  is_disputed?: boolean;
+  dispute_window_expires_at?: string | null;
   pickup_confirmed_at?: string | null;
   before_photos_required?: boolean | null;
   before_photos_uploaded_at?: string | null;
@@ -512,6 +620,106 @@ export interface PhotoCompleteResponse {
   key: string;
 }
 
+export type DisputeCategory =
+  | "damage"
+  | "missing_item"
+  | "not_as_described"
+  | "late_return"
+  | "incorrect_charges"
+  | "safety_or_fraud";
+
+export type DisputeDamageFlowKind = "generic" | "broke_during_use";
+
+export type DisputeStatus =
+  | "open"
+  | "intake_missing_evidence"
+  | "awaiting_rebuttal"
+  | "under_review"
+  | "resolved_renter"
+  | "resolved_owner"
+  | "resolved_partial"
+  | "closed_auto";
+
+export type DisputeRole = "renter" | "owner" | "admin" | "system";
+
+export interface DisputeMessage {
+  id: number;
+  dispute: number;
+  author: number | null;
+  role: DisputeRole;
+  text: string;
+  created_at: string;
+}
+
+export interface DisputeEvidence {
+  id: number;
+  dispute: number;
+  uploaded_by: number;
+  kind: "photo" | "video" | "other";
+  s3_key: string;
+  url?: string | null;
+  filename: string;
+  content_type: string;
+  size: number | null;
+  etag: string;
+  av_status: "pending" | "clean" | "infected" | "failed";
+  created_at: string;
+}
+
+export interface DisputeUserSummary {
+  id: number;
+  name: string;
+  avatar_url?: string | null;
+  identity_verified?: boolean;
+  rating?: number | null;
+}
+
+export interface DisputeCase {
+  id: number;
+  booking: number;
+  opened_by?: number;
+  opened_by_role: "renter" | "owner";
+  category: DisputeCategory;
+  damage_flow_kind: DisputeDamageFlowKind;
+  description: string;
+  status: DisputeStatus;
+  filed_at?: string;
+  rebuttal_due_at?: string | null;
+  auto_rebuttal_timeout?: boolean;
+  review_started_at?: string | null;
+  resolved_at?: string | null;
+  messages?: DisputeMessage[];
+  evidence?: DisputeEvidence[];
+  booking_start_date?: string | null;
+  booking_end_date?: string | null;
+  listing_title?: string | null;
+  listing_primary_photo_url?: string | null;
+  owner_summary?: DisputeUserSummary | null;
+  renter_summary?: DisputeUserSummary | null;
+}
+
+export interface DisputeCreatePayload {
+  booking: number;
+  category: DisputeCategory;
+  damage_flow_kind?: DisputeDamageFlowKind;
+  description: string;
+}
+
+export interface DisputeEvidenceCompletePayload {
+  key: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  etag: string;
+  kind: "photo" | "video" | "other";
+}
+
+export type DisputeEvidenceCompleteResponse = {
+  status: string;
+  key: string;
+  id?: number;
+};
+
 export type UpdateProfilePayload = Partial<
   Pick<
     Profile,
@@ -568,6 +776,12 @@ export async function jsonFetch<T>(
 export const authAPI = {
   login(payload: LoginRequest) {
     return jsonFetch<TokenResponse>("/users/token/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  googleLogin(payload: GoogleLoginPayload) {
+    return jsonFetch<TokenResponse>("/users/google/", {
       method: "POST",
       body: payload,
     });
@@ -870,6 +1084,94 @@ export const bookingsAPI = {
       method: "POST",
     });
   },
+  renterReturn(id: number) {
+    return jsonFetch<Booking>(`/bookings/${id}/renter-return/`, {
+      method: "POST",
+    });
+  },
+  ownerMarkReturned(id: number) {
+    return jsonFetch<Booking>(`/bookings/${id}/owner-mark-returned/`, {
+      method: "POST",
+    });
+  },
+  afterPhotosPresign(id: number, payload: PhotoPresignRequest) {
+    return jsonFetch<PhotoPresignResponse>(
+      `/bookings/${id}/after-photos/presign/`,
+      {
+        method: "POST",
+        body: payload,
+      },
+    );
+  },
+  afterPhotosComplete(id: number, payload: PhotoCompletePayload) {
+    return jsonFetch<PhotoCompleteResponse>(
+      `/bookings/${id}/after-photos/complete/`,
+      {
+        method: "POST",
+        body: payload,
+      },
+    );
+  },
+};
+
+export const disputesAPI = {
+  list(params?: { bookingId?: number }) {
+    const search = new URLSearchParams();
+    if (params?.bookingId) {
+      search.set("booking", String(params.bookingId));
+    }
+    const query = search.toString();
+    const suffix = query ? `?${query}` : "";
+    return jsonFetch<DisputeCase[]>(`/disputes/${suffix}`, { method: "GET" });
+  },
+  retrieve(disputeId: number) {
+    return jsonFetch<DisputeCase>(`/disputes/${disputeId}/`, { method: "GET" });
+  },
+  create(payload: DisputeCreatePayload) {
+    return jsonFetch<DisputeCase>("/disputes/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  createMessage(disputeId: number, text: string) {
+    return jsonFetch<DisputeMessage>(`/disputes/${disputeId}/messages/`, {
+      method: "POST",
+      body: { text },
+    });
+  },
+  evidencePresign(disputeId: number, payload: PhotoPresignRequest) {
+    return jsonFetch<PhotoPresignResponse>(`/disputes/${disputeId}/evidence/presign/`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+  evidenceComplete(disputeId: number, payload: DisputeEvidenceCompletePayload) {
+    return jsonFetch<DisputeEvidenceCompleteResponse>(
+      `/disputes/${disputeId}/evidence/complete/`,
+      {
+        method: "POST",
+        body: payload,
+      },
+    );
+  },
+};
+
+export const reviewsAPI = {
+  create(payload: CreateReviewPayload) {
+    return jsonFetch<Review>("/reviews/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  list(params?: { booking?: number; subject?: number; role?: ReviewRole }) {
+    const search = new URLSearchParams();
+    if (params?.booking) search.set("booking", String(params.booking));
+    if (params?.subject) search.set("subject", String(params.subject));
+    if (params?.role) search.set("role", params.role);
+    const query = search.toString();
+    const path = `/reviews/${query ? `?${query}` : ""}`;
+    return jsonFetch<Review[]>(path, { method: "GET" });
+  },
 };
 
 export const promotionsAPI = {
@@ -879,11 +1181,95 @@ export const promotionsAPI = {
       method: "GET",
     });
   },
+  availability(listingId: number) {
+    const search = new URLSearchParams({ listing_id: String(listingId) }).toString();
+    return jsonFetch<PromotionAvailabilityRange[]>(`/promotions/availability/?${search}`, {
+      method: "GET",
+    });
+  },
   payPromotion(payload: PromotionPaymentPayload) {
     return jsonFetch<PromotionPaymentResponse>("/promotions/pay/", {
       method: "POST",
       body: payload,
     });
+  },
+};
+
+export const paymentsAPI = {
+  listPaymentMethods() {
+    return jsonFetch<PaymentMethod[]>("/payments/methods/", { method: "GET" });
+  },
+  addPaymentMethod(payload: { stripe_payment_method_id: string }) {
+    return jsonFetch<PaymentMethod>("/payments/methods/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  removePaymentMethod(id: number) {
+    return jsonFetch<void>(`/payments/methods/${id}/`, {
+      method: "DELETE",
+    });
+  },
+  setDefaultPaymentMethod(id: number) {
+    return jsonFetch<PaymentMethod>(`/payments/methods/${id}/set-default/`, {
+      method: "POST",
+      body: {},
+    });
+  },
+  ownerPayoutsSummary() {
+    return jsonFetch<OwnerPayoutSummary>("/owner/payouts/summary/", { method: "GET" });
+  },
+  ownerPayoutsSummaryRaw() {
+    return jsonFetch<{ connect: OwnerPayoutConnect }>("/owner/payouts/summary/", {
+      method: "GET",
+    });
+  },
+  ownerPayoutsHistory(
+    params: {
+      kind?: string;
+      limit?: number;
+      offset?: number;
+      scope?: "owner" | "all";
+    } = {},
+  ) {
+    const search = new URLSearchParams();
+    if (params.kind) search.set("kind", params.kind);
+    if (params.limit !== undefined) search.set("limit", String(params.limit));
+    if (params.offset !== undefined) search.set("offset", String(params.offset));
+    if (params.scope) {
+      search.set("scope", params.scope);
+    }
+    const query = search.toString();
+    const path = `/owner/payouts/history/${query ? `?${query}` : ""}`;
+    return jsonFetch<OwnerPayoutHistoryResponse>(path, { method: "GET" });
+  },
+  updateBankDetails(payload: {
+    transit_number: string;
+    institution_number: string;
+    account_number: string;
+  }) {
+    return jsonFetch<OwnerPayoutSummary>("/owner/payouts/bank-details/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  instantPayoutPreview() {
+    return jsonFetch<InstantPayoutResponse>("/owner/payouts/instant-payout/", {
+      method: "POST",
+      body: {},
+    });
+  },
+  instantPayoutExecute() {
+    return jsonFetch<InstantPayoutResponse>("/owner/payouts/instant-payout/", {
+      method: "POST",
+      body: { confirm: true },
+    });
+  },
+  ownerPayoutsStartOnboarding() {
+    return jsonFetch<{ onboarding_url: string; stripe_account_id: string | null }>(
+      "/owner/payouts/start-onboarding/",
+      { method: "POST" },
+    );
   },
 };
 

@@ -1,8 +1,11 @@
 import pytest
+import stripe
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
 from notifications import tasks as notification_tasks
+from payments import stripe_api
+from payments.models import OwnerPayoutAccount
 from users.models import ContactVerificationChallenge
 
 pytestmark = pytest.mark.django_db
@@ -152,6 +155,127 @@ def test_me_updates_address_fields(user):
     assert user.city == "Edmonton"
     assert user.province == "AB"
     assert user.postal_code == "T5K 2M5"
+
+
+def test_me_syncs_personal_info_to_stripe_connect(monkeypatch):
+    owner = User.objects.create_user(
+        username="owner-sync",
+        email="owner-sync@example.com",
+        password="Secret123!",
+        first_name="Owner",
+        last_name="Sync",
+        can_rent=True,
+        can_list=True,
+    )
+    payout = OwnerPayoutAccount.objects.create(
+        user=owner,
+        stripe_account_id="acct_sync_123",
+    )
+
+    account_payload = {
+        "id": payout.stripe_account_id,
+        "charges_enabled": False,
+        "payouts_enabled": False,
+        "requirements": {
+            "currently_due": [],
+            "eventually_due": [],
+            "past_due": [],
+            "disabled_reason": "",
+        },
+        "individual": {"phone": "", "address": {}},
+        "external_accounts": {"data": []},
+    }
+
+    monkeypatch.setattr(stripe_api, "_get_stripe_api_key", lambda: "sk_test_key")
+    monkeypatch.setattr(
+        stripe_api,
+        "_retrieve_account_with_expand",
+        lambda _account_id: account_payload,
+    )
+
+    modify_calls = []
+
+    def fake_modify(account_id, *args, **kwargs):
+        modify_calls.append({"account_id": account_id, "args": args, "kwargs": kwargs})
+        return {}
+
+    monkeypatch.setattr(stripe_api.stripe.Account, "modify", staticmethod(fake_modify))
+
+    client = auth_client(owner)
+    resp = client.patch(
+        "/api/users/me/",
+        {
+            "phone": "+1 647-555-0123",
+            "birth_date": "1990-02-03",
+            "street_address": "55 Front St W",
+            "city": "Toronto",
+            "province": "on",
+            "postal_code": "m5v 2b1",
+        },
+        format="json",
+    )
+
+    assert resp.status_code == 200, resp.data
+    owner.refresh_from_db()
+
+    assert owner.phone == "+16475550123"
+    assert owner.birth_date.isoformat() == "1990-02-03"
+    assert owner.street_address == "55 Front St W"
+    assert owner.city == "Toronto"
+    assert owner.province == "ON"
+    assert owner.postal_code == "M5V 2B1"
+
+    assert modify_calls, "Stripe Account.modify should be called to sync personal info"
+    individual_call = next(
+        (call for call in modify_calls if call["kwargs"].get("individual")), None
+    )
+    assert individual_call, "Stripe payload should include individual details"
+    payload = individual_call["kwargs"]["individual"]
+    assert payload["phone"] == "+16475550123"
+    assert payload["dob"] == {"day": 3, "month": 2, "year": 1990}
+    assert payload["address"]["line1"] == "55 Front St W"
+    assert payload["address"]["city"] == "Toronto"
+    assert payload["address"]["state"] == "ON"
+    assert payload["address"]["postal_code"] == "M5V 2B1"
+
+
+def test_me_allows_profile_save_when_stripe_denies_permissions(monkeypatch):
+    owner = User.objects.create_user(
+        username="owner-sync-denied",
+        email="owner-sync-denied@example.com",
+        password="Secret123!",
+        first_name="Owner",
+        last_name="Denied",
+        can_rent=True,
+        can_list=True,
+    )
+    OwnerPayoutAccount.objects.create(
+        user=owner,
+        stripe_account_id="acct_denied",
+    )
+
+    monkeypatch.setattr(stripe_api, "_get_stripe_api_key", lambda: "sk_test_key")
+    monkeypatch.setattr(
+        stripe_api,
+        "_retrieve_account_with_expand",
+        lambda _account_id: {"id": "acct_denied"},
+    )
+
+    def fake_modify(*args, **kwargs):
+        err = stripe.error.PermissionError(message="missing permissions")
+        raise err
+
+    monkeypatch.setattr(stripe_api.stripe.Account, "modify", staticmethod(fake_modify))
+
+    client = auth_client(owner)
+    resp = client.patch(
+        "/api/users/me/",
+        {"phone": "+1 416-555-7890"},
+        format="json",
+    )
+    assert resp.status_code == 200, resp.data
+    owner.refresh_from_db()
+    assert owner.phone == "+14165557890"
 
 
 def test_me_rejects_invalid_postal_code(user):

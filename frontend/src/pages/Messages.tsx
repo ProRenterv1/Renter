@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Search } from "lucide-react";
+import { useLocation } from "react-router-dom";
 
 import ChatMessages from "@/components/chat/Messages";
 import { Header } from "@/components/Header";
@@ -29,7 +30,16 @@ export default function MessagesPage() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const location = useLocation();
   const currentUserId = useMemo(() => AuthStore.getCurrentUser()?.id ?? null, []);
+  const initialConversationIdFromUrl = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    const raw = params.get("conversation");
+    if (!raw) return null;
+    const id = Number(raw);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    return id;
+  }, [location.search]);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -52,11 +62,19 @@ export default function MessagesPage() {
         if (!active) {
           return;
         }
-        if (data.length > 0) {
-          setSelectedConversationId((prev) => prev ?? data[0].id);
-        } else {
+        if (data.length === 0) {
           setSelectedConversationId(null);
+          return;
         }
+
+        setSelectedConversationId((prev) => {
+          if (prev) return prev;
+          if (initialConversationIdFromUrl) {
+            const exists = data.some((conv) => conv.id === initialConversationIdFromUrl);
+            if (exists) return initialConversationIdFromUrl;
+          }
+          return data[0].id;
+        });
       })
       .finally(() => {
         if (active) {
@@ -66,7 +84,7 @@ export default function MessagesPage() {
     return () => {
       active = false;
     };
-  }, [loadConversations]);
+  }, [initialConversationIdFromUrl, loadConversations]);
 
   useEffect(() => {
     const resolveSenderIsMe = (message: {
