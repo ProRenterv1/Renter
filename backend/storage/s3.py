@@ -55,6 +55,16 @@ def presign_put(
     content_md5: Optional[str] = None,
     size_hint: Optional[int] = None,
 ) -> Dict:
+    if not getattr(settings, "USE_S3", False):
+        # In local/test environments without S3, return a dummy presign target.
+        headers = {"Content-Type": content_type}
+        if content_md5:
+            headers["Content-MD5"] = content_md5
+        return {
+            "upload_url": f"http://example.com/mock-upload/{key}",
+            "headers": headers,
+        }
+
     max_size = getattr(settings, "S3_MAX_UPLOAD_BYTES", None)
     if size_hint is not None and max_size is not None and size_hint > max_size:
         raise ValueError("Upload exceeds the maximum allowed size.")
@@ -113,3 +123,28 @@ def public_url(key: str) -> str:
 
 def guess_content_type(filename: str) -> str:
     return mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+
+def presign_get(
+    key: str, *, expires_in: int = 600, response_content_type: Optional[str] = None
+) -> Dict:
+    """
+    Return a presigned GET URL for the given object key.
+    """
+    if not getattr(settings, "USE_S3", False):
+        url = f"http://example.com/mock-download/{key}"
+        return {"url": url, "headers": {}}
+
+    params = {
+        "Bucket": settings.AWS_STORAGE_BUCKET_NAME,
+        "Key": key,
+    }
+    if response_content_type:
+        params["ResponseContentType"] = response_content_type
+
+    url = _client().generate_presigned_url(
+        ClientMethod="get_object",
+        Params=params,
+        ExpiresIn=expires_in,
+    )
+    return {"url": url, "headers": {}}

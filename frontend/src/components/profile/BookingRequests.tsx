@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
@@ -35,7 +35,7 @@ import {
 } from "../ui/dialog";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { AvatarFallback, AvatarImage } from "../ui/avatar";
-import { Star } from "lucide-react";
+import { Star, X } from "lucide-react";
 import { format } from "date-fns";
 import { AuthStore } from "@/lib/auth";
 import ChatMessages from "@/components/chat/Messages";
@@ -43,17 +43,22 @@ import {
   bookingsAPI,
   deriveDisplayRentalStatus,
   listingsAPI,
+  disputesAPI,
   type Booking,
   type BookingTotals,
+  type DisputeCase,
+  type DisputeStatus,
   type Listing,
 } from "@/lib/api";
 import { fetchConversations, type ConversationSummary } from "@/lib/chat";
 import { formatCurrency } from "@/lib/utils";
 import { PolicyConfirmationModal } from "../PolicyConfirmationModal";
 import { VerifiedAvatar } from "@/components/VerifiedAvatar";
+import { ReviewModal } from "@/components/reviews/ReviewModal";
+import { startEventStream, type EventEnvelope } from "@/lib/events";
+import { DisputeWizard } from "@/components/disputes/DisputeWizard";
 
-type RequestStatus = "pending" | "approved" | "denied";
-type StatusFilter = "all" | RequestStatus;
+type StatusFilter = "all" | Booking["status"];
 
 interface BookingRequestRow {
   booking: Booking;
@@ -65,22 +70,23 @@ export interface BookingRequestsProps {
   onPendingCountChange?: (count: number) => void;
 }
 
-const requestStatusLabel: Record<RequestStatus, string> = {
-  pending: "pending",
-  approved: "approved",
-  denied: "denied",
-};
+const activeDisputeStatuses: DisputeStatus[] = [
+  "open",
+  "intake_missing_evidence",
+  "awaiting_rebuttal",
+  "under_review",
+];
 
-const bookingStatusToRequestStatus = (status: Booking["status"]): RequestStatus => {
+const formatDisputeStatusLabel = (status: DisputeStatus): string => {
   switch (status) {
-    case "confirmed":
-    case "completed":
-    case "paid":
-      return "approved";
-    case "canceled":
-      return "denied";
+    case "awaiting_rebuttal":
+      return "Dispute: Awaiting other party";
+    case "under_review":
+      return "Dispute: Under review";
+    case "intake_missing_evidence":
+      return "Dispute: Open (needs evidence)";
     default:
-      return "pending";
+      return "Dispute: Open";
   }
 };
 
@@ -95,12 +101,54 @@ const canConfirmPickup = (booking: Booking): boolean => {
   return Boolean(booking.before_photos_uploaded_at);
 };
 
+type BookingWithReturnFields = Booking & {
+  returned_by_renter_at?: string | null;
+  return_confirmed_at?: string | null;
+  after_photos_uploaded_at?: string | null;
+};
+
+const resolveRenterDisplayName = (row: BookingRequestRow | null | undefined): string => {
+  if (!row) return "Renter";
+  const renterFirstName = row.booking.renter_first_name?.trim() ?? "";
+  const renterLastName = row.booking.renter_last_name?.trim() ?? "";
+  const renterUsername = row.booking.renter_username ?? "";
+  return (
+    [renterFirstName, renterLastName].filter(Boolean).join(" ") ||
+    renterUsername ||
+    (row.booking.renter ? `Renter #${row.booking.renter}` : "Renter")
+  );
+};
+
+const isReturnPending = (booking: BookingWithReturnFields): boolean => {
+  return (
+    booking.status === "paid" &&
+    !!booking.returned_by_renter_at &&
+    !booking.return_confirmed_at &&
+    hasReachedReturnWindow(booking.end_date)
+  );
+};
+
 const parseLocalDate = (isoDate: string) => {
   const [year, month, day] = isoDate.split("-").map(Number);
   if (!year || !month || !day) {
     throw new Error("invalid date");
   }
   return new Date(year, month - 1, day);
+};
+
+const startOfToday = () => {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+};
+
+const hasReachedReturnWindow = (endDateRaw: string): boolean => {
+  try {
+    const endDate = parseLocalDate(endDateRaw);
+    endDate.setDate(endDate.getDate() - 1);
+    return startOfToday().getTime() >= endDate.getTime();
+  } catch {
+    return false;
+  }
 };
 
 const formatDateRange = (start: string, end: string) => {
@@ -148,8 +196,27 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     loading: boolean;
   } | null>(null);
   const [confirmingPickupId, setConfirmingPickupId] = useState<number | null>(null);
+  const [afterPhotosTarget, setAfterPhotosTarget] = useState<BookingRequestRow | null>(null);
+  const [afterPhotosFiles, setAfterPhotosFiles] = useState<{ file: File; previewUrl: string }[]>([]);
+  const [afterUploadLoading, setAfterUploadLoading] = useState(false);
+  const [afterUploadError, setAfterUploadError] = useState<string | null>(null);
   const [chatConversations, setChatConversations] = useState<ConversationSummary[]>([]);
   const [chatConversationId, setChatConversationId] = useState<number | null>(null);
+  const [ownerReviewTarget, setOwnerReviewTarget] = useState<{
+    bookingId: number;
+    renterName: string;
+    renterId: number | null;
+  } | null>(null);
+  const [disputeWizardOpen, setDisputeWizardOpen] = useState(false);
+  const [disputeContext, setDisputeContext] = useState<{
+    bookingId: number;
+    toolName: string;
+    rentalPeriod: string;
+  } | null>(null);
+  const [disputesByBookingId, setDisputesByBookingId] = useState<Record<number, DisputeCase | null>>({});
+  const isMountedRef = useRef(true);
+  const requestsRef = useRef<BookingRequestRow[]>([]);
+  const afterFileInputRef = useRef<HTMLInputElement | null>(null);
   const currentUserId = AuthStore.getCurrentUser()?.id ?? null;
   const navigate = useNavigate();
   const selectedTotals = selectedRequest?.booking.totals ?? null;
@@ -186,6 +253,50 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     void loadChatConversations();
   }, [loadChatConversations]);
 
+  const reloadRequests = useCallback(async () => {
+    if (!currentUserId) {
+      setRequests([]);
+      setError("Please sign in to see booking requests.");
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const [bookings, listingsResponse] = await Promise.all([
+        bookingsAPI.listMine(),
+        listingsAPI.mine(),
+      ]);
+      if (!isMountedRef.current) {
+        return;
+      }
+      const listingEntries = (listingsResponse.results ?? []).map((listing) => [listing.id, listing]);
+      const listingMap = new Map<number, Listing>(listingEntries);
+      const ownerBookings = bookings.filter((booking) => booking.owner === currentUserId);
+      const prepared: BookingRequestRow[] = ownerBookings.map((booking) => {
+        const listingInfo = listingMap.get(booking.listing);
+        return {
+          booking,
+          listing: listingInfo,
+          listingPhoto: listingInfo?.photos[0]?.url,
+          listingCity: listingInfo?.city ?? "",
+        };
+      });
+      setRequests(prepared);
+      setError(null);
+    } catch (err) {
+      if (!isMountedRef.current) {
+        return;
+      }
+      setError("Could not load booking requests. Please try again.");
+    } finally {
+      if (!isMountedRef.current) {
+        return;
+      }
+      setLoading(false);
+    }
+  }, [currentUserId]);
+
   const openChatForBooking = useCallback(
     async (bookingId: number) => {
       const existing = chatConversations.find((conv) => conv.booking_id === bookingId);
@@ -205,55 +316,106 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   );
 
   useEffect(() => {
-    let active = true;
+    void reloadRequests();
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, [reloadRequests]);
+
+  useEffect(() => {
+    requestsRef.current = requests;
+  }, [requests]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadDisputes = async () => {
+      const disputed = requests.filter((row) => row.booking.is_disputed);
+      if (!disputed.length) {
+        setDisputesByBookingId({});
+        return;
+      }
+      const entries = await Promise.all(
+        disputed.map(async (row) => {
+          try {
+            const cases = await disputesAPI.list({ bookingId: row.booking.id });
+            const active =
+              cases.find((item) => activeDisputeStatuses.includes(item.status)) ||
+              cases[0] ||
+              null;
+            return [row.booking.id, active] as const;
+          } catch {
+            return [row.booking.id, null] as const;
+          }
+        }),
+      );
+      if (!isMountedRef.current || cancelled) {
+        return;
+      }
+      setDisputesByBookingId(Object.fromEntries(entries));
+    };
+    void loadDisputes();
+    return () => {
+      cancelled = true;
+    };
+  }, [requests]);
+
+  useEffect(() => {
+    return () => {
+      afterPhotosFiles.forEach((upload) => URL.revokeObjectURL(upload.previewUrl));
+    };
+  }, [afterPhotosFiles]);
+
+  useEffect(() => {
     if (!currentUserId) {
-      setError("Please sign in to see booking requests.");
-      setLoading(false);
       return;
     }
-    setLoading(true);
-    const loadData = async () => {
-      try {
-        const [bookings, listingsResponse] = await Promise.all([
-          bookingsAPI.listMine(),
-          listingsAPI.mine(),
-        ]);
-        if (!active) return;
-        const listingEntries = (listingsResponse.results ?? []).map((listing) => [listing.id, listing]);
-        const listingMap = new Map<number, Listing>(listingEntries);
-        const ownerBookings = bookings.filter((booking) => booking.owner === currentUserId);
-        const prepared: BookingRequestRow[] = ownerBookings.map((booking) => {
-          const listingInfo = listingMap.get(booking.listing);
-          return {
-            booking,
-            listing: listingInfo,
-            listingPhoto: listingInfo?.photos[0]?.url,
-            listingCity: listingInfo?.city ?? "",
-          };
-        });
-        setRequests(prepared);
-        setError(null);
-      } catch (err) {
-        if (!active) return;
-        setError("Could not load booking requests. Please try again.");
-      } finally {
-        if (active) {
-          setLoading(false);
+    const handle = startEventStream({
+      onEvents: (events) => {
+        let shouldReload = false;
+        for (const event of events as EventEnvelope<any>[]) {
+          if (
+            event.type === "booking:status_changed" ||
+            event.type === "booking:return_requested"
+          ) {
+            shouldReload = true;
+          }
+          if (event.type === "booking:review_invite") {
+            shouldReload = true;
+            const payload = event.payload as {
+              booking_id: number;
+              owner_id: number;
+              renter_id: number;
+            };
+            if (payload.owner_id === currentUserId) {
+              const row = requestsRef.current.find(
+                (entry) => entry.booking.id === payload.booking_id,
+              );
+              const renterName =
+                (row && resolveRenterDisplayName(row)) || `Renter #${payload.renter_id}`;
+              setOwnerReviewTarget({
+                bookingId: payload.booking_id,
+                renterName,
+                renterId: row?.booking.renter ?? payload.renter_id ?? null,
+              });
+            }
+          }
         }
-      }
-    };
+        if (shouldReload) {
+          void reloadRequests();
+        }
+      },
+    });
 
-    loadData();
     return () => {
-      active = false;
+      handle.stop();
     };
-  }, [currentUserId]);
+  }, [currentUserId, reloadRequests]);
 
   const filteredRequests = useMemo(() => {
     if (statusFilter === "all") {
       return requests;
     }
-    return requests.filter((row) => bookingStatusToRequestStatus(row.booking.status) === statusFilter);
+    return requests.filter((row) => row.booking.status === statusFilter);
   }, [requests, statusFilter]);
 
   const selectedRenterDetails = useMemo(() => {
@@ -263,10 +425,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     const renterFirstName = selectedRequest.booking.renter_first_name?.trim() ?? "";
     const renterLastName = selectedRequest.booking.renter_last_name?.trim() ?? "";
     const renterUsername = selectedRequest.booking.renter_username ?? "";
-    const renterDisplayName =
-      [renterFirstName, renterLastName].filter(Boolean).join(" ") ||
-      renterUsername ||
-      `Renter #${selectedRequest.booking.renter}`;
+    const renterDisplayName = resolveRenterDisplayName(selectedRequest);
     const renterAvatarUrl =
       selectedRequest.booking.renter_avatar_url ||
       `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(renterDisplayName)}`;
@@ -293,6 +452,15 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     }
     const renterId = selectedRequest.booking.renter;
     setSelectedRequest(null);
+    navigate(`/users/${renterId}`);
+  };
+
+  const handleReviewProfileView = () => {
+    if (!ownerReviewTarget?.renterId) {
+      return;
+    }
+    const renterId = ownerReviewTarget.renterId;
+    setOwnerReviewTarget(null);
     navigate(`/users/${renterId}`);
   };
 
@@ -374,6 +542,114 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     }
   };
 
+  const resetAfterPhotosState = () => {
+    setAfterPhotosFiles((prev) => {
+      prev.forEach((upload) => URL.revokeObjectURL(upload.previewUrl));
+      return [];
+    });
+    setAfterUploadError(null);
+    setAfterUploadLoading(false);
+  };
+
+  const openAfterPhotosDialog = (row: BookingRequestRow) => {
+    resetAfterPhotosState();
+    setAfterPhotosTarget(row);
+  };
+
+  const closeAfterPhotosDialog = () => {
+    resetAfterPhotosState();
+    setAfterPhotosTarget(null);
+  };
+
+  const handleAfterPhotoInput = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files) {
+      return;
+    }
+    const uploads = Array.from(files).map((file) => ({
+      file,
+      previewUrl: URL.createObjectURL(file),
+    }));
+    setAfterPhotosFiles((prev) => [...prev, ...uploads]);
+    setAfterUploadError(null);
+    event.target.value = "";
+  };
+
+  const removeAfterPhoto = (index: number) => {
+    setAfterPhotosFiles((prev) => {
+      const next = [...prev];
+      const [removed] = next.splice(index, 1);
+      if (removed) {
+        URL.revokeObjectURL(removed.previewUrl);
+      }
+      return next;
+    });
+  };
+
+  const handleAfterPhotosSubmit = async () => {
+    if (!afterPhotosTarget) {
+      return;
+    }
+    if (afterPhotosFiles.length === 0) {
+      setAfterUploadError("Please select at least one photo before continuing.");
+      return;
+    }
+    setAfterUploadError(null);
+    setAfterUploadLoading(true);
+    const bookingId = afterPhotosTarget.booking.id;
+    try {
+      const marked = await bookingsAPI.ownerMarkReturned(bookingId);
+      updateBookingInState(marked);
+      for (const upload of afterPhotosFiles) {
+        const presign = await bookingsAPI.afterPhotosPresign(bookingId, {
+          filename: upload.file.name,
+          content_type: upload.file.type || "application/octet-stream",
+          size: upload.file.size,
+        });
+        const uploadHeaders: Record<string, string> = {
+          ...presign.headers,
+        };
+        if (upload.file.type) {
+          uploadHeaders["Content-Type"] = upload.file.type;
+        }
+        const uploadResponse = await fetch(presign.upload_url, {
+          method: "PUT",
+          headers: uploadHeaders,
+          body: upload.file,
+        });
+        if (!uploadResponse.ok) {
+          throw new Error("Upload failed");
+        }
+        const etagHeader =
+          uploadResponse.headers.get("ETag") ?? uploadResponse.headers.get("etag");
+        if (!etagHeader) {
+          throw new Error("Upload verification failed");
+        }
+        const cleanEtag = etagHeader.replace(/"/g, "");
+        await bookingsAPI.afterPhotosComplete(bookingId, {
+          key: presign.key,
+          etag: cleanEtag,
+          filename: upload.file.name,
+          content_type: upload.file.type || "application/octet-stream",
+          size: upload.file.size,
+        });
+      }
+      const renterName = resolveRenterDisplayName(afterPhotosTarget);
+      const renterId = afterPhotosTarget?.booking.renter ?? null;
+      closeAfterPhotosDialog();
+      toast.success("After-photos uploaded. Booking will be completed shortly.");
+      if (renterName) {
+        setOwnerReviewTarget({ bookingId, renterName, renterId });
+      }
+      void reloadRequests();
+    } catch (err) {
+      console.error("after photos upload failed", err);
+      setAfterUploadError("Failed to upload photos. Please try again.");
+    } finally {
+      setAfterUploadLoading(false);
+    }
+  };
+
   const openPolicyModalForApproval = () => {
     if (!selectedRequest) return;
     setPendingApprovalId(selectedRequest.booking.id);
@@ -409,10 +685,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   }, [onPendingCountChange]);
 
   const pendingRequests = useMemo(
-    () =>
-      requests.filter(
-        (row) => bookingStatusToRequestStatus(row.booking.status) === "pending",
-      ).length,
+    () => requests.filter((row) => row.booking.status === "requested").length,
     [requests],
   );
 
@@ -423,10 +696,13 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   }, [pendingRequests, onPendingCountChange]);
 
   const renderDialogActions = (booking: Booking) => {
-    const requestStatus = bookingStatusToRequestStatus(booking.status);
-    const canCancelAfterApproval = booking.status === "confirmed" || booking.status === "paid";
+    const requestStatusLabel = deriveDisplayRentalStatus(booking);
+    const requestStatus = (booking.status || "").toLowerCase();
+    const isPendingRequest = requestStatus === "requested";
+    const canCancelAfterApproval = requestStatus === "confirmed" || requestStatus === "paid";
+    const returnPending = isReturnPending(booking as BookingWithReturnFields);
 
-    if (requestStatus === "pending") {
+    if (isPendingRequest) {
       return (
         <DialogFooter className="gap-2 sm:gap-0">
           <Button
@@ -443,6 +719,27 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
             disabled={actionLoading}
           >
             {actionLoading ? "Processing..." : "Approve Booking"}
+          </Button>
+        </DialogFooter>
+      );
+    }
+
+    if (returnPending) {
+      return (
+        <DialogFooter className="w-full flex-col sm:flex-row sm:items-center gap-3">
+          <div className="flex-1 text-sm text-muted-foreground text-center sm:text-left">
+            Renter marked this item as returned. Upload after-photos to finalize.
+          </div>
+          <Button
+            className="rounded-full"
+            onClick={() => {
+              if (selectedRequest) {
+                openAfterPhotosDialog(selectedRequest);
+              }
+            }}
+            disabled={afterUploadLoading}
+          >
+            {afterUploadLoading ? "Uploading..." : "Mark returned"}
           </Button>
         </DialogFooter>
       );
@@ -476,12 +773,8 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
           <div className="flex-1 text-sm text-muted-foreground text-center sm:text-left">
             {statusMessage}
           </div>
-          <Button
-            variant="outline"
-            onClick={() => openOwnerCancelDialog(booking)}
-            className="rounded-full"
-          >
-            Cancel Booking
+          <Button variant="outline" className="rounded-full">
+            Report an issue
           </Button>
         </DialogFooter>
       );
@@ -489,9 +782,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
 
     return (
       <div className="text-center py-2">
-        <p className="text-muted-foreground">
-          This request has been {requestStatusLabel[requestStatus]}.
-        </p>
+        <p className="text-muted-foreground">This request is {requestStatusLabel}.</p>
       </div>
     );
   };
@@ -511,10 +802,12 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
             <SelectValue placeholder="Status" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Status</SelectItem>
-            <SelectItem value="pending">Pending</SelectItem>
-            <SelectItem value="approved">Approved</SelectItem>
-            <SelectItem value="denied">Denied</SelectItem>
+            <SelectItem value="all">All Statuses</SelectItem>
+            <SelectItem value="requested">Requested</SelectItem>
+            <SelectItem value="confirmed">Confirmed</SelectItem>
+            <SelectItem value="paid">Paid</SelectItem>
+            <SelectItem value="completed">Completed</SelectItem>
+            <SelectItem value="canceled">Canceled</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -590,13 +883,24 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
               )}
               {!loading &&
                 filteredRequests.map((row) => {
-                  const status = bookingStatusToRequestStatus(row.booking.status);
+                  const statusLabel = deriveDisplayRentalStatus(row.booking);
                   const totals: BookingTotals = row.booking.totals ?? {};
                   const amountRaw = Number(
                     totals.owner_payout ?? totals.rental_subtotal ?? totals.total_charge ?? 0,
                   );
                   const amountLabel = formatCurrency(amountRaw, "CAD");
                   const dateRange = formatDateRange(row.booking.start_date, row.booking.end_date);
+                  const returnPending = isReturnPending(row.booking as BookingWithReturnFields);
+                  const disputeWindowExpiresAt = row.booking.dispute_window_expires_at
+                    ? new Date(row.booking.dispute_window_expires_at)
+                    : null;
+                  const now = new Date();
+                  const withinDisputeWindow = disputeWindowExpiresAt
+                    ? now < disputeWindowExpiresAt
+                    : false;
+                  const showDisputeButton =
+                    withinDisputeWindow &&
+                    (row.booking.status === "completed" || row.booking.status === "canceled");
 
                   return (
                     <TableRow key={row.booking.id} className="hover:bg-muted/50">
@@ -614,7 +918,18 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                         </div>
                       </TableCell>
                       <TableCell>{dateRange}</TableCell>
-                      <TableCell>{getBookingStatusBadge(row.booking)}</TableCell>
+                      <TableCell>
+                        {disputesByBookingId[row.booking.id] ? (
+                          <Badge variant="outline" className="text-xs font-normal">
+                            {formatDisputeStatusLabel(
+                              (disputesByBookingId[row.booking.id]?.status ||
+                                "open") as DisputeStatus,
+                            )}
+                          </Badge>
+                        ) : (
+                          getBookingStatusBadge(row.booking)
+                        )}
+                      </TableCell>
                       <TableCell className="text-right text-green-600">{amountLabel}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-2">
@@ -628,6 +943,23 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                           >
                             Chat
                           </Button>
+                          {showDisputeButton && !disputesByBookingId[row.booking.id] && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setDisputeContext({
+                                  bookingId: row.booking.id,
+                                  toolName: row.booking.listing_title,
+                                  rentalPeriod: dateRange,
+                                });
+                                setDisputeWizardOpen(true);
+                              }}
+                            >
+                              Report issue
+                            </Button>
+                          )}
                           {canConfirmPickup(row.booking) && (
                             <Button
                               size="sm"
@@ -640,6 +972,24 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                               {confirmingPickupId === row.booking.id
                                 ? "Confirming..."
                                 : "Confirm pickup"}
+                            </Button>
+                          )}
+                          {returnPending && (
+                            <Button
+                              size="sm"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openAfterPhotosDialog(row);
+                              }}
+                              disabled={
+                                afterUploadLoading &&
+                                afterPhotosTarget?.booking.id === row.booking.id
+                              }
+                            >
+                              {afterUploadLoading &&
+                              afterPhotosTarget?.booking.id === row.booking.id
+                                ? "Preparing..."
+                                : "Mark returned"}
                             </Button>
                           )}
                           <Button
@@ -661,6 +1011,20 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
           </Table>
         </CardContent>
       </Card>
+
+      <DisputeWizard
+        open={disputeWizardOpen}
+        onOpenChange={(open) => {
+          setDisputeWizardOpen(open);
+          if (!open) {
+            setDisputeContext(null);
+          }
+        }}
+        bookingId={disputeContext?.bookingId ?? null}
+        role="owner"
+        toolName={disputeContext?.toolName}
+        rentalPeriodLabel={disputeContext?.rentalPeriod}
+      />
 
       <Dialog open={Boolean(selectedRequest)} onOpenChange={(open) => !open && setSelectedRequest(null)}>
         <DialogContent className="sm:max-w-lg">
@@ -775,10 +1139,100 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                 </div>
               </div>
 
-              {renderDialogActions(selectedRequest.booking)}
+          {renderDialogActions(selectedRequest.booking)}
 
             </>
           )}
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={Boolean(afterPhotosTarget)}
+        onOpenChange={(open) => {
+          if (!open && !afterUploadLoading) {
+            closeAfterPhotosDialog();
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Mark returned</DialogTitle>
+            <DialogDescription>
+              Upload after-photos to finish this booking.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {afterPhotosTarget && (
+              <p className="text-sm text-muted-foreground">
+                {afterPhotosTarget.booking.listing_title} ·{" "}
+                {formatDateRange(
+                  afterPhotosTarget.booking.start_date,
+                  afterPhotosTarget.booking.end_date,
+                )}
+              </p>
+            )}
+            <div
+              className="border-2 border-dashed rounded-lg p-6 text-center cursor-pointer hover:border-primary transition-colors"
+              onClick={() => afterFileInputRef.current?.click()}
+            >
+              <p className="font-medium">Click to upload or drag and drop</p>
+              <p className="text-sm text-muted-foreground">
+                PNG, JPG or WEBP (max. 15MB each)
+              </p>
+              <input
+                ref={afterFileInputRef}
+                type="file"
+                multiple
+                accept="image/*"
+                className="hidden"
+                onChange={handleAfterPhotoInput}
+                disabled={afterUploadLoading}
+              />
+            </div>
+
+            {afterPhotosFiles.length > 0 && (
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                {afterPhotosFiles.map((upload, index) => (
+                  <div
+                    key={`${upload.file.name}-${index}`}
+                    className="relative aspect-square rounded-lg overflow-hidden bg-muted"
+                  >
+                    <img
+                      src={upload.previewUrl}
+                      alt={`After photo ${index + 1}`}
+                      className="w-full h-full object-cover"
+                    />
+                    <button
+                      type="button"
+                      className="absolute top-2 right-2 w-7 h-7 rounded-full bg-destructive text-white flex items-center justify-center"
+                      onClick={() => removeAfterPhoto(index)}
+                      disabled={afterUploadLoading}
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {afterUploadError && (
+              <p className="text-sm text-destructive">{afterUploadError}</p>
+            )}
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={closeAfterPhotosDialog}
+              disabled={afterUploadLoading}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAfterPhotosSubmit}
+              disabled={afterUploadLoading || afterPhotosFiles.length === 0}
+            >
+              {afterUploadLoading ? "Uploading..." : "Upload & finish"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
       <Dialog
@@ -793,6 +1247,17 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
           {chatConversationId && <ChatMessages conversationId={chatConversationId} />}
         </DialogContent>
       </Dialog>
+      <ReviewModal
+        open={ownerReviewTarget !== null}
+        role="owner_to_renter"
+        bookingId={ownerReviewTarget?.bookingId ?? 0}
+        otherPartyName={ownerReviewTarget?.renterName ?? ""}
+        onClose={() => setOwnerReviewTarget(null)}
+        onViewProfile={ownerReviewTarget?.renterId ? handleReviewProfileView : undefined}
+        onSubmitted={() => {
+          toast.success("Thanks for reviewing your renter.");
+        }}
+      />
     </div>
     <PolicyConfirmationModal
       open={policyModalOpen}

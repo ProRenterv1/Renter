@@ -23,6 +23,7 @@ from .serializers import (
     ContactVerificationRequestSerializer,
     ContactVerificationVerifySerializer,
     FlexibleTokenObtainPairSerializer,
+    GoogleLoginSerializer,
     LoginEventSerializer,
     PasswordChangeSerializer,
     PasswordResetCompleteSerializer,
@@ -264,6 +265,42 @@ class FlexibleTokenObtainPairView(TokenObtainPairView):
         ):
             return TwoFactorChallenge.Channel.EMAIL, user.email
         return None, None
+
+
+class GoogleLoginView(generics.GenericAPIView):
+    """Login endpoint that exchanges a Google ID token for a JWT pair."""
+
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+    serializer_class = GoogleLoginSerializer
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = serializer.validated_data["user"]
+        channel, contact = FlexibleTokenObtainPairView._select_two_factor_channel(user)
+        if channel and contact:
+            challenge = _issue_two_factor_challenge(user, channel, contact)
+            resend_available_at = challenge.last_sent_at + TWO_FACTOR_RESEND_COOLDOWN
+            return Response(
+                {
+                    "requires_2fa": True,
+                    "challenge_id": challenge.id,
+                    "channel": channel,
+                    "contact_hint": _mask_contact(contact, channel),
+                    "resend_available_at": resend_available_at.isoformat(),
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        refresh = RefreshToken.for_user(user)
+        access = refresh.access_token
+        audit_login_and_alert(request, user)
+        return Response(
+            {"refresh": str(refresh), "access": str(access)},
+            status=status.HTTP_200_OK,
+        )
 
 
 class TwoFactorLoginVerifyView(generics.GenericAPIView):
@@ -569,6 +606,18 @@ class ContactVerificationVerifyView(generics.GenericAPIView):
             if not user.phone_verified:
                 user.phone_verified = True
                 user.save(update_fields=["phone_verified"])
+                if user.can_list:
+                    try:
+                        from payments.stripe_api import (
+                            StripeConfigurationError,
+                            StripePaymentError,
+                            StripeTransientError,
+                            sync_connect_account_personal_info,
+                        )
+
+                        sync_connect_account_personal_info(user)
+                    except (StripeConfigurationError, StripeTransientError, StripePaymentError):
+                        logger.warning("connect_sync_phone_failed", extra={"user_id": user.id})
 
         profile = ProfileSerializer(user, context={"request": request}).data
         return Response(

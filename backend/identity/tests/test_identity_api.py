@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from django.utils import timezone
 from rest_framework.test import APIClient
 
-from identity import api as identity_api
-from identity.models import IdentityVerification
+from identity.models import is_user_identity_verified
+from payments.models import OwnerPayoutAccount
 
 pytestmark = pytest.mark.django_db
 
@@ -32,38 +31,18 @@ def test_identity_endpoints_require_authentication():
     assert status_resp.status_code == 401
 
 
-def test_identity_start_creates_verification_session(monkeypatch, renter_user, settings):
-    settings.STRIPE_SECRET_KEY = "sk_test_identity"
-    captured = {}
-
-    def fake_create(**kwargs):
-        captured["payload"] = kwargs
-        return {
-            "id": "vs_test_123",
-            "client_secret": "cs_test_123",
-            "status": "requires_input",
-        }
-
-    monkeypatch.setattr(
-        identity_api.stripe.identity.VerificationSession,
-        "create",
-        staticmethod(fake_create),
-    )
-
+def test_identity_start_returns_connect_message(renter_user):
+    OwnerPayoutAccount.objects.filter(user=renter_user).delete()
     client = auth_client(renter_user)
     resp = client.post("/api/identity/start/")
 
-    assert resp.status_code == 200, resp.data
-    assert resp.data["session_id"] == "vs_test_123"
-    assert resp.data["client_secret"] == "cs_test_123"
-    assert captured["payload"]["metadata"]["user_id"] == str(renter_user.id)
-    verification = IdentityVerification.objects.get(session_id="vs_test_123")
-    assert verification.user_id == renter_user.id
-    assert verification.status == IdentityVerification.Status.PENDING
+    assert resp.status_code == 400
+    assert "Connect onboarding" in resp.data["detail"]
+    assert resp.data["already_verified"] is False
 
 
-def test_identity_status_reflects_verification(renter_user):
-    IdentityVerification.objects.filter(user=renter_user).delete()
+def test_identity_status_uses_connect_account(renter_user):
+    OwnerPayoutAccount.objects.filter(user=renter_user).delete()
     client = auth_client(renter_user)
 
     resp = client.get("/api/identity/status/")
@@ -71,16 +50,18 @@ def test_identity_status_reflects_verification(renter_user):
     assert resp.data["verified"] is False
     assert resp.data["latest"] is None
 
-    verification = IdentityVerification.objects.create(
+    OwnerPayoutAccount.objects.create(
         user=renter_user,
-        session_id="vs_verified",
-        status=IdentityVerification.Status.VERIFIED,
-        verified_at=timezone.now(),
+        stripe_account_id="acct_identity_123",
+        is_fully_onboarded=True,
+        charges_enabled=True,
+        payouts_enabled=True,
     )
 
     resp = client.get("/api/identity/status/")
     assert resp.status_code == 200
     assert resp.data["verified"] is True
-    assert resp.data["latest"]["status"] == IdentityVerification.Status.VERIFIED
-    assert resp.data["latest"]["session_id"] == "vs_verified"
-    assert resp.data["latest"]["verified_at"] == verification.verified_at.isoformat()
+    assert resp.data["latest"]["status"] == "verified"
+    assert resp.data["latest"]["session_id"] == "acct_identity_123"
+    renter_user.refresh_from_db()
+    assert is_user_identity_verified(renter_user) is True

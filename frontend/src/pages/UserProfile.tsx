@@ -3,7 +3,6 @@ import { useLocation } from "react-router-dom";
 import { Header } from "../components/Header";
 import {
   User,
-  Lock,
   Package,
   PlusCircle,
   BarChart3,
@@ -31,14 +30,16 @@ import {
   authAPI,
   bookingsAPI,
   identityAPI,
+  disputesAPI,
   type IdentityVerificationStatus,
   type Listing,
 } from "@/lib/api";
 import { VerifiedAvatar } from "@/components/VerifiedAvatar";
+import { DisputesPanel, countActiveDisputes } from "@/components/disputes/DisputesPanel";
+import { Separator } from "@/components/ui/separator";
 
 const TAB_KEYS = [
   "personal",
-  "security",
   "listings",
   "add-listing",
   "rentals",
@@ -46,6 +47,7 @@ const TAB_KEYS = [
   "statistics",
   "payments",
   "booking-requests",
+  "disputes",
 ] as const;
 
 type Tab = (typeof TAB_KEYS)[number];
@@ -69,6 +71,7 @@ export default function UserProfile() {
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [pendingBookingCount, setPendingBookingCount] = useState(0);
   const [unpaidRentalsCount, setUnpaidRentalsCount] = useState(0);
+  const [activeDisputeCount, setActiveDisputeCount] = useState(0);
   const [identityStatus, setIdentityStatus] = useState<IdentityVerificationStatus | "none">(
     "none",
   );
@@ -130,6 +133,37 @@ export default function UserProfile() {
 
     return () => {
       subscribed = false;
+      window.clearInterval(intervalId);
+    };
+  }, [profile?.id]);
+
+  useEffect(() => {
+    if (!profile?.id) {
+      setActiveDisputeCount(0);
+      return;
+    }
+
+    let cancelled = false;
+    const POLL_INTERVAL_MS = 15000;
+
+    const fetchActiveDisputes = async () => {
+      try {
+        const data = await disputesAPI.list();
+        if (cancelled) return;
+        const nextCount = countActiveDisputes(data || []);
+        setActiveDisputeCount((current) => (current === nextCount ? current : nextCount));
+      } catch (error) {
+        if (import.meta.env.DEV) {
+          console.warn("Failed to fetch dispute sidebar counter", error);
+        }
+      }
+    };
+
+    void fetchActiveDisputes();
+    const intervalId = window.setInterval(fetchActiveDisputes, POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
       window.clearInterval(intervalId);
     };
   }, [profile?.id]);
@@ -243,7 +277,6 @@ export default function UserProfile() {
 
   const tabs = [
     { id: "personal" as Tab, label: "Personal Info", icon: User },
-    { id: "security" as Tab, label: "Security", icon: Lock },
     { id: "listings" as Tab, label: "Your Listings", icon: Package },
     { id: "add-listing" as Tab, label: "Add Listing", icon: PlusCircle },
     { id: "booking-requests" as Tab, label: "Booking Requests", icon: Inbox },
@@ -251,6 +284,7 @@ export default function UserProfile() {
     { id: "rental-history" as Tab, label: "Recent Rentals", icon: History },
     { id: "statistics" as Tab, label: "Statistics", icon: BarChart3 },
     { id: "payments" as Tab, label: "Payments", icon: CreditCard },
+    { id: "disputes" as Tab, label: "Disputes", icon: Shield },
   ];
 
   return (
@@ -344,6 +378,14 @@ export default function UserProfile() {
                           {unpaidRentalsCount > 99 ? "99+" : unpaidRentalsCount}
                         </span>
                       )}
+                      {tab.id === "disputes" && activeDisputeCount > 0 && (
+                        <span
+                          className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold leading-none text-white"
+                          style={{ backgroundColor: "#5B8CA6" }}
+                        >
+                          {activeDisputeCount > 99 ? "99+" : activeDisputeCount}
+                        </span>
+                      )}
                     </button>
                   </li>
                 );
@@ -355,9 +397,13 @@ export default function UserProfile() {
         {/* Main Content */}
         <main className="flex-1 p-6 lg:p-8 lg:ml-64">
           <div className="max-w-5xl mx-auto">
-            {activeTab === "personal" && <PersonalInfo onProfileUpdate={setProfile} />}
-            {activeTab === "security" && (
-              <Security onIdentityStatusChange={handleIdentityStatusChange} />
+            {activeTab === "personal" && (
+              <div className="space-y-8">
+                <PersonalInfo onProfileUpdate={setProfile} />
+                <Separator />
+                {/* Security settings relocated into Personal Info tab */}
+                <Security onIdentityStatusChange={handleIdentityStatusChange} />
+              </div>
             )}
             {activeTab === "listings" &&
               (listingBeingEdited ? (
@@ -387,6 +433,7 @@ export default function UserProfile() {
             {activeTab === "booking-requests" && (
               <BookingRequests onPendingCountChange={setPendingBookingCount} />
             )}
+            {activeTab === "disputes" && <DisputesPanel onCountChange={setActiveDisputeCount} />}
           </div>
         </main>
       </div>

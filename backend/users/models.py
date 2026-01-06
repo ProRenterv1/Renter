@@ -66,6 +66,9 @@ class User(AbstractUser):
         default="",
         help_text="Stripe Customer ID for renter payments.",
     )
+    rating = models.FloatField(null=True, blank=True)
+    review_count = models.PositiveIntegerField(default=0)
+    birth_date = models.DateField(null=True, blank=True, help_text="Optional birth date for KYC.")
 
     def is_owner(self) -> bool:
         return bool(self.can_list)
@@ -107,6 +110,40 @@ class User(AbstractUser):
     @property
     def avatar_uploaded(self) -> bool:
         return bool(self.avatar)
+
+
+class SocialIdentity(models.Model):
+    """Link external auth providers to local users."""
+
+    class Provider(models.TextChoices):
+        GOOGLE = "google", "Google"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="social_identities",
+        on_delete=models.CASCADE,
+    )
+    provider = models.CharField(max_length=32, choices=Provider.choices)
+    provider_user_id = models.CharField(max_length=255)
+    email = models.EmailField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("provider", "provider_user_id"),
+                name="uniq_social_provider_user",
+            ),
+            models.UniqueConstraint(
+                fields=("user", "provider"),
+                name="uniq_social_user_provider",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.user} ({self.provider})"
 
 
 class LoginEvent(models.Model):

@@ -19,19 +19,32 @@ for possible_base in (BASE_DIR, BASE_DIR.parent):
 SECRET_KEY = env("DJANGO_SECRET_KEY", default="dev-secret")
 DEBUG = env.bool("DJANGO_DEBUG", default=True)
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1", "http://localhost:8000"])
+ENABLE_OPERATOR = env.bool("ENABLE_OPERATOR", default=False)
+OPS_ALLOWED_HOSTS = env.list("OPS_ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
+ENABLE_DJANGO_ADMIN = env.bool("ENABLE_DJANGO_ADMIN", default=False)
 
 INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "django_filters",
     "anymail",
+    "operator_core",
+    "operator_users",
+    "operator_listings",
+    "operator_bookings",
+    "operator_finance",
+    "operator_settings",
+    "operator_disputes",
+    "operator_promotions",
     "bookings.apps.BookingsConfig",
     "payments.apps.PaymentsConfig",
+    "disputes",
     "chat.apps.ChatConfig",
     "identity",
     "users",
     "listings",
     "storage",
     "notifications",
+    "reviews",
     "promotions.apps.PromotionsConfig",
     "django.contrib.admin",
     "django.contrib.auth",
@@ -48,6 +61,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "operator_core.middleware.OpsOnlyRouteGatingMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -89,21 +103,23 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
-    ),
-    "DEFAULT_FILTER_BACKENDS": [
-        "django_filters.rest_framework.DjangoFilterBackend",
-        "rest_framework.filters.SearchFilter",
-        "rest_framework.filters.OrderingFilter",
-    ],
-    "DEFAULT_THROTTLE_CLASSES":[
-        "rest_framework.throttling.AnonRateThrottle",
-        "rest_framework.throttling.UserRateThrottle",
-    ],
-    "DEFAULT_THROTTLE_RATES":{
-        "anon": "100/hour",
-        "user": "1000/hour",
-    }
+    "rest_framework_simplejwt.authentication.JWTAuthentication",
+),
+"DEFAULT_FILTER_BACKENDS": [
+    "django_filters.rest_framework.DjangoFilterBackend",
+    "rest_framework.filters.SearchFilter",
+    "rest_framework.filters.OrderingFilter",
+],
+"DEFAULT_THROTTLE_CLASSES":[
+    "rest_framework.throttling.AnonRateThrottle",
+    "rest_framework.throttling.UserRateThrottle",
+    "rest_framework.throttling.ScopedRateThrottle",
+],
+"DEFAULT_THROTTLE_RATES":{
+    "anon": "100/hour",
+    "user": "1000/hour",
+    "operator": "6000/hour",
+}
 }
 
 CORS_ALLOW_ALL_ORIGINS = True
@@ -118,6 +134,9 @@ SIMPLE_JWT = {
     "AUTH_COOKIE_HTTP_ONLY": True,
     "AUTH_COOKIE_SAMESITE": "Lax",
 }
+
+# --- OAuth ---
+GOOGLE_OAUTH_CLIENT_ID = env("GOOGLE_OAUTH_CLIENT_ID", default=None)
 
 # --- Email / SMS ---
 EMAIL_BACKEND = env(
@@ -192,7 +211,39 @@ CELERY_BEAT_SCHEDULE.update(
         "bookings_auto_expire_stale_daily": {
             "task": "bookings.auto_expire_stale_bookings",
             "schedule": crontab(hour=3, minute=0),
-        }
+        },
+        "bookings_auto_release_deposits_hourly": {
+            "task": "bookings.auto_release_deposits",
+            "schedule": crontab(minute=0),  # every hour on the hour
+        },
+        "bookings_authorize_start_day_deposits": {
+            "task": "bookings.enqueue_deposit_authorizations",
+            "schedule": crontab(minute="*/15"),  # every 15 minutes
+        },
+        "disputes_auto_flag_unanswered_rebuttals_hourly": {
+            "task": "disputes.auto_flag_unanswered_rebuttals",
+            "schedule": crontab(minute=0),  # every hour on the hour
+        },
+        "disputes_auto_close_missing_evidence_hourly": {
+            "task": "disputes.auto_close_missing_evidence",
+            "schedule": crontab(minute=15),
+        },
+        "disputes_rebuttal_reminders_hourly": {
+            "task": "disputes.send_rebuttal_reminders",
+            "schedule": crontab(minute=30),
+        },
+        "listings_purge_soft_deleted_nightly": {
+            "task": "listings.purge_soft_deleted_listings",
+            "schedule": crontab(hour=4, minute=0),
+        },
+        "notifications_detect_missing": {
+            "task": "notifications.detect_missing_notifications",
+            "schedule": crontab(hour=2, minute=15),
+        },
+        "operator_health_ping_minutely": {
+            "task": "operator_health_ping",
+            "schedule": crontab(),  # every minute
+        },
     }
 )
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -216,15 +267,34 @@ BOOKING_OWNER_FEE_RATE = Decimal(
     env("BOOKING_OWNER_FEE_RATE", default="0.05")
 )  # 5% owner payout fee
 
+# Instant payout fee: percentage of available balance charged for instant payouts
+INSTANT_PAYOUT_FEE_RATE = Decimal(
+    env("INSTANT_PAYOUT_FEE_RATE", default="0.03")
+)  # 3% default instant payout fee
+
 # --- Stripe ---
 STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY", default="")
 STRIPE_ENV = env("STRIPE_ENV", default="dev")
 STRIPE_PUBLISHABLE_KEY = env("STRIPE_PUBLISHABLE_KEY", default="")
 STRIPE_WEBHOOK_SECRET = env("STRIPE_WEBHOOK_SECRET", default="")
+CONNECT_BUSINESS_NAME = env("CONNECT_BUSINESS_NAME", default="Renter")
+CONNECT_BUSINESS_URL = env("CONNECT_BUSINESS_URL", default=FRONTEND_ORIGIN)
+CONNECT_BUSINESS_PRODUCT_DESCRIPTION = env(
+    "CONNECT_BUSINESS_PRODUCT_DESCRIPTION",
+    default="Peer-to-peer rentals platform",
+)
+CONNECT_BUSINESS_MCC = env("CONNECT_BUSINESS_MCC", default="7399")
 
 # --- Identity / verification limits ---
 UNVERIFIED_MAX_REPLACEMENT_CAD = Decimal(
     env("UNVERIFIED_MAX_REPLACEMENT_CAD", default="1000")
 )
 UNVERIFIED_MAX_DEPOSIT_CAD = Decimal(env("UNVERIFIED_MAX_DEPOSIT_CAD", default="700"))
-UNVERIFIED_MAX_BOOKING_DAYS = env.int("UNVERIFIED_MAX_BOOKING_DAYS", default=3)
+UNVERIFIED_MAX_BOOKING_DAYS = env.int(
+    "UNVERIFIED_MAX_BOOKING_DAYS",
+    default=3,
+)
+VERIFIED_MAX_BOOKING_DAYS = env.int(
+    "VERIFIED_MAX_BOOKING_DAYS",
+    default=5,
+)

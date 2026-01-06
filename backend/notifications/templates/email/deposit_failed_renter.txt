@@ -1,0 +1,9 @@
+Hi {{ renter.first_name|default:renter.username|default:"there" }},
+
+Your booking for {{ listing_title }} was canceled because we could not authorize the damage deposit on your card.
+
+We've issued a partial refund of ${{ refund_amount }} for the rental charge.
+
+Dates: {{ date_range_display }}
+
+If you have questions or want to try again with a different payment method, please contact support.

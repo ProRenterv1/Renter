@@ -7,6 +7,7 @@ class Transaction(models.Model):
         BOOKING_CHARGE = "BOOKING_CHARGE", "Booking charge"
         REFUND = "REFUND", "Refund"
         OWNER_EARNING = "OWNER_EARNING", "Owner earning"
+        OWNER_PAYOUT = "OWNER_PAYOUT", "Owner payout"
         PLATFORM_FEE = "PLATFORM_FEE", "Platform fee"
         DAMAGE_DEPOSIT_CAPTURE = "DAMAGE_DEPOSIT_CAPTURE", "Damage deposit capture"
         DAMAGE_DEPOSIT_RELEASE = "DAMAGE_DEPOSIT_RELEASE", "Damage deposit release"
@@ -65,6 +66,15 @@ class OwnerPayoutAccount(models.Model):
         default=False,
         help_text="Charges and payouts enabled, no disabled_reason.",
     )
+    transit_number = models.CharField(max_length=16, blank=True, default="")
+    institution_number = models.CharField(max_length=16, blank=True, default="")
+    account_number = models.CharField(max_length=32, blank=True, default="")
+    lifetime_instant_payouts = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default="0.00",
+        help_text="Total gross amount ever sent via instant payouts.",
+    )
     last_synced_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -72,3 +82,26 @@ class OwnerPayoutAccount(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user} - {self.stripe_account_id}"
+
+
+class PaymentMethod(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="payment_methods",
+        on_delete=models.CASCADE,
+    )
+    stripe_payment_method_id = models.CharField(max_length=255, unique=True)
+    brand = models.CharField(max_length=32, blank=True, default="")
+    last4 = models.CharField(max_length=4, blank=True, default="")
+    exp_month = models.PositiveSmallIntegerField(null=True, blank=True)
+    exp_year = models.PositiveSmallIntegerField(null=True, blank=True)
+    is_default = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-is_default", "-created_at"]
+        unique_together = [("user", "stripe_payment_method_id")]
+
+    def __str__(self) -> str:
+        return f"{self.user} {self.brand} ****{self.last4}"

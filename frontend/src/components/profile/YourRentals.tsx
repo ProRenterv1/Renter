@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { AuthStore } from "@/lib/auth";
 import ChatMessages from "@/components/chat/Messages";
+import { ReviewModal } from "@/components/reviews/ReviewModal";
 import {
   authAPI,
   bookingsAPI,
@@ -14,15 +15,21 @@ import {
   getBookingChargeAmount,
   getBookingDamageDeposit,
   listingsAPI,
+  disputesAPI,
+  paymentsAPI,
   type Booking,
   type BookingTotals,
   type BookingStatus,
   type DisplayRentalStatus,
+  type DisputeCase,
+  type DisputeStatus,
   type JsonError,
   type Listing,
+  type PaymentMethod,
 } from "@/lib/api";
 import { fetchConversations, type ConversationSummary } from "@/lib/chat";
 import { formatCurrency, parseMoney } from "@/lib/utils";
+import { startEventStream, type EventEnvelope } from "@/lib/events";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -41,8 +48,28 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { PolicyConfirmationModal } from "../PolicyConfirmationModal";
+import { DisputeWizard } from "../disputes/DisputeWizard";
 
-type StatusFilter = "all" | "requested" | "waiting-payment" | "waiting-pickup" | "ongoing";
+type StatusFilter = "all" | BookingStatus;
+const activeDisputeStatuses: DisputeStatus[] = [
+  "open",
+  "intake_missing_evidence",
+  "awaiting_rebuttal",
+  "under_review",
+];
+
+const formatDisputeStatusLabel = (status: DisputeStatus): string => {
+  switch (status) {
+    case "awaiting_rebuttal":
+      return "Dispute: Awaiting other party";
+    case "under_review":
+      return "Dispute: Under review";
+    case "intake_missing_evidence":
+      return "Dispute: Open (needs evidence)";
+    default:
+      return "Dispute: Open";
+  }
+};
 
 interface RentalRow {
   bookingId: number;
@@ -63,6 +90,9 @@ interface RentalRow {
   primaryPhotoUrl: string;
   startDate: string;
   endDate: string;
+  endDateRaw: string;
+  returnedByRenterAt: string | null;
+  returnConfirmedAt: string | null;
   pickupConfirmedAt: string | null;
   beforePhotosUploadedAt: string | null;
   beforePhotosRequired: boolean;
@@ -84,6 +114,11 @@ type PaymentFormState = {
 };
 
 type BookingTotalsWithBase = BookingTotals & { base_amount?: string | number };
+
+type BookingWithReturnFields = Booking & {
+  returned_by_renter_at?: string | null;
+  return_confirmed_at?: string | null;
+};
 
 type BeforePhotoUpload = {
   file: File;
@@ -156,6 +191,18 @@ const hasChargeIntent = (booking: Booking) =>
 
 const isPrePaymentBooking = (booking: Booking) => !hasChargeIntent(booking);
 
+const isStartDay = (isoDate: string): boolean => {
+  try {
+    const today = startOfToday();
+    const start = parseLocalDate(isoDate);
+    return today.getFullYear() === start.getFullYear() &&
+      today.getMonth() === start.getMonth() &&
+      today.getDate() === start.getDate();
+  } catch {
+    return false;
+  }
+};
+
 const getDaysUntilStart = (booking: Booking): number | null => {
   try {
     const today = startOfToday();
@@ -207,29 +254,29 @@ const startOfToday = () => {
 };
 
 const matchesStatusFilter = (row: RentalRow, filter: StatusFilter) => {
-  if (filter === "all") {
-    return true;
-  }
-  if (filter === "requested") {
-    return row.statusRaw === "requested";
-  }
-  if (filter === "waiting-payment") {
-    return row.statusRaw === "confirmed";
-  }
-  if (row.statusRaw !== "paid") {
-    return false;
-  }
+  if (filter === "all") return true;
+  return row.statusRaw === filter;
+};
+
+const hasReachedReturnWindow = (endDateRaw: string): boolean => {
   try {
     const today = startOfToday();
-    const startDate = parseLocalDate(row.startDate);
-    const endDate = parseLocalDate(row.endDate);
-    if (filter === "waiting-pickup") {
-      return today < startDate;
-    }
-    if (filter === "ongoing") {
-      return today >= startDate && today < endDate;
-    }
+    const endDate = parseLocalDate(endDateRaw);
+    endDate.setDate(endDate.getDate() - 1);
+    return today.getTime() >= endDate.getTime();
   } catch {
+    return false;
+  }
+};
+
+const canRequestReturn = (row: RentalRow): boolean => {
+  if (row.statusRaw !== "paid" || row.statusLabel !== "In progress") {
+    return false;
+  }
+  if (!hasReachedReturnWindow(row.endDateRaw)) {
+    return false;
+  }
+  if (row.returnedByRenterAt) {
     return false;
   }
   return true;
@@ -242,6 +289,12 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [payingRental, setPayingRental] = useState<PayableRental | null>(null);
   const [savePaymentMethod, setSavePaymentMethod] = useState(false);
+  const [savedMethods, setSavedMethods] = useState<PaymentMethod[]>([]);
+  const [savedMethodsLoading, setSavedMethodsLoading] = useState(false);
+  const [savedMethodsError, setSavedMethodsError] = useState<string | null>(null);
+  const [paymentMode, setPaymentMode] = useState<"new" | "saved">("new");
+  const [selectedSavedMethodId, setSelectedSavedMethodId] = useState<number | null>(null);
+  const isSavedMode = paymentMode === "saved";
   const [paymentForm, setPaymentForm] = useState<PaymentFormState>(createInitialPaymentForm());
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [paymentLoading, setPaymentLoading] = useState(false);
@@ -257,8 +310,20 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
   const [beforePhotos, setBeforePhotos] = useState<BeforePhotoUpload[]>([]);
   const [beforeUploadLoading, setBeforeUploadLoading] = useState(false);
   const [beforeUploadError, setBeforeUploadError] = useState<string | null>(null);
+  const [actionLoadingId, setActionLoadingId] = useState<number | null>(null);
   const [chatConversations, setChatConversations] = useState<ConversationSummary[]>([]);
   const [chatConversationId, setChatConversationId] = useState<number | null>(null);
+  const [renterReviewTarget, setRenterReviewTarget] = useState<{
+    bookingId: number;
+    ownerName: string;
+  } | null>(null);
+  const [disputeWizardOpen, setDisputeWizardOpen] = useState(false);
+  const [disputeContext, setDisputeContext] = useState<{
+    bookingId: number;
+    toolName: string;
+    rentalPeriod: string;
+  } | null>(null);
+  const [disputesByBookingId, setDisputesByBookingId] = useState<Record<number, DisputeCase | null>>({});
   const currentUser = AuthStore.getCurrentUser();
   const currentUserId = currentUser?.id ?? null;
   const stripe = useStripe();
@@ -267,6 +332,8 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
   const listingCacheRef = useRef<Map<string, Listing | null>>(new Map());
   const beforeFileInputRef = useRef<HTMLInputElement | null>(null);
   const beforePhotosRef = useRef<BeforePhotoUpload[]>([]);
+  const isMountedRef = useRef(true);
+  const rentalRowsRef = useRef<RentalRow[]>([]);
   const cardElementOptions = useMemo<StripeCardElementOptions>(
     () => ({
       hidePostalCode: true,
@@ -286,6 +353,18 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     }),
     []
   );
+  const cardElementComputedOptions = useMemo<StripeCardElementOptions>(
+    () => ({ ...cardElementOptions, disabled: isSavedMode }),
+    [cardElementOptions, isSavedMode],
+  );
+
+  const getOwnerDisplayName = useCallback((row: RentalRow | null | undefined) => {
+    const first = row?.ownerFirstName?.trim() ?? "";
+    const last = row?.ownerLastName?.trim() ?? "";
+    const username = row?.ownerUsername ?? "";
+    const full = [first, last].filter(Boolean).join(" ").trim();
+    return full || username || "Owner";
+  }, []);
 
   const loadChatConversations = useCallback(async () => {
     try {
@@ -320,41 +399,121 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     [chatConversations, loadChatConversations],
   );
 
-  useEffect(() => {
+  const reloadBookings = useCallback(async () => {
     if (!currentUserId) {
       setBookings([]);
       setError(null);
       setLoading(false);
       return;
     }
-    let active = true;
     setLoading(true);
     setError(null);
-    bookingsAPI
-      .listMine()
-      .then((data) => {
-        if (!active) return;
-        const mine = data
-          .filter((booking) => booking.renter === currentUserId)
-          .sort(
-            (a, b) =>
-              new Date(b.created_at).getTime() -
-              new Date(a.created_at).getTime(),
-          );
-        setBookings(mine);
-      })
-      .catch(() => {
-        if (!active) return;
-        setError("Unable to load your rentals. Please try again.");
-      })
-      .finally(() => {
-        if (!active) return;
-        setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
+    try {
+      const data = await bookingsAPI.listMine();
+      if (!isMountedRef.current) {
+        return;
+      }
+      const mine = data
+        .filter((booking) => booking.renter === currentUserId)
+        .sort(
+          (a, b) =>
+            new Date(b.created_at).getTime() -
+            new Date(a.created_at).getTime(),
+        );
+      setBookings(mine);
+    } catch (err) {
+      if (!isMountedRef.current) {
+        return;
+      }
+      setError("Unable to load your rentals. Please try again.");
+    } finally {
+      if (!isMountedRef.current) {
+        return;
+      }
+      setLoading(false);
+    }
   }, [currentUserId]);
+
+  useEffect(() => {
+    void reloadBookings();
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, [reloadBookings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadDisputes = async () => {
+      const disputed = bookings.filter((booking) => booking.is_disputed);
+      if (!disputed.length) {
+        setDisputesByBookingId({});
+        return;
+      }
+      const entries = await Promise.all(
+        disputed.map(async (booking) => {
+          try {
+            const cases = await disputesAPI.list({ bookingId: booking.id });
+            const active =
+              cases.find((item) => activeDisputeStatuses.includes(item.status)) ||
+              cases[0] ||
+              null;
+            return [booking.id, active] as const;
+          } catch (err) {
+            return [booking.id, null] as const;
+          }
+        }),
+      );
+      if (!isMountedRef.current || cancelled) {
+        return;
+      }
+      setDisputesByBookingId(Object.fromEntries(entries));
+    };
+    void loadDisputes();
+    return () => {
+      cancelled = true;
+    };
+  }, [bookings]);
+
+  useEffect(() => {
+    if (!currentUserId) {
+      return;
+    }
+    const handle = startEventStream({
+      onEvents: (events) => {
+        let shouldReload = false;
+        for (const event of events as EventEnvelope<any>[]) {
+          if (
+            event.type === "booking:status_changed" ||
+            event.type === "booking:return_requested"
+          ) {
+            shouldReload = true;
+          }
+          if (event.type === "booking:review_invite") {
+            shouldReload = true;
+            const payload = event.payload as {
+              booking_id: number;
+              owner_id: number;
+              renter_id: number;
+            };
+            if (payload.renter_id === currentUserId) {
+              const row = rentalRowsRef.current.find(
+                (entry) => entry.bookingId === payload.booking_id,
+              );
+              const ownerName = row ? getOwnerDisplayName(row) : "Owner";
+              setRenterReviewTarget({ bookingId: payload.booking_id, ownerName });
+            }
+          }
+        }
+        if (shouldReload) {
+          void reloadBookings();
+        }
+      },
+    });
+
+    return () => {
+      handle.stop();
+    };
+  }, [currentUserId, getOwnerDisplayName, reloadBookings]);
 
   useEffect(() => {
     beforePhotosRef.current = beforePhotos;
@@ -374,6 +533,50 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     setPaymentForm((prev) => ({ ...prev, [fieldName]: value }));
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!payingRental) {
+      setSavedMethods([]);
+      setSavedMethodsError(null);
+      setSavedMethodsLoading(false);
+      setSelectedSavedMethodId(null);
+      return;
+    }
+
+    const loadSavedMethods = async () => {
+      setSavedMethodsLoading(true);
+      setSavedMethodsError(null);
+      try {
+        const methods = await paymentsAPI.listPaymentMethods();
+        if (cancelled) return;
+        setSavedMethods(methods);
+        const preferred = methods.find((method) => method.is_default) ?? methods[0];
+        setSelectedSavedMethodId((prev) => prev ?? preferred?.id ?? null);
+      } catch (err) {
+        if (cancelled) return;
+        console.error("payments: failed to load saved methods", err);
+        setSavedMethodsError("Could not load saved payment methods.");
+        setSavedMethods([]);
+        setSelectedSavedMethodId(null);
+      } finally {
+        if (!cancelled) {
+          setSavedMethodsLoading(false);
+        }
+      }
+    };
+
+    void loadSavedMethods();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [payingRental]);
+
+  const selectedSavedMethod = useMemo(
+    () => savedMethods.find((method) => method.id === selectedSavedMethodId) ?? null,
+    [savedMethods, selectedSavedMethodId],
+  );
+
   const resetPaymentState = () => {
     const cardElement = elements?.getElement(CardElement);
     cardElement?.clear();
@@ -382,10 +585,50 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     setSavePaymentMethod(false);
     setPaymentError(null);
     setPaymentLoading(false);
+    setPaymentMode("new");
+    setSavedMethods([]);
+    setSavedMethodsError(null);
+    setSelectedSavedMethodId(null);
   };
 
   const handlePayment = async () => {
     if (!payingRental) return;
+
+    if (paymentMode === "saved") {
+      if (!selectedSavedMethod) {
+        setPaymentError("Please select a saved card before paying.");
+        return;
+      }
+      setPaymentError(null);
+      setPaymentLoading(true);
+      try {
+        const stripeCustomerId = currentUser?.stripe_customer_id || undefined;
+        const updatedBooking = await bookingsAPI.pay(payingRental.bookingId, {
+          stripe_payment_method_id: selectedSavedMethod.stripe_payment_method_id,
+          stripe_customer_id: stripeCustomerId,
+        });
+        setBookings((prev) =>
+          prev.map((booking) => (booking.id === updatedBooking.id ? updatedBooking : booking)),
+        );
+        try {
+          const refreshedProfile = await authAPI.me();
+          AuthStore.setCurrentUser(refreshedProfile);
+        } catch {
+          // Non-fatal if profile refresh fails.
+        }
+        toast.success("Payment successful!");
+        resetPaymentState();
+      } catch (err) {
+        const message = isJsonError(err)
+          ? extractJsonErrorMessage(err) ?? "Payment could not be completed. Please try again."
+          : "Payment could not be completed. Please try again.";
+        setPaymentError(message);
+      } finally {
+        setPaymentLoading(false);
+      }
+      return;
+    }
+
     if (!stripe || !elements) {
       setPaymentError("Payment form is still loading. Please try again.");
       return;
@@ -429,6 +672,14 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
       setBookings((prev) =>
         prev.map((booking) => (booking.id === updatedBooking.id ? updatedBooking : booking))
       );
+      if (savePaymentMethod) {
+        try {
+          await paymentsAPI.addPaymentMethod({ stripe_payment_method_id: paymentMethod.id });
+        } catch (saveErr) {
+          console.error("payments: failed to save payment method", saveErr);
+          toast.error("Payment succeeded, but we couldn't save this card.");
+        }
+      }
       try {
         const refreshedProfile = await authAPI.me();
         AuthStore.setCurrentUser(refreshedProfile);
@@ -453,6 +704,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
         (booking) => booking.status !== "canceled" && booking.status !== "completed",
       )
       .map((booking) => {
+        const bookingWithReturn = booking as BookingWithReturnFields;
         const totals = booking.totals as BookingTotalsWithBase | null;
         let rentalSubtotal = parseMoney(totals?.rental_subtotal ?? totals?.base_amount ?? 0);
         const rawServiceFee = parseMoney(totals?.service_fee ?? totals?.renter_fee ?? 0);
@@ -485,12 +737,19 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
           primaryPhotoUrl: booking.listing_primary_photo_url || placeholderImage,
           startDate: booking.start_date,
           endDate: booking.end_date,
+          endDateRaw: booking.end_date,
+          returnedByRenterAt: bookingWithReturn.returned_by_renter_at ?? null,
+          returnConfirmedAt: bookingWithReturn.return_confirmed_at ?? null,
           pickupConfirmedAt: booking.pickup_confirmed_at ?? null,
           beforePhotosUploadedAt: booking.before_photos_uploaded_at ?? null,
           beforePhotosRequired: booking.before_photos_required !== false,
         };
       });
   }, [bookings]);
+
+  useEffect(() => {
+    rentalRowsRef.current = rentalRows;
+  }, [rentalRows]);
 
   const filteredRows = useMemo(() => {
     return rentalRows.filter((row) => matchesStatusFilter(row, statusFilter));
@@ -660,11 +919,39 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     setBeforeUploadLoading(false);
   };
 
+  const handleRequestReturn = async (row: RentalRow) => {
+    const confirmed = window.confirm("Are you sure you want to mark this rental as returned?");
+    if (!confirmed) {
+      return;
+    }
+    setActionLoadingId(row.bookingId);
+    try {
+      const updated = await bookingsAPI.renterReturn(row.bookingId);
+      setBookings((prev) =>
+        prev.map((booking) => (booking.id === updated.id ? updated : booking)),
+      );
+      const ownerName = getOwnerDisplayName(row);
+      setRenterReviewTarget({ bookingId: row.bookingId, ownerName });
+      toast.success("Return requested – waiting for owner.");
+    } catch (err) {
+      const message = isJsonError(err)
+        ? extractJsonErrorMessage(err) ?? "Could not request a return right now."
+        : "Could not request a return right now.";
+      toast.error(message);
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
   const startPaymentFlow = (row: RentalRow) => {
     setPaymentForm(createInitialPaymentForm());
     setSavePaymentMethod(false);
     setPaymentError(null);
     setPaymentLoading(false);
+    setPaymentMode("new");
+    setSelectedSavedMethodId(null);
+    setSavedMethodsError(null);
+    setSavedMethods([]);
     setPayingRental({
       ...row,
       bookingId: row.bookingId,
@@ -743,7 +1030,10 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     const chargeAmount = payingRental.rentalSubtotal + payingRental.serviceFee;
     const depositHold = payingRental.damageDeposit;
     const estimatedTotal = depositHold;
-    const isPaymentDisabled = paymentLoading || !stripe || !elements;
+    const isPaymentDisabled =
+      paymentLoading ||
+      (!isSavedMode && (!stripe || !elements)) ||
+      (isSavedMode && (savedMethodsLoading || !selectedSavedMethod));
 
     return (
       <div className="space-y-6">
@@ -769,9 +1059,103 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                   <CreditCard className="h-5 w-5" />
                   Payment Method
                 </CardTitle>
-                <CardDescription>Enter your card details</CardDescription>
+                <CardDescription>Use a saved card or enter new details</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant={isSavedMode ? "outline" : "default"}
+                    size="sm"
+                    className="rounded-full"
+                    onClick={() => {
+                      setPaymentMode("new");
+                      setPaymentError(null);
+                    }}
+                  >
+                    New card
+                  </Button>
+                  {savedMethods.length > 0 && (
+                    <Button
+                      variant={isSavedMode ? "default" : "outline"}
+                      size="sm"
+                      className="rounded-full"
+                      onClick={() => {
+                        setPaymentMode("saved");
+                        setPaymentError(null);
+                      }}
+                    >
+                      Saved card
+                    </Button>
+                  )}
+                </div>
+
+                {savedMethodsError && (
+                  <p className="text-xs text-destructive">{savedMethodsError}</p>
+                )}
+
+                {isSavedMode && (
+                  <div className="space-y-3">
+                    {savedMethodsLoading && (
+                      <p className="text-sm text-muted-foreground">Loading saved cards...</p>
+                    )}
+                    {!savedMethodsLoading && savedMethods.length === 0 && (
+                      <p className="text-sm text-muted-foreground">No saved cards yet.</p>
+                    )}
+                    {!savedMethodsLoading &&
+                      savedMethods.map((method) => {
+                        const isSelected = method.id === selectedSavedMethodId;
+                        return (
+                          <label
+                            key={method.id}
+                            className={`flex items-center justify-between rounded-xl border p-3 cursor-pointer transition-colors ${
+                              isSelected ? "border-primary bg-primary/5" : "hover:border-primary/60"
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name="saved-payment-method"
+                              className="sr-only"
+                              checked={isSelected}
+                              onChange={() => {
+                                setSelectedSavedMethodId(method.id);
+                                setPaymentError(null);
+                              }}
+                            />
+                            <div className="flex items-center gap-3">
+                              <div className="h-10 w-10 rounded-lg bg-muted flex items-center justify-center">
+                                <CreditCard className="h-5 w-5 text-muted-foreground" />
+                              </div>
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2 text-sm font-medium">
+                                  <span>
+                                    {method.brand} ending in {method.last4}
+                                  </span>
+                                  {method.is_default && (
+                                    <Badge variant="secondary" className="text-[10px]">
+                                      Default
+                                    </Badge>
+                                  )}
+                                </div>
+                                <p className="text-xs text-muted-foreground">
+                                  Expires {String(method.exp_month ?? "--").padStart(2, "0")}/
+                                  {method.exp_year ?? "--"}
+                                </p>
+                              </div>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    {!savedMethodsLoading &&
+                      savedMethods.length > 0 &&
+                      !selectedSavedMethod &&
+                      !paymentLoading && (
+                        <p className="text-xs text-destructive">
+                          Select a saved card to continue.
+                        </p>
+                      )}
+                  </div>
+                )}
+
                 <div className="space-y-2">
                   <Label htmlFor="cardholderName">Cardholder Name</Label>
                   <Input
@@ -781,13 +1165,14 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                     onChange={handleInputChange}
                     placeholder="John Doe"
                     className="rounded-xl"
+                    disabled={isSavedMode}
                   />
                 </div>
 
                 <div className="space-y-2">
                   <Label>Card Details</Label>
                   <div className="rounded-xl border border-input bg-background px-3 py-3 focus-within:ring-2 focus-within:ring-ring transition-shadow">
-                    <CardElement options={cardElementOptions} />
+                    <CardElement options={cardElementComputedOptions} />
                   </div>
                 </div>
               </CardContent>
@@ -809,6 +1194,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                       onChange={handleInputChange}
                       placeholder="Edmonton"
                       className="rounded-xl"
+                      disabled={isSavedMode}
                     />
                   </div>
 
@@ -821,6 +1207,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                       onChange={handleInputChange}
                       placeholder="T5K 2J8"
                       className="rounded-xl"
+                      disabled={isSavedMode}
                     />
                   </div>
                 </div>
@@ -835,6 +1222,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                       onChange={handleInputChange}
                       placeholder="Alberta"
                       className="rounded-xl"
+                      disabled={isSavedMode}
                     />
                   </div>
 
@@ -842,6 +1230,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                     <Label htmlFor="country">Country</Label>
                     <Select
                       value={paymentForm.country}
+                      disabled={isSavedMode}
                       onValueChange={(value) =>
                         setPaymentForm((prev) => ({ ...prev, country: value }))
                       }
@@ -860,16 +1249,18 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
 
                 <Separator className="my-4" />
 
-                <div className="flex items-center space-x-2">
-                  <Checkbox
-                    id="savePayment"
-                    checked={savePaymentMethod}
-                    onCheckedChange={(checked) => setSavePaymentMethod(checked === true)}
-                  />
-                  <Label htmlFor="savePayment" className="cursor-pointer text-sm">
-                    Save payment method for future use
-                  </Label>
-                </div>
+                {!isSavedMode && (
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="savePayment"
+                      checked={savePaymentMethod}
+                      onCheckedChange={(checked) => setSavePaymentMethod(checked === true)}
+                    />
+                    <Label htmlFor="savePayment" className="cursor-pointer text-sm">
+                      Save payment method for future use
+                    </Label>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -975,9 +1366,10 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
             <SelectContent>
               <SelectItem value="all">All statuses</SelectItem>
               <SelectItem value="requested">Requested</SelectItem>
-              <SelectItem value="waiting-payment">Waiting payment</SelectItem>
-              <SelectItem value="waiting-pickup">Waiting pickup</SelectItem>
-              <SelectItem value="ongoing">Ongoing</SelectItem>
+              <SelectItem value="confirmed">Confirmed</SelectItem>
+              <SelectItem value="paid">Paid</SelectItem>
+              <SelectItem value="completed">Completed</SelectItem>
+              <SelectItem value="canceled">Canceled</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -1113,6 +1505,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                 filteredRows.map((row) => {
                   const showPickupButton =
                     row.statusRaw === "paid" &&
+                    isStartDay(row.startDate) &&
                     row.beforePhotosRequired &&
                     !row.beforePhotosUploadedAt &&
                     !row.pickupConfirmedAt;
@@ -1121,6 +1514,10 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                     row.beforePhotosRequired &&
                     Boolean(row.beforePhotosUploadedAt) &&
                     !row.pickupConfirmedAt;
+                  const isInProgress = row.statusLabel === "In progress";
+                  const canReturnRental = canRequestReturn(row);
+                  const isRowActionLoading = actionLoadingId === row.bookingId;
+                  const hasReturnRequest = Boolean(row.returnedByRenterAt);
 
                   return (
                     <TableRow
@@ -1158,17 +1555,27 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Badge
-                          variant={
-                            row.statusRaw === "completed"
-                              ? "secondary"
-                              : row.statusRaw === "canceled"
-                              ? "outline"
-                              : "default"
-                          }
-                        >
-                          {row.statusLabel}
-                        </Badge>
+                        <div className="flex flex-col gap-1">
+                          <Badge
+                            variant={
+                              row.statusRaw === "completed"
+                                ? "secondary"
+                                : row.statusRaw === "canceled"
+                                ? "outline"
+                                : "default"
+                            }
+                          >
+                            {row.statusLabel}
+                          </Badge>
+                          {disputesByBookingId[row.bookingId] && (
+                            <Badge variant="outline" className="text-xs font-normal">
+                              {formatDisputeStatusLabel(
+                                (disputesByBookingId[row.bookingId]?.status ||
+                                  "open") as DisputeStatus,
+                              )}
+                            </Badge>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-col gap-1">
@@ -1183,16 +1590,18 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                       <TableCell>
                         <div className="flex flex-col items-end gap-1">
                           <div className="flex justify-end gap-2">
-                            <Button
-                              size="sm"
-                              variant="secondary"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void openChatForBooking(row.bookingId);
-                              }}
-                            >
-                              Chat
-                            </Button>
+                            {!isInProgress && (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void openChatForBooking(row.bookingId);
+                                }}
+                              >
+                                Chat
+                              </Button>
+                            )}
                             {row.isPayable && (
                               <Button
                                 size="sm"
@@ -1216,7 +1625,36 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                                 Pick up
                               </Button>
                             )}
-                            {row.isCancelable && (
+                            {canReturnRental && (
+                              <Button
+                                size="sm"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleRequestReturn(row);
+                                }}
+                                disabled={isRowActionLoading}
+                              >
+                                {isRowActionLoading ? "Requesting..." : "Return rental"}
+                              </Button>
+                            )}
+                            {isInProgress && !disputesByBookingId[row.bookingId] && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setDisputeContext({
+                                    bookingId: row.bookingId,
+                                    toolName: row.toolName,
+                                    rentalPeriod: row.rentalPeriod,
+                                  });
+                                  setDisputeWizardOpen(true);
+                                }}
+                              >
+                                Report an Issue
+                              </Button>
+                            )}
+                            {!isInProgress && row.isCancelable && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -1240,6 +1678,11 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                               Before photos uploaded · Awaiting owner
                             </span>
                           )}
+                          {hasReturnRequest && (
+                            <span className="text-xs text-muted-foreground">
+                              Return requested – waiting for owner
+                            </span>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -1250,6 +1693,19 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
         </CardContent>
       </Card>
       </div>
+      <DisputeWizard
+        open={disputeWizardOpen}
+        onOpenChange={(open) => {
+          setDisputeWizardOpen(open);
+          if (!open) {
+            setDisputeContext(null);
+          }
+        }}
+        bookingId={disputeContext?.bookingId ?? null}
+        role="renter"
+        toolName={disputeContext?.toolName}
+        rentalPeriodLabel={disputeContext?.rentalPeriod}
+      />
       <Dialog
         open={Boolean(cancelDialog)}
         onOpenChange={(open) => {
@@ -1297,6 +1753,16 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
           {chatConversationId && <ChatMessages conversationId={chatConversationId} />}
         </DialogContent>
       </Dialog>
+      <ReviewModal
+        open={renterReviewTarget !== null}
+        role="renter_to_owner"
+        bookingId={renterReviewTarget?.bookingId ?? 0}
+        otherPartyName={renterReviewTarget?.ownerName ?? "Owner"}
+        onClose={() => setRenterReviewTarget(null)}
+        onSubmitted={() => {
+          toast.success("Thanks for reviewing the owner.");
+        }}
+      />
       <PolicyConfirmationModal
         open={policyModalOpen}
         roleLabel="renter"
@@ -1309,3 +1775,5 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     </>
   );
 }
+
+export const __testables = { parseLocalDate, startOfToday, isStartDay };

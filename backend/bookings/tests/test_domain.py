@@ -67,6 +67,14 @@ def test_exclude_booking_id_allows_self_update(listing, booking_factory):
     )
 
 
+def test_requested_bookings_can_overlap(listing, booking_factory):
+    start = future(4)
+    end = start + timedelta(days=2)
+    booking_factory(start_date=start, end_date=end, status=Booking.Status.REQUESTED)
+
+    ensure_no_conflict(listing, start, end)
+
+
 def test_assert_can_confirm_allows_only_requested(booking_factory):
     booking = booking_factory(start_date=future(1), end_date=future(3))
     assert_can_confirm(booking)

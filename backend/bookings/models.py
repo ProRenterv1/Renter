@@ -54,6 +54,32 @@ class Booking(models.Model):
         help_text="Stripe PaymentIntent ID for the rental charge (base + renter fee).",
     )
     deposit_hold_id = models.CharField(max_length=120, blank=True, default="")
+    renter_stripe_customer_id = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Cached Stripe customer id used for charges/deposit holds.",
+    )
+    renter_stripe_payment_method_id = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Payment method id to reuse for deposit authorization.",
+    )
+    deposit_attempt_count = models.PositiveIntegerField(default=0)
+    deposit_authorized_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When a damage deposit authorization succeeded.",
+    )
+    is_disputed = models.BooleanField(
+        default=False,
+        help_text="True when at least one dispute case is open for this booking.",
+    )
+    deposit_locked = models.BooleanField(
+        default=False,
+        help_text="When True, automatic deposit release is blocked while a dispute is active.",
+    )
     totals = models.JSONField(default=dict, blank=True)
     canceled_by = models.CharField(
         max_length=16,
@@ -85,6 +111,36 @@ class Booking(models.Model):
         null=True,
         blank=True,
         help_text="When renter finished uploading 'before' photos for this booking.",
+    )
+    returned_by_renter_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When renter indicated the tool has been returned.",
+    )
+    return_confirmed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When owner confirmed the tool return.",
+    )
+    after_photos_uploaded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When renter completed uploading 'after' photos.",
+    )
+    deposit_release_scheduled_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When a damage deposit release was scheduled.",
+    )
+    deposit_released_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the damage deposit hold was actually released.",
+    )
+    dispute_window_expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="End of the post-return dispute window.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

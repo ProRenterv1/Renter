@@ -9,6 +9,7 @@ from django.db import models
 from django.utils import timezone
 
 from core.redis import push_event
+from listings.models import Listing
 
 if TYPE_CHECKING:  # pragma: no cover
     from bookings.models import Booking
@@ -16,13 +17,23 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 class Conversation(models.Model):
-    """One chat thread per booking between owner and renter."""
+    """Chat thread between a renter and owner about a listing/booking."""
 
     booking = models.OneToOneField(
         "bookings.Booking",
         on_delete=models.CASCADE,
         related_name="conversation",
         unique=True,
+        null=True,
+        blank=True,
+    )
+    listing = models.ForeignKey(
+        Listing,
+        on_delete=models.CASCADE,
+        related_name="conversations",
+        null=True,
+        blank=True,
+        help_text="Listing this conversation is about (for pre-booking chat).",
     )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -40,9 +51,17 @@ class Conversation(models.Model):
     class Meta:
         ordering = ["-created_at"]
         db_table = "bookings_conversation"
+        constraints = [
+            models.CheckConstraint(
+                name="conversation_booking_or_listing_not_null",
+                check=(models.Q(booking__isnull=False) | models.Q(listing__isnull=False)),
+            ),
+        ]
 
     def __str__(self) -> str:
-        return f"Conversation(b={self.booking_id}, active={self.is_active})"
+        return (
+            f"Conversation(b={self.booking_id}, listing={self.listing_id}, active={self.is_active})"
+        )
 
 
 class Message(models.Model):
@@ -141,15 +160,100 @@ class ConversationReadState(models.Model):
 
 
 def get_or_create_booking_conversation(booking: "Booking") -> Conversation:
-    """Return the booking's conversation, creating it on first access."""
-    conv, _ = Conversation.objects.get_or_create(
-        booking=booking,
-        defaults={
-            "owner": booking.owner,
-            "renter": booking.renter,
-        },
+    """
+    Return the conversation for this booking.
+
+    If a pre-booking listing-level conversation exists between this renter and owner
+    for this listing, attach the booking to that conversation instead of creating a new one.
+    """
+    # If already attached to a conversation, just return it
+    conv = Conversation.objects.filter(booking=booking).first()
+    if conv:
+        # Ensure listing field is set
+        if conv.listing_id is None:
+            conv.listing = booking.listing
+            conv.save(update_fields=["listing"])
+        return conv
+
+    # Try to re-use an existing listing-only conversation
+    conv = (
+        Conversation.objects.filter(
+            owner=booking.owner,
+            renter=booking.renter,
+            booking__isnull=True,
+            listing=booking.listing,
+            is_active=True,
+        )
+        .order_by("-created_at")
+        .first()
     )
-    return conv
+    if conv:
+        conv.booking = booking
+        if conv.listing_id is None:
+            conv.listing = booking.listing
+        conv.save(update_fields=["booking", "listing"])
+        return conv
+
+    # Fallback: create a fresh booking-bound conversation
+    return Conversation.objects.create(
+        owner=booking.owner,
+        renter=booking.renter,
+        booking=booking,
+        listing=booking.listing,
+        is_active=True,
+    )
+
+
+def get_or_create_listing_conversation(
+    listing: Listing,
+    renter: "User",
+) -> Conversation:
+    """
+    Get an active conversation between this renter and the owner of the listing.
+
+    Preference order:
+    1) Existing active conversation already bound to a booking for this listing.
+    2) Existing active listing-only conversation (booking is null).
+    3) New listing-only conversation.
+    """
+    owner = listing.owner
+
+    conv = (
+        Conversation.objects.filter(
+            owner=owner,
+            renter=renter,
+            booking__listing=listing,
+            is_active=True,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if conv:
+        if conv.listing_id is None:
+            conv.listing = listing
+            conv.save(update_fields=["listing"])
+        return conv
+
+    conv = (
+        Conversation.objects.filter(
+            owner=owner,
+            renter=renter,
+            booking__isnull=True,
+            listing=listing,
+            is_active=True,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if conv:
+        return conv
+
+    return Conversation.objects.create(
+        owner=owner,
+        renter=renter,
+        listing=listing,
+        is_active=True,
+    )
 
 
 def _push_chat_event_for_conversation(conv: Conversation, msg: Message) -> None:

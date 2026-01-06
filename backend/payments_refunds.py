@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import stripe
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db.models import Sum
 
 from bookings.models import Booking
 from payments.ledger import log_transaction
@@ -17,11 +18,21 @@ from payments_cancellation_policy import CancellationSettlement
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
+_ZERO = Decimal("0.00")
 
 
 def _ensure_stripe_key() -> None:
     """Ensure the global Stripe API key is configured before SDK calls."""
     stripe.api_key = _get_stripe_api_key()
+
+
+def _safe_decimal(value: object, default: Decimal = _ZERO) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return default
 
 
 def get_platform_ledger_user() -> User | None:
@@ -130,12 +141,102 @@ def apply_cancellation_settlement(booking: Booking, settlement: CancellationSett
             stripe_id=deposit_hold_id or None,
         )
 
-    if settlement.owner_delta != Decimal("0"):
+    owner_target = max(settlement.owner_delta, _ZERO)
+    owner_total = (
+        Transaction.objects.filter(
+            user=owner,
+            booking=booking,
+            kind=Transaction.Kind.OWNER_EARNING,
+        )
+        .aggregate(total=Sum("amount"))
+        .get("total")
+        or _ZERO
+    )
+    owner_total = _safe_decimal(owner_total, _ZERO)
+    owner_adjustment = owner_target - owner_total
+
+    if owner_adjustment != _ZERO:
+        owner_stripe_id: str | None = None
+        if owner_adjustment < _ZERO:
+            transfer_txn = (
+                Transaction.objects.filter(
+                    user=owner,
+                    booking=booking,
+                    kind=Transaction.Kind.OWNER_EARNING,
+                    amount__gt=0,
+                )
+                .exclude(stripe_id__isnull=True)
+                .exclude(stripe_id="")
+                .order_by("created_at")
+                .first()
+            )
+            if transfer_txn and transfer_txn.stripe_id:
+                _ensure_stripe_key()
+                try:
+                    reversal = stripe.Transfer.create_reversal(
+                        transfer_txn.stripe_id,
+                        amount=_to_cents(abs(owner_adjustment)),
+                    )
+                    owner_stripe_id = getattr(reversal, "id", None) or (
+                        reversal.get("id") if hasattr(reversal, "get") else None
+                    )
+                except stripe.error.InvalidRequestError as exc:
+                    if getattr(exc, "code", "") == "resource_missing":
+                        logger.info(
+                            "Stripe transfer %s missing for booking %s; assuming reversed.",
+                            transfer_txn.stripe_id,
+                            booking.id,
+                        )
+                    else:
+                        _handle_stripe_error(exc)
+                except stripe.error.StripeError as exc:
+                    _handle_stripe_error(exc)
+            else:
+                logger.warning(
+                    "Owner payout adjustment missing transfer id for booking %s",
+                    booking.id,
+                )
+        else:
+            payout_account = getattr(owner, "payout_account", None)
+            if (
+                payout_account
+                and payout_account.stripe_account_id
+                and payout_account.payouts_enabled
+            ):
+                _ensure_stripe_key()
+                try:
+                    transfer = stripe.Transfer.create(
+                        amount=_to_cents(owner_adjustment),
+                        currency="cad",
+                        destination=payout_account.stripe_account_id,
+                        description=f"Owner payout adjustment for booking #{booking.id}",
+                        metadata={
+                            "kind": "owner_payout_adjustment",
+                            "booking_id": str(booking.id),
+                        },
+                        transfer_group=f"booking:{booking.id}:owner_payout_adjustment",
+                        idempotency_key=(
+                            f"booking:{booking.id}:owner_payout_adjustment:"
+                            f"{_to_cents(owner_adjustment)}"
+                        ),
+                    )
+                    owner_stripe_id = getattr(transfer, "id", None) or (
+                        transfer.get("id") if hasattr(transfer, "get") else None
+                    )
+                except stripe.error.StripeError as exc:
+                    _handle_stripe_error(exc)
+            else:
+                logger.warning(
+                    "Owner payout adjustment skipped; missing Stripe account or payouts disabled.",
+                    extra={"booking_id": booking.id, "owner_id": getattr(owner, "id", None)},
+                )
+
         log_transaction(
             user=owner,
             booking=booking,
             kind=Transaction.Kind.OWNER_EARNING,
-            amount=settlement.owner_delta,
+            amount=owner_adjustment,
+            stripe_id=owner_stripe_id,
         )
 
     if settlement.platform_delta != Decimal("0"):
