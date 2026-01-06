@@ -188,6 +188,16 @@ a:hover {
   }
 }
 
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -200% 0;
+  }
+}
+
 @layer components {
   .chip {
     @apply inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-sm transition-colors;

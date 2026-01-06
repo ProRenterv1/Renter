@@ -97,6 +97,8 @@ class Listing(models.Model):
         help_text="Optional postal code to approximate the item's location.",
     )
     is_active = models.BooleanField(default=True)
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
     slug = models.SlugField(max_length=180, unique=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -137,6 +139,11 @@ class Listing(models.Model):
 
     def __str__(self) -> str:
         return f"{self.title} ({self.slug})"
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["is_deleted", "deleted_at"]),
+        ]
 
 
 class ListingPhoto(models.Model):

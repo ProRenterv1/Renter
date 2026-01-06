@@ -9,6 +9,7 @@ export type EventType =
   | "booking:late"
   | "booking:not_returned"
   | "booking:review_invite"
+  | "booking:return_requested"
   | string;
 
 export interface EventEnvelope<T = any> {

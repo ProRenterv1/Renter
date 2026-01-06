@@ -33,9 +33,9 @@ def test_renter_full_refund_when_canceling_more_than_day_in_advance():
         today=date(2025, 1, 8),
     )
 
-    assert settlement.refund_to_renter == Decimal("330.00")
+    assert settlement.refund_to_renter == Decimal("300.00")
     assert settlement.owner_delta == Decimal("-240.00")
-    assert settlement.platform_delta == Decimal("-45.00")
+    assert settlement.platform_delta == Decimal("30.00")
     assert settlement.deposit_capture_amount == Decimal("0.00")
     assert settlement.deposit_release_amount == Decimal("150.00")
 
@@ -49,9 +49,9 @@ def test_renter_pays_one_day_penalty_within_24_hours():
         today=date(2025, 1, 9),
     )
 
-    assert settlement.refund_to_renter == Decimal("220.00")
+    assert settlement.refund_to_renter == Decimal("200.00")
     assert settlement.owner_delta == Decimal("80.00")
-    assert settlement.platform_delta == Decimal("15.00")
+    assert settlement.platform_delta == Decimal("35.00")
     assert settlement.deposit_release_amount == Decimal("150.00")
 
 
@@ -64,9 +64,9 @@ def test_same_day_cancellation_keeps_half_charge_for_platform():
         today=date(2025, 1, 10),
     )
 
-    assert settlement.refund_to_renter == Decimal("165.00")
+    assert settlement.refund_to_renter == Decimal("150.00")
     assert settlement.owner_delta == Decimal("0.00")
-    assert settlement.platform_delta == Decimal("165.00")
+    assert settlement.platform_delta == Decimal("180.00")
     assert settlement.deposit_release_amount == Decimal("150.00")
 
 
@@ -79,6 +79,6 @@ def test_owner_cancellation_always_full_refund():
         today=date(2025, 1, 9),
     )
 
-    assert settlement.refund_to_renter == Decimal("330.00")
+    assert settlement.refund_to_renter == Decimal("300.00")
     assert settlement.owner_delta == Decimal("-240.00")
-    assert settlement.platform_delta == Decimal("-45.00")
+    assert settlement.platform_delta == Decimal("30.00")

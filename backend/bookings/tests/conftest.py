@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 from typing import Callable
 
@@ -10,8 +11,8 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 
 from bookings.models import Booking
-from identity.models import IdentityVerification
 from listings.models import Listing
+from payments.models import OwnerPayoutAccount
 
 User = get_user_model()
 
@@ -28,11 +29,19 @@ def _create_user(*, username: str, can_list: bool, can_rent: bool) -> User:
 
 
 def _mark_verified(user: User, suffix: str) -> None:
-    IdentityVerification.objects.create(
+    OwnerPayoutAccount.objects.create(
         user=user,
-        session_id=f"vs_test_{suffix}",
-        status=IdentityVerification.Status.VERIFIED,
-        verified_at=timezone.now(),
+        stripe_account_id=f"acct_test_{suffix}",
+        payouts_enabled=True,
+        charges_enabled=True,
+        is_fully_onboarded=True,
+        requirements_due={
+            "currently_due": [],
+            "eventually_due": [],
+            "past_due": [],
+            "disabled_reason": "",
+        },
+        last_synced_at=timezone.now(),
     )
 
 
@@ -84,12 +93,16 @@ def booking_factory(listing, owner_user, renter_user) -> Callable[..., Booking]:
         listing_override: Listing | None = None,
         owner=None,
         renter=None,
-        start_date,
-        end_date,
+        start_date=None,
+        end_date=None,
         status=Booking.Status.REQUESTED,
         **extra_fields,
     ) -> Booking:
         selected_listing = listing_override or listing
+        if start_date is None:
+            start_date = timezone.now().date()
+        if end_date is None:
+            end_date = start_date + timedelta(days=1)
         return Booking.objects.create(
             listing=selected_listing,
             owner=owner or selected_listing.owner,

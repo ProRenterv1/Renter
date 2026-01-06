@@ -8,6 +8,7 @@ import { AuthStore } from "@/lib/auth";
 import { startEventStream } from "@/lib/events";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { fetchConversations, type ConversationSummary } from "@/lib/chat";
+import { bookingsAPI, disputesAPI, type DisputeCase } from "@/lib/api";
 
 const links = [
   { label: "Browse Tools", type: "route", href: "/feed" as const },
@@ -64,6 +65,7 @@ export function Header() {
   const [currentUserId, setCurrentUserId] = useState<number | null>(
     AuthStore.getCurrentUser()?.id ?? null,
   );
+  const [actionCount, setActionCount] = useState(0);
   const unreadCount = unreadConversationIds.size;
   const navigate = useNavigate();
   const location = useLocation();
@@ -82,6 +84,42 @@ export function Header() {
 
   useEffect(() => {
     if (!isAuthenticated) {
+      setActionCount(0);
+      return;
+    }
+    let cancelled = false;
+    const loadActions = async () => {
+      try {
+        const [pending, disputes] = await Promise.all([
+          bookingsAPI.pendingRequestsCount(),
+          disputesAPI.list(),
+        ]);
+        if (cancelled) return;
+
+        const unpaid = Number(pending.renter_unpaid_bookings ?? pending.unpaid_bookings ?? 0);
+        const pendingRequests = Number(pending.pending_requests ?? 0);
+        const disputeActions = (disputes as DisputeCase[]).filter((d) =>
+          ["intake_missing_evidence", "awaiting_rebuttal"].includes(d.status),
+        ).length;
+
+        setActionCount(unpaid + pendingRequests + disputeActions);
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.warn("header: failed to load action counts", err);
+        }
+      }
+    };
+
+    void loadActions();
+    const intervalId = window.setInterval(loadActions, 20000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
       setUnreadConversationIds(new Set());
       return;
     }
@@ -90,7 +128,7 @@ export function Header() {
     }
     const handle = startEventStream<{
       conversation_id: number;
-      booking_id: number;
+      booking_id: number | null;
       message: ChatEventMessage;
     }>({
       onEvents: (events) => {
@@ -324,8 +362,17 @@ export function Header() {
                 <Button 
                   variant="ghost" 
                   onClick={handleProfileClick}
+                  className="relative"
                 >
                   Profile
+                  {actionCount > 0 && (
+                    <span
+                      className="absolute -right-2 -top-2 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none text-white"
+                      style={{ backgroundColor: "#5B8CA6" }}
+                    >
+                      {actionCount > 98 ? "99+" : actionCount}
+                    </span>
+                  )}
                 </Button>
                 <Button 
                   size="sm"

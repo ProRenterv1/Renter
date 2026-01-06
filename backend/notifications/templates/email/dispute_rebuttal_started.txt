@@ -1,0 +1,8 @@
+{% if recipient_name %}Hi {{ recipient_name }},{% else %}Hi,{% endif %}
+
+A dispute was opened on booking #{{ booking.id }} for "{{ listing_title }}". Please share your response and any evidence within 24 hours.
+
+Booking dates: {{ date_range_display|default:"n/a" }}
+
+Review this booking:
+{{ cta_url }}

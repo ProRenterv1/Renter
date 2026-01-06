@@ -1,0 +1,1 @@
+Your booking for {{ listing_title }} was canceled. Deposit could not be authorized. Partial refund: ${{ refund_amount }}.

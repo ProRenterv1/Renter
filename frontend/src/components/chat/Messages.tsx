@@ -35,12 +35,11 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
   const [error, setError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const currentUser = useMemo(() => AuthStore.getCurrentUser(), []);
-
-  const chatClosed =
-    !conversation ||
-    !conversation.is_active ||
-    conversation.booking.status === "canceled" ||
-    conversation.booking.status === "completed";
+  const bookingStatus = conversation?.booking?.status ?? null;
+  const isClosedByBooking =
+    bookingStatus === "canceled" || bookingStatus === "completed";
+  const canSend = Boolean(conversation && conversation.is_active && !isClosedByBooking);
+  const chatClosed = !canSend;
 
   const loadConversation = useCallback(async () => {
     setLoading(true);
@@ -100,7 +99,7 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
 
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || chatClosed) {
+    if (!text || !canSend) {
       return;
     }
     setSending(true);
@@ -124,7 +123,7 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
   };
 
   const participantMeta = useMemo(() => {
-    if (!conversation) {
+    if (!conversation?.booking) {
       return null;
     }
     const booking = conversation.booking;
@@ -132,26 +131,26 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
       [booking.renter_first_name, booking.renter_last_name].filter(Boolean).join(" ") ||
       booking.renter_username ||
       "Renter";
-      const ownerName =
-        [booking.listing_owner_first_name, booking.listing_owner_last_name]
-          .filter(Boolean)
-          .join(" ") ||
-        booking.listing_owner_username ||
-        "Owner";
-      return {
-        renter: {
-          id: booking.renter,
-          name: renterName,
-          avatarUrl: booking.renter_avatar_url ?? null,
-          isVerified: Boolean(booking.renter_identity_verified),
-        },
-        owner: {
-          id: booking.owner,
-          name: ownerName,
-          avatarUrl: booking.listing_owner_avatar_url ?? null,
-          isVerified: Boolean(booking.listing_owner_identity_verified),
-        },
-      };
+    const ownerName =
+      [booking.listing_owner_first_name, booking.listing_owner_last_name]
+        .filter(Boolean)
+        .join(" ") ||
+      booking.listing_owner_username ||
+      "Owner";
+    return {
+      renter: {
+        id: booking.renter,
+        name: renterName,
+        avatarUrl: booking.renter_avatar_url ?? null,
+        isVerified: Boolean(booking.renter_identity_verified),
+      },
+      owner: {
+        id: booking.owner,
+        name: ownerName,
+        avatarUrl: booking.listing_owner_avatar_url ?? null,
+        isVerified: Boolean(booking.listing_owner_identity_verified),
+      },
+    };
   }, [conversation]);
 
   const getParticipantForMessage = useCallback(
@@ -178,9 +177,14 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
           isVerified: other.isVerified,
         };
       }
-      return { name: "User", avatarUrl: null, isVerified: false };
+      const fallbackName = conversation?.other_party_name?.trim() || "User";
+      return {
+        name: fallbackName,
+        avatarUrl: conversation?.other_party_avatar_url ?? null,
+        isVerified: Boolean(conversation?.other_party_identity_verified),
+      };
     },
-    [currentUser, participantMeta],
+    [conversation, currentUser, participantMeta],
   );
 
   if (loading && !conversation) {
@@ -226,18 +230,22 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
     }
   };
 
-  const bookingListing = conversation.booking.listing;
+  const hasBooking = Boolean(conversation.booking);
+  const bookingListing = conversation.booking?.listing;
   const listingInfo =
-    typeof bookingListing === "object" && bookingListing
-      ? bookingListing
-      : null;
+    typeof bookingListing === "object" && bookingListing ? bookingListing : null;
   const listingTitle =
-    conversation.booking.listing_title ||
+    conversation.listing_title ||
+    conversation.booking?.listing_title ||
     listingInfo?.title ||
-    "Booking conversation";
-  const listingSlug = conversation.booking.listing_slug || listingInfo?.slug || null;
+    "Listing";
+  const listingSlug =
+    (hasBooking && (conversation.booking?.listing_slug || listingInfo?.slug || null)) || null;
   const listingLink = listingSlug ? `/listings/${listingSlug}` : null;
   const bookingRange = (() => {
+    if (!conversation.booking) {
+      return "";
+    }
     const start = formatDate(conversation.booking.start_date);
     const end = formatDate(conversation.booking.end_date);
     if (start && end) {
@@ -247,9 +255,15 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
   })();
   const listingInitial = listingTitle.trim().slice(0, 1).toUpperCase() || "L";
   const listingImage =
-    conversation.booking.listing_primary_photo_url ??
+    conversation.booking?.listing_primary_photo_url ??
+    conversation.listing_primary_photo_url ??
     listingInfo?.thumbnail_url ??
     null;
+  const inputPlaceholder = conversation?.is_active
+    ? isClosedByBooking
+      ? "Chat is closed for this booking."
+      : "Type a message..."
+    : "Chat is closed for this conversation.";
 
   const renderListingMedia = () => {
     const media = listingImage ? (
@@ -289,15 +303,23 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
             ) : (
               <p className="text-sm font-medium">{listingTitle}</p>
             )}
-            <p className="text-xs text-muted-foreground">
-              Booking #{conversation.booking.id}
-              {bookingRange ? ` - ${bookingRange}` : ""}
-            </p>
+            {hasBooking ? (
+              <p className="text-xs text-muted-foreground">
+                Booking #{conversation.booking?.id}
+                {bookingRange ? ` - ${bookingRange}` : ""}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Chat about {listingTitle || "this listing"}
+              </p>
+            )}
           </div>
         </div>
-        <div className="text-xs text-muted-foreground">
-          Status: <span className="font-medium">{conversation.booking.status}</span>
-        </div>
+        {hasBooking ? (
+          <div className="text-xs text-muted-foreground">
+            Status: <span className="font-medium">{conversation.booking?.status}</span>
+          </div>
+        ) : null}
       </div>
 
       <div ref={listRef} className="flex-1 space-y-4 overflow-y-auto bg-muted/30 px-4 py-3">
@@ -385,9 +407,7 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
             type="text"
             value={input}
             disabled={chatClosed || sending}
-            placeholder={
-              chatClosed ? "Chat is closed for this booking" : "Type a message..."
-            }
+            placeholder={inputPlaceholder}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -405,7 +425,9 @@ const ChatMessages: React.FC<MessagesProps> = ({ conversationId }) => {
         </div>
         {chatClosed && (
           <p className="mt-2 text-xs text-muted-foreground">
-            This conversation is read-only because the booking is closed.
+            {conversation?.is_active
+              ? "This conversation is read-only because the booking is closed."
+              : "This conversation is read-only."}
           </p>
         )}
       </div>

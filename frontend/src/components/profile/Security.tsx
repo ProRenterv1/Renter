@@ -1,12 +1,12 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { AlertCircle, CheckCircle2, Eye, EyeOff, Loader2, IdCard } from "lucide-react";
 import { toast } from "sonner";
-import { loadStripe, type Stripe } from "@stripe/stripe-js";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
 import { Switch } from "../ui/switch";
 import { Separator } from "../ui/separator";
 import { Alert, AlertDescription } from "../ui/alert";
@@ -27,6 +27,8 @@ import {
   identityAPI,
   type IdentityVerificationStatus,
   type IdentityStatusLatest,
+  paymentsAPI,
+  type OwnerPayoutConnect,
 } from "@/lib/api";
 
 type SecurityProps = {
@@ -179,6 +181,10 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
   const [loginHistory, setLoginHistory] = useState<LoginHistoryEntry[]>([]);
   const [loginHistoryLoading, setLoginHistoryLoading] = useState(true);
   const [loginHistoryError, setLoginHistoryError] = useState<string | null>(null);
+  const [kycPrereqOpen, setKycPrereqOpen] = useState(false);
+  const [kycPrereqMissing, setKycPrereqMissing] = useState<string[]>([]);
+  const [onboardingResumeChecked, setOnboardingResumeChecked] = useState(false);
+  const [connectSummary, setConnectSummary] = useState<OwnerPayoutConnect | null>(null);
   const [identityStatus, setIdentityStatus] = useState<IdentityVerificationStatus | "none">(
     "none",
   );
@@ -187,7 +193,6 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
   const [identityLoading, setIdentityLoading] = useState<boolean>(false);
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [showKycFlow, setShowKycFlow] = useState(false);
-  const [stripe, setStripe] = useState<Stripe | null>(null);
   const phoneVerified = profile?.phone_verified ?? false;
   const emailVerified = profile?.email_verified ?? false;
   const switchesDisabled = twoFactorLoading || twoFactorSaving;
@@ -282,35 +287,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function initStripe() {
-      try {
-        const publishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY as
-          | string
-          | undefined;
-        if (!publishableKey) {
-          console.warn("Missing VITE_STRIPE_PUBLISHABLE_KEY for Stripe Identity.");
-          return;
-        }
-        const instance = await loadStripe(publishableKey);
-        if (!cancelled) {
-          setStripe(instance);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          console.error("Failed to initialize Stripe:", error);
-        }
-      }
-    }
-
-    void initStripe();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+ 
 
   const updateIdentityState = useCallback(
     (status: IdentityVerificationStatus | "none", latest: IdentityStatusLatest | null) => {
@@ -349,6 +326,61 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
   useEffect(() => {
     void refreshIdentityStatus();
   }, [refreshIdentityStatus]);
+
+  const refreshConnectSummary = useCallback(async () => {
+    try {
+      const summary = await paymentsAPI.ownerPayoutsSummaryRaw();
+      setConnectSummary(summary.connect);
+    } catch (err) {
+      console.error("Unable to load connect summary", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshConnectSummary();
+  }, [refreshConnectSummary]);
+
+  useEffect(() => {
+    if (onboardingResumeChecked) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("onboarding") !== "return") return;
+    setOnboardingResumeChecked(true);
+
+    const resumeOnboardingIfNeeded = async () => {
+      const repeatFlag = "connect_onboarding_repeat_done";
+      const alreadyRepeated = sessionStorage.getItem(repeatFlag) === "1";
+
+      if (!alreadyRepeated) {
+        try {
+          const response = await paymentsAPI.ownerPayoutsStartOnboarding();
+          sessionStorage.setItem(repeatFlag, "1");
+          if (response.onboarding_url) {
+            window.location.href = response.onboarding_url;
+            return;
+          }
+        } catch (err) {
+          console.error("onboarding auto-repeat failed", err);
+        }
+      }
+
+      try {
+        const summary = await paymentsAPI.ownerPayoutsSummary();
+        const reqs = summary?.connect?.requirements_due;
+        const due = [
+          ...(reqs?.currently_due ?? []),
+          ...(reqs?.past_due ?? []),
+        ];
+        if (!due.length) {
+          void refreshIdentityStatus();
+          setConnectSummary(summary.connect);
+        }
+      } catch (err) {
+        console.error("onboarding resume check failed", err);
+      }
+    };
+
+    void resumeOnboardingIfNeeded();
+  }, [onboardingResumeChecked, refreshIdentityStatus]);
 
   const persistTwoFactorSetting = async (
     channel: TwoFactorChannel,
@@ -530,7 +562,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
         return (
           <span className={`${baseClass} bg-[var(--info-bg)] text-[var(--info-text)]`}>
             <Loader2 className="h-3 w-3 animate-spin" />
-            In review
+            Pending
           </span>
         );
       case "failed":
@@ -551,44 +583,51 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
     }
   };
 
-  const handleStartIdentityVerification = async () => {
+  const checkKycPrerequisites = (userData?: Profile | null): { ok: boolean; missing: string[] } => {
+    const user = userData ?? profile ?? AuthStore.getCurrentUser();
+    const missing: string[] = [];
+    if (!user?.phone_verified) {
+      missing.push("Verify your phone number");
+    }
+    const hasAddress =
+      Boolean(user?.street_address?.trim()) &&
+      Boolean(user?.city?.trim()) &&
+      Boolean(user?.province?.trim()) &&
+      Boolean(user?.postal_code?.trim());
+    if (!hasAddress) {
+      missing.push("Complete your address (street, city, province, postal code)");
+    }
+    return { ok: missing.length === 0, missing };
+  };
+
+  const handleStartConnectKyc = async () => {
     setIdentityError(null);
     setIdentityLoading(true);
 
     try {
-      const response = await identityAPI.start();
+      // Refresh profile to ensure we have latest phone/address verification state
+      const freshProfile = await authAPI.me();
+      setProfile(freshProfile);
+      AuthStore.setCurrentUser(freshProfile);
 
-      if (response.already_verified) {
-        toast.success("Your identity is already verified.");
-        await refreshIdentityStatus();
+      const { ok, missing } = checkKycPrerequisites(freshProfile);
+      if (!ok) {
+        setKycPrereqMissing(missing);
+        setKycPrereqOpen(true);
+        setIdentityLoading(false);
         return;
       }
 
-      if (!stripe) {
-        toast.error("Stripe is not ready yet. Please try again in a moment.");
+      const response = await paymentsAPI.ownerPayoutsStartOnboarding();
+      if (!response.onboarding_url) {
+        toast.error("Unable to start verification right now.");
         return;
       }
-
-      if (!response.client_secret) {
-        toast.error("Identity verification is temporarily unavailable.");
-        return;
-      }
-
-      const result: any = await stripe.verifyIdentity(response.client_secret);
-
-      if (result && result.error) {
-        const message =
-          result.error.message || "Identity verification was not completed.";
-        setIdentityError(message);
-        toast.error(message);
-      } else {
-        toast.success("Identity verification completed.");
-        await refreshIdentityStatus();
-      }
+      window.location.href = response.onboarding_url;
     } catch (error) {
       const message =
         extractDetailMessage(error) ??
-        "Unable to start identity verification. Please try again.";
+        "Unable to start verification. Please try again.";
       setIdentityError(message);
       toast.error(message);
     } finally {
@@ -854,18 +893,19 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
             </Alert>
           )}
           <p className="text-sm text-muted-foreground">
-            We use Stripe Identity to verify IDs and keep renters and owners protected.
+            We use Stripe Connect verification to keep renters and owners protected. The
+            process happens in a secure Stripe-hosted window.
           </p>
           <div className="space-y-3 text-sm text-muted-foreground">
             <div className="flex items-start gap-3">
               <CheckCircle2 className="h-4 w-4 text-[var(--success-text)]" />
-              <p>Only Stripe and our platform see your verification result.</p>
+              <p>Only Stripe and our platform see your verification status.</p>
             </div>
             <div className="flex items-start gap-3">
               <IdCard className="h-4 w-4 text-[var(--primary)]" />
               <p>
-                You'll be asked to upload or take a picture of your government-issued ID
-                (driver's licence, passport, or ID card).
+                You'll be redirected to Stripe to confirm your identity and payout account
+                details.
               </p>
             </div>
           </div>
@@ -954,13 +994,28 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
           })
         : null;
 
+    const hasAccount = connectSummary?.has_account ?? false;
+    const idVerified = connectSummary?.is_fully_onboarded ?? identityStatus === "verified";
+    const personalVerified = hasAccount;
+    const requirements = connectSummary?.requirements_due;
+    const outstanding =
+      (requirements?.currently_due?.length ?? 0) + (requirements?.past_due?.length ?? 0) > 0;
+
+    const handleStartPersonal = () => {
+      void handleStartConnectKyc();
+    };
+
+    const handleStartId = () => {
+      void handleStartConnectKyc();
+    };
+
     return (
       <Card>
         <CardHeader className="flex flex-col gap-2 space-y-0 md:flex-row md:items-center md:justify-between">
           <div>
             <CardTitle>Identity Verification (KYC)</CardTitle>
             <CardDescription>
-              Complete a quick Stripe-powered identity check to unlock higher limits.
+              Verify your personal info and ID with Stripe to unlock higher limits and payouts.
             </CardDescription>
           </div>
           {renderIdentityStatusPill()}
@@ -972,72 +1027,60 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
               <AlertDescription>{identityError}</AlertDescription>
             </Alert>
           )}
-          <div className="grid gap-6 md:grid-cols-[2fr,3fr]">
-            <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Stripe Identity validates your government-issued ID so we can reduce fraud and
-                safely raise your booking and listing limits.
-              </p>
-              <ul className="space-y-2 text-sm text-muted-foreground">
-                <li className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-[var(--success-text)]" />
-                  <span>Keep the rentals community safe from fraud.</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-[var(--success-text)]" />
-                  <span>Qualify for higher replacement values and deposits.</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-[var(--success-text)]" />
-                  <span>Speed up approvals for last-minute bookings.</span>
-                </li>
-              </ul>
-              {formattedVerifiedAt && (
-                <p className="text-xs text-muted-foreground">Last verified {formattedVerifiedAt}</p>
-              )}
-            </div>
-            <div className="space-y-4">
-              <div className="space-y-3 rounded-lg border-2 border-dashed border-muted-foreground/40 bg-muted/30 p-4">
-                <p className="text-sm font-medium">What you'll be asked to do</p>
-                <ul className="space-y-2 text-sm text-muted-foreground">
-                  <li>Upload or take a live photo of your ID.</li>
-                  <li>Ensure your name and photo are clearly visible.</li>
-                  <li>You may be asked for a quick selfie for liveness.</li>
-                  <li>The check happens in a secure Stripe window.</li>
-                </ul>
-                <p className="text-xs text-muted-foreground">
-                  We don't store your document photos—Stripe shares only the verification result.
+          <div className="space-y-4">
+            <div className="flex items-center justify-between rounded-lg border bg-muted/40 p-4">
+              <div>
+                <p className="font-medium">1. Personal info & consent</p>
+                <p className="text-sm text-muted-foreground">
+                  Confirm name, contact, address, bank, and agree to Stripe terms.
                 </p>
+                {formattedVerifiedAt && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Last verified {formattedVerifiedAt}
+                  </p>
+                )}
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <Badge variant={personalVerified ? "default" : "secondary"}>
+                  {personalVerified ? "Verified" : "Pending"}
+                </Badge>
                 <Button
-                  type="button"
+                  size="sm"
                   className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
                   style={{ color: "var(--primary-foreground)" }}
+                  onClick={handleStartPersonal}
                   disabled={identityLoading || identityInitialLoading}
-                  onClick={handleStartIdentityVerification}
                 >
-                  {identityLoading ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Starting verification...
-                    </>
-                  ) : identityStatus === "verified" ? (
-                    "Re-run verification"
-                  ) : (
-                    "Start verification"
-                  )}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setShowKycFlow(false)}
-                  disabled={identityLoading}
-                >
-                  Back to security settings
+                  {identityLoading ? "Opening..." : personalVerified ? "Reopen" : "Verify"}
                 </Button>
               </div>
             </div>
+
+            <div className="flex items-center justify-between rounded-lg border bg-muted/20 p-4">
+              <div>
+                <p className="font-medium">2. ID verification</p>
+                <p className="text-sm text-muted-foreground">
+                  Upload your government ID when Stripe asks for it.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge variant={idVerified ? "default" : "secondary"}>
+                  {idVerified ? "Verified" : outstanding ? "Required" : "Pending"}
+                </Badge>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleStartId}
+                  disabled={identityLoading || identityInitialLoading || !personalVerified}
+                >
+                  {identityLoading ? "Opening..." : idVerified ? "Reopen" : "Verify"}
+                </Button>
+              </div>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              Stripe may still ask you to re-confirm details based on their requirements.
+            </p>
           </div>
         </CardContent>
       </Card>
@@ -1094,7 +1137,34 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={kycPrereqOpen} onOpenChange={setKycPrereqOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Finish your profile first</DialogTitle>
+            <DialogDescription>
+              Verify your phone number and complete your address before starting identity
+              verification.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {kycPrereqMissing.map((item) => (
+              <div key={item} className="flex items-start gap-2 text-sm text-muted-foreground">
+                <AlertCircle className="h-4 w-4 text-[var(--warning-text, #b45309)]" />
+                <span>{item}</span>
+              </div>
+            ))}
+            <p className="text-xs text-muted-foreground">
+              Update these in your Personal Info section, then return to start verification.
+            </p>
+          </div>
+          <DialogFooter className="sm:justify-end">
+            <Button type="button" onClick={() => setKycPrereqOpen(false)}>
+              Got it
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
-

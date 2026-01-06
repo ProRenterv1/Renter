@@ -5,6 +5,7 @@ from .api import (
     ContactVerificationRequestView,
     ContactVerificationVerifyView,
     FlexibleTokenObtainPairView,
+    GoogleLoginView,
     LoginEventListView,
     MeView,
     PasswordChangeView,
@@ -24,6 +25,7 @@ urlpatterns = [
     path("signup/", SignupView.as_view(), name="signup"),
     path("token/", FlexibleTokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    path("google/", GoogleLoginView.as_view(), name="google_login"),
     path("me/", MeView.as_view(), name="me"),
     path("public/<int:pk>/", PublicProfileView.as_view(), name="public_profile"),
     path(

@@ -32,4 +32,8 @@ CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"
 
 # Disable API throttling in tests to avoid flaky rate limits.
 REST_FRAMEWORK["DEFAULT_THROTTLE_CLASSES"] = []
-REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {"anon": "100000/hour", "user": "100000/hour"}
+REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
+    "anon": "100000/hour",
+    "user": "100000/hour",
+    "operator": "100000/hour",
+}
