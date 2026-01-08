@@ -421,7 +421,17 @@ def _log_presign_error(
 ):
     payload = {"reason": reason, "listing_id": listing_id, "user_id": user_id}
     if extra:
-        payload.update(extra)
+        reserved = {
+            "filename",
+            "asctime",
+            "message",
+            "lineno",
+            "module",
+            "funcName",
+        }
+        for key, value in extra.items():
+            safe_key = f"extra_{key}" if key in reserved else key
+            payload[safe_key] = value
     logger.warning("photos_presign_rejected: %s", reason, extra=payload)
 
 

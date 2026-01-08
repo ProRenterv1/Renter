@@ -45,8 +45,8 @@ def validate_image_limits(
     max_dim = getattr(settings, "IMAGE_MAX_DIMENSION", None)
     if max_dim:
         if width and width > max_dim:
-            return f"Image width exceeds the limit of {max_dim}px."
+            return f"Image width exceeds the dimension limit of {max_dim}px."
         if height and height > max_dim:
-            return f"Image height exceeds the limit of {max_dim}px."
+            return f"Image height exceeds the dimension limit of {max_dim}px."
 
     return None
