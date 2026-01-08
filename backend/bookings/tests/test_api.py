@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from django.core.cache import cache
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -80,6 +81,21 @@ def booking_payload(listing, start, end):
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
     }
+
+
+def test_my_bookings_cache_invalidation(renter_user, booking_factory):
+    cache.clear()
+    client = auth(renter_user)
+
+    first = client.get("/api/bookings/my/")
+    assert first.status_code == 200
+    assert first.data == []
+
+    booking_factory(renter=renter_user)
+
+    second = client.get("/api/bookings/my/")
+    assert second.status_code == 200
+    assert len(second.data) == 1
 
 
 def test_create_booking_success(renter_user, listing):

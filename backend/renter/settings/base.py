@@ -260,6 +260,21 @@ CELERY_BEAT_SCHEDULE.update(
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 FRONTEND_ORIGIN = env("FRONTEND_ORIGIN", default="http://localhost:5173")
 
+# --- Cache ---
+CACHE_URL = env("CACHE_URL", default=REDIS_URL)
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": CACHE_URL,
+    }
+}
+
+# Endpoint cache TTLs (seconds)
+CACHE_TTL_LISTINGS = env.int("CACHE_TTL_LISTINGS", default=120)
+CACHE_TTL_PROMOTIONS = env.int("CACHE_TTL_PROMOTIONS", default=60)
+CACHE_TTL_CATEGORIES = env.int("CACHE_TTL_CATEGORIES", default=300)
+CACHE_TTL_RECENT_RENTALS = env.int("CACHE_TTL_RECENT_RENTALS", default=120)
+
 # --- Geocoding ---
 GOOGLE_MAPS_API_KEY= env("GOOGLE_MAPS_API_KEY", default=None)
 GEOCODE_CACHE_TTL= env.int("GEOCODE_CACHE_TTL", default=7 * 24 * 60 * 60)

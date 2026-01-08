@@ -5,7 +5,8 @@ from functools import lru_cache
 import redis
 import requests
 from django.conf import settings
-from django.db.models import Exists, OuterRef
+from django.core.cache import cache
+from django.db.models import BooleanField, Case, Value, When
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
@@ -15,11 +16,18 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from promotions.models import PromotedSlot
+from promotions.cache import get_active_promoted_listing_ids
 from storage.s3 import guess_content_type, object_key, presign_put, public_url
 from storage.tasks import scan_and_finalize_photo
 from storage.validators import coerce_int, max_bytes_for_content_type, validate_image_limits
 
+from .cache import (
+    categories_cache_timeout,
+    get_categories_cache_key,
+    invalidate_listing_feed_cache,
+    listing_feed_cache_key,
+    listings_cache_timeout,
+)
 from .models import Category, Listing, ListingPhoto
 from .serializers import CategorySerializer, ListingPhotoSerializer, ListingSerializer
 from .services import search_listings
@@ -289,12 +297,44 @@ class ListingViewSet(viewsets.ModelViewSet):
             city=city,
             owner_id=owner_id,
         )
-        active_slots = PromotedSlot.active_for_feed().filter(listing_id=OuterRef("pk"))
-        qs = qs.annotate(is_promoted=Exists(active_slots))
+        promoted_ids = get_active_promoted_listing_ids()
+        if promoted_ids:
+            qs = qs.annotate(
+                is_promoted=Case(
+                    When(pk__in=promoted_ids, then=Value(True)),
+                    default=Value(False),
+                    output_field=BooleanField(),
+                )
+            )
+        else:
+            qs = qs.annotate(is_promoted=Value(False))
         return qs.order_by("-is_promoted", "-created_at")
+
+    def list(self, request, *args, **kwargs):
+        cache_key = listing_feed_cache_key(request.query_params)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+        else:
+            serializer = self.get_serializer(queryset, many=True)
+            response = Response(serializer.data)
+
+        cache.set(cache_key, response.data, timeout=listings_cache_timeout())
+        return response
 
     def perform_create(self, serializer):
         serializer.save()
+        invalidate_listing_feed_cache()
+
+    def perform_update(self, serializer):
+        serializer.save()
+        invalidate_listing_feed_cache()
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -307,6 +347,7 @@ class ListingViewSet(viewsets.ModelViewSet):
         if hasattr(instance, "updated_at"):
             update_fields.append("updated_at")
         instance.save(update_fields=update_fields)
+        invalidate_listing_feed_cache()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["get"], url_path="photos")
@@ -357,6 +398,15 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = CategorySerializer
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
+
+    def list(self, request, *args, **kwargs):
+        cache_key = get_categories_cache_key()
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+        response = super().list(request, *args, **kwargs)
+        cache.set(cache_key, response.data, timeout=categories_cache_timeout())
+        return response
 
 
 def _require_listing_owner(listing_id: int, user) -> Listing:

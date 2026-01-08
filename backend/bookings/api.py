@@ -7,6 +7,7 @@ from datetime import datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.conf import settings
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
@@ -40,6 +41,7 @@ from storage.s3 import booking_object_key, guess_content_type, presign_put, publ
 from storage.tasks import scan_and_finalize_booking_photo
 from storage.validators import coerce_int, max_bytes_for_content_type, validate_image_limits
 
+from .cache import bookings_cache_key, bookings_cache_timeout, invalidate_bookings_cache_for_users
 from .domain import (
     ACTIVE_BOOKING_STATUSES,
     assert_can_cancel,
@@ -214,11 +216,31 @@ class BookingViewSet(viewsets.ModelViewSet):
             ChatMessage.SYSTEM_REQUEST_SENT,
             "Booking request sent",
         )
+        invalidate_bookings_cache_for_users([booking.owner_id, booking.renter_id])
 
     @action(detail=False, methods=["get"], url_path="my")
     def my_bookings(self, request, *args, **kwargs):
         """Return the authenticated user's bookings."""
-        return self.list(request, *args, **kwargs)
+        user_id = getattr(request.user, "id", None)
+        if not user_id:
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+
+        cache_key = bookings_cache_key(user_id, request.query_params)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+        else:
+            serializer = self.get_serializer(queryset, many=True)
+            response = Response(serializer.data)
+
+        cache.set(cache_key, response.data, timeout=bookings_cache_timeout())
+        return response
 
     @action(detail=False, methods=["get"], url_path="pending-requests-count")
     def pending_requests_count(self, request, *args, **kwargs):
