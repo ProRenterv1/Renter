@@ -180,10 +180,6 @@ def _apply_av_metadata(key: str, status: str) -> None:
         s3util.tag_object(key, tags)
     except Exception as exc:  # pragma: no cover - best effort
         logger.warning("Failed to tag S3 object %s: %s", key, exc)
-    try:
-        s3util.set_metadata_copy(key, {"x-av": status})
-    except Exception as exc:  # pragma: no cover - best effort
-        logger.warning("Failed to update S3 metadata for %s: %s", key, exc)
 
 
 def _extract_dimensions(data: bytes) -> Tuple[Optional[int], Optional[int]]:

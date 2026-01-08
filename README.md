@@ -105,6 +105,7 @@ All Docker commands run from `infra/`.
 - For R2, prefer `R2_ACCOUNT_ID` (or set `AWS_S3_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com`), keep `AWS_S3_REGION_NAME=auto`, and leave `AWS_S3_FORCE_PATH_STYLE=true`.
 - Public URLs are built from `S3_PUBLIC_BASE_URL` first (set to your `https://<bucket>.r2.dev` or custom domain), then `MEDIA_BASE_URL`, then the endpoint/bucket fallback.
 - Upload prefixes stay under `S3_UPLOADS_PREFIX` (default `uploads/listings`); presign flows remain compatible with AWS-style clients.
+- AV markers are stored as S3 object tags (`av-status=*`) only; we no longer write `x-av` metadata. Ensure IAM/bucket policies (or R2 ACL) allow `PutObjectTagging` for the upload and AV finalize flows.
 - Cutover checklist: create the R2 bucket + access keys, configure `*.r2.dev` or a custom domain, copy existing objects (e.g., `aws s3 sync --endpoint-url https://<account-id>.r2.cloudflarestorage.com s3://old-bucket s3://new-bucket`), deploy with the new env vars, and smoke-test uploads/AV tagging.
 
 ## Frontend Development

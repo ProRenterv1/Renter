@@ -86,9 +86,22 @@ def _stub_s3(monkeypatch, payload: bytes):
     monkeypatch.setattr("storage.tasks._s3_client", lambda: _StubClient())
 
 
-@pytest.fixture(autouse=True)
-def _disable_metadata(monkeypatch):
-    monkeypatch.setattr("storage.tasks._apply_av_metadata", lambda *args, **kwargs: None)
+def test_apply_av_metadata_tags_only(monkeypatch):
+    tag_calls: list[tuple[str, dict[str, str]]] = []
+    meta_calls: list[tuple] = []
+
+    monkeypatch.setattr(
+        "storage.tasks.s3util.tag_object", lambda key, tags: tag_calls.append((key, tags))
+    )
+    monkeypatch.setattr(
+        "storage.tasks.s3util.set_metadata_copy",
+        lambda *args, **kwargs: meta_calls.append((args, kwargs)),
+    )
+
+    tasks._apply_av_metadata("k", "clean")
+
+    assert tag_calls == [("k", {"av-status": "clean"})]
+    assert meta_calls == []
 
 
 def test_scan_task_marks_photo_clean(monkeypatch, listing, owner):
