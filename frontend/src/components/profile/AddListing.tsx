@@ -15,6 +15,12 @@ import {
   type JsonError,
 } from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
+import { compressImageFile } from "@/lib/imageCompression";
+import {
+  LISTING_MAX_PHOTOS,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGE_MB_LABEL,
+} from "@/lib/uploadLimits";
 
 const normalizePostalCodeInput = (value: string) => {
   const alphanumeric = value.toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -27,7 +33,14 @@ const sanitizePostalCodeForPayload = (value: string) =>
   normalizePostalCodeInput(value).trim();
 
 type Step = 1 | 2 | 3;
-type UploadImage = { file: File; previewUrl: string };
+type UploadImage = {
+  file: File;
+  previewUrl: string;
+  originalSize: number;
+  compressedSize: number;
+  width: number;
+  height: number;
+};
 
 export function AddListing() {
   const navigate = useNavigate();
@@ -48,6 +61,7 @@ export function AddListing() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [compressing, setCompressing] = useState(false);
   const [uploadedImages, setUploadedImages] = useState<UploadImage[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -181,17 +195,52 @@ export function AddListing() {
     });
   };
 
-  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files) {
       return;
     }
-    const newUploads = Array.from(files).map((file) => ({
-      file,
-      previewUrl: URL.createObjectURL(file),
-    }));
-    setUploadedImages((prev) => [...prev, ...newUploads]);
-    event.target.value = "";
+    const remainingSlots = LISTING_MAX_PHOTOS - uploadedImages.length;
+    if (remainingSlots <= 0) {
+      setError(`You can upload up to ${LISTING_MAX_PHOTOS} photos for a listing.`);
+      event.target.value = "";
+      return;
+    }
+    setCompressing(true);
+    setError(null);
+    try {
+      const selected = Array.from(files).slice(0, remainingSlots);
+      const oversize = selected.filter((file) => file.size > MAX_IMAGE_BYTES).length;
+      const filtered = selected.filter((file) => file.size <= MAX_IMAGE_BYTES);
+      if (oversize > 0 && filtered.length === 0) {
+        setError(`Images must be ${MAX_IMAGE_MB_LABEL} MB or smaller.`);
+        return;
+      }
+      if (oversize > 0) {
+        setError(`Skipped ${oversize} file(s) over ${MAX_IMAGE_MB_LABEL} MB.`);
+      }
+      const processed = await Promise.all(
+        filtered.map(async (file) => {
+          const result = await compressImageFile(file);
+          const previewUrl = URL.createObjectURL(result.file);
+          return {
+            file: result.file,
+            previewUrl,
+            originalSize: result.originalSize,
+            compressedSize: result.compressedSize,
+            width: result.width,
+            height: result.height,
+          };
+        }),
+      );
+      setUploadedImages((prev) => [...prev, ...processed]);
+    } catch (err) {
+      console.error("image compression failed", err);
+      setError("Could not process one of the images. Please try again.");
+    } finally {
+      setCompressing(false);
+      event.target.value = "";
+    }
   };
 
   const removeImage = (index: number) => {
@@ -224,6 +273,10 @@ export function AddListing() {
   const handlePublish = async () => {
     setError(null);
     setSuccess(null);
+    if (compressing) {
+      setError("Please wait while we finish compressing your images.");
+      return;
+    }
     if (!ensureListingPermissions()) {
       return;
     }
@@ -259,6 +312,10 @@ export function AddListing() {
       setError("Please upload at least one photo before publishing.");
       return;
     }
+    if (uploadedImages.length > LISTING_MAX_PHOTOS) {
+      setError(`You can upload up to ${LISTING_MAX_PHOTOS} photos for a listing.`);
+      return;
+    }
     setSubmitting(true);
     try {
       const replacementNumber = parsedReplacement;
@@ -276,6 +333,7 @@ export function AddListing() {
       };
       const listing = await listingsAPI.create(payload);
 
+      let successfulUploads = 0;
       for (const upload of uploadedImages) {
         try {
           const presign = await listingsAPI.presignPhoto(listing.id, {
@@ -296,7 +354,7 @@ export function AddListing() {
           });
           if (!uploadResponse.ok) {
             console.warn("Photo upload failed", uploadResponse.statusText);
-            continue;
+            throw new Error("Photo upload failed");
           }
           const etagHeader = uploadResponse.headers.get("ETag") ?? uploadResponse.headers.get("etag") ?? "";
           await listingsAPI.completePhoto(listing.id, {
@@ -305,18 +363,39 @@ export function AddListing() {
             filename: upload.file.name,
             content_type: upload.file.type || "application/octet-stream",
             size: upload.file.size,
+            width: upload.width || undefined,
+            height: upload.height || undefined,
+            original_size: upload.originalSize,
+            compressed_size: upload.compressedSize,
           });
+          successfulUploads += 1;
         } catch (photoError) {
           console.warn("Photo upload error", photoError);
+          // If any photo fails, stop and roll back the listing to avoid publishing without images.
+          try {
+            await listingsAPI.delete(listing.id);
+          } catch (cleanupError) {
+            console.warn("Failed to roll back listing after photo error", cleanupError);
+          }
+          throw photoError;
         }
+      }
+
+      if (successfulUploads === 0) {
+        try {
+          await listingsAPI.delete(listing.id);
+        } catch (cleanupError) {
+          console.warn("Failed to roll back listing after zero successful uploads", cleanupError);
+        }
+        setError("Could not upload photos. Listing was not published.");
+        return;
       }
 
       setSuccess("Listing added successfully.");
       resetForm();
     } catch (publishError) {
       console.error(publishError);
-      let message =
-        "Something went wrong while publishing your listing. Please try again.";
+      let message = "Something went wrong while publishing your listing. Please try again.";
       const err = publishError as JsonError;
       if (err?.data && typeof err.data === "object" && err.data !== null) {
         const data = err.data as {
@@ -328,6 +407,8 @@ export function AddListing() {
         } else if (Array.isArray(data.non_field_errors) && data.non_field_errors[0]) {
           message = data.non_field_errors[0];
         }
+      } else if (publishError instanceof Error && publishError.message) {
+        message = publishError.message;
       }
       setError(message);
     } finally {
@@ -525,7 +606,13 @@ export function AddListing() {
                 <Label>Upload Photos</Label>
                 <div
                   className="border-2 border-dashed rounded-lg p-8 text-center cursor-pointer hover:border-[var(--primary)] transition-colors"
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => {
+                    if (uploadedImages.length >= LISTING_MAX_PHOTOS) {
+                      setError(`You can upload up to ${LISTING_MAX_PHOTOS} photos for a listing.`);
+                      return;
+                    }
+                    fileInputRef.current?.click();
+                  }}
                 >
                   <Upload
                     className="w-12 h-12 mx-auto mb-4"
@@ -533,8 +620,12 @@ export function AddListing() {
                   />
                   <p className="mb-2">Click to upload or drag and drop</p>
                   <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-                    PNG, JPG or WEBP (max. 5MB each)
+                    Up to {LISTING_MAX_PHOTOS} images, max {MAX_IMAGE_MB_LABEL} MB each (PNG, JPG,
+                    WEBP)
                   </p>
+                  {compressing && (
+                    <p className="mt-2 text-sm text-muted-foreground">Compressing images...</p>
+                  )}
                   <input
                     ref={fileInputRef}
                     id="file-upload"
@@ -543,6 +634,7 @@ export function AddListing() {
                     accept="image/*"
                     className="hidden"
                     onChange={handleImageUpload}
+                    disabled={compressing || uploadedImages.length >= LISTING_MAX_PHOTOS}
                   />
                 </div>
 
@@ -595,7 +687,7 @@ export function AddListing() {
               <Button
                 className="bg-[var(--primary)] hover:bg-[var(--primary-hover)] ml-auto"
                 style={{ color: "var(--primary-foreground)" }}
-                disabled={submitting || !canCreateListing}
+                disabled={submitting || !canCreateListing || compressing}
                 onClick={handlePublish}
               >
                 Publish Listing

@@ -4,9 +4,8 @@ import io
 import logging
 import subprocess
 from datetime import datetime, time, timedelta
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-import boto3
 from botocore.exceptions import (
     BotoCoreError,
     ClientError,
@@ -24,6 +23,7 @@ from core.settings_resolver import get_int
 from notifications import tasks as notification_tasks
 
 from . import s3 as s3util
+from .validators import coerce_int, is_image_content_type, validate_image_limits
 
 logger = logging.getLogger(__name__)
 
@@ -36,28 +36,51 @@ DUMMY_IMAGE_BYTES = (
     b"\xc2\xfc\x1f\x00\x05\xff\x02\x97d\x0c\x16\x00\x00\x00\x00IEND\xaeB`\x82"
 )
 
+_VIDEO_SCAN_DEFAULT_BYTES = getattr(settings, "DISPUTE_VIDEO_SCAN_SAMPLE_BYTES", None)
+if not isinstance(_VIDEO_SCAN_DEFAULT_BYTES, int) or _VIDEO_SCAN_DEFAULT_BYTES <= 0:
+    _VIDEO_SCAN_DEFAULT_BYTES = 2 * 1024 * 1024
+
 
 class AntivirusError(RuntimeError):
     """Raised when ClamAV cannot determine the safety of a file."""
 
 
 def _s3_client():
-    return boto3.client(
-        "s3",
-        endpoint_url=settings.AWS_S3_ENDPOINT_URL,
-        region_name=settings.AWS_S3_REGION_NAME,
-    )
+    return s3util._client()
 
 
-def _download_bytes(key: str) -> bytes:
+def _download_bytes(key: str, *, byte_limit: Optional[int] = None) -> bytes:
     try:
         buffer = io.BytesIO()
-        _s3_client().download_fileobj(settings.AWS_STORAGE_BUCKET_NAME, key, buffer)
+        download_kwargs: dict[str, Any] = {}
+        if byte_limit and byte_limit > 0:
+            download_kwargs["ExtraArgs"] = {"Range": f"bytes=0-{byte_limit - 1}"}
+        _s3_client().download_fileobj(
+            settings.AWS_STORAGE_BUCKET_NAME,
+            key,
+            buffer,
+            **download_kwargs,
+        )
         return buffer.getvalue()
-    except (BotoCoreError, ClientError, NoCredentialsError) as exc:
+    except (BotoCoreError, ClientError, EndpointConnectionError, NoCredentialsError) as exc:
         if isinstance(exc, (NoCredentialsError, EndpointConnectionError)):
             return DUMMY_IMAGE_BYTES
         raise RuntimeError(f"Unable to download object {key}: {exc}") from exc
+
+
+def _dispute_video_scan_limit(meta: Optional[Dict]) -> Optional[int]:
+    kind = ((meta or {}).get("kind") or "").lower()
+    content_type = ((meta or {}).get("content_type") or "").lower()
+    is_video = kind == "video" or content_type.startswith("video/")
+    if not is_video:
+        return None
+    configured_default = getattr(
+        settings, "DISPUTE_VIDEO_SCAN_SAMPLE_BYTES", _VIDEO_SCAN_DEFAULT_BYTES
+    )
+    if not isinstance(configured_default, int) or configured_default <= 0:
+        configured_default = _VIDEO_SCAN_DEFAULT_BYTES
+    limit = get_int("DISPUTE_VIDEO_SCAN_SAMPLE_BYTES", configured_default)
+    return limit if isinstance(limit, int) and limit > 0 else None
 
 
 def _scan_with_clamd(data: bytes) -> Optional[str]:
@@ -173,15 +196,6 @@ def _extract_dimensions(data: bytes) -> Tuple[Optional[int], Optional[int]]:
         return None, None
 
 
-def _coerce_int(value) -> Optional[int]:
-    if value in (None, "", False):
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _finalize_photo_record(
     *,
     listing_id: int,
@@ -196,13 +210,16 @@ def _finalize_photo_record(
     etag = (meta.get("etag") or "").strip('"')
     filename = meta.get("filename") or ""
     content_type = meta.get("content_type") or ""
-    size = _coerce_int(meta.get("size"))
+    size = coerce_int(meta.get("size"))
     width, height = dimensions
 
     status = ListingPhoto.Status.ACTIVE if verdict == "clean" else ListingPhoto.Status.BLOCKED
-    av_status = (
-        ListingPhoto.AVStatus.CLEAN if verdict == "clean" else ListingPhoto.AVStatus.INFECTED
-    )
+    if verdict == "clean":
+        av_status = ListingPhoto.AVStatus.CLEAN
+    elif verdict == "infected":
+        av_status = ListingPhoto.AVStatus.INFECTED
+    else:
+        av_status = ListingPhoto.AVStatus.ERROR
 
     public_url = s3util.public_url(key)
 
@@ -251,14 +268,17 @@ def _finalize_booking_photo_record(
     etag = (meta.get("etag") or "").strip('"')
     filename = meta.get("filename") or ""
     content_type = meta.get("content_type") or ""
-    size = _coerce_int(meta.get("size"))
+    size = coerce_int(meta.get("size"))
     width, height = dimensions
     role_value = meta.get("role") or BookingPhoto.Role.BEFORE
 
     status = BookingPhoto.Status.ACTIVE if verdict == "clean" else BookingPhoto.Status.BLOCKED
-    av_status = (
-        BookingPhoto.AVStatus.CLEAN if verdict == "clean" else BookingPhoto.AVStatus.INFECTED
-    )
+    if verdict == "clean":
+        av_status = BookingPhoto.AVStatus.CLEAN
+    elif verdict == "infected":
+        av_status = BookingPhoto.AVStatus.INFECTED
+    else:
+        av_status = BookingPhoto.AVStatus.ERROR
 
     public_url = s3util.public_url(key)
 
@@ -390,12 +410,15 @@ def _finalize_dispute_evidence_record(
     etag = (meta.get("etag") or "").strip('"')
     filename = meta.get("filename") or ""
     content_type = meta.get("content_type") or ""
-    size = _coerce_int(meta.get("size"))
+    size = coerce_int(meta.get("size"))
     kind_value = meta.get("kind") or DisputeEvidence.Kind.PHOTO
 
-    av_status = (
-        DisputeEvidence.AVStatus.CLEAN if verdict == "clean" else DisputeEvidence.AVStatus.INFECTED
-    )
+    if verdict == "clean":
+        av_status = DisputeEvidence.AVStatus.CLEAN
+    elif verdict == "infected":
+        av_status = DisputeEvidence.AVStatus.INFECTED
+    else:
+        av_status = DisputeEvidence.AVStatus.FAILED
 
     evidence = DisputeEvidence.objects.filter(
         dispute_id=dispute_id,
@@ -430,9 +453,31 @@ def _run_scan_and_finalize(
     meta: Dict | None,
 ):
     data = _download_bytes(key)
+    dimensions = _extract_dimensions(data)
     verdict = _scan_bytes(data)
-    if verdict not in {"clean", "infected"}:
+    constraint_error = validate_image_limits(
+        content_type=meta.get("content_type") if meta else "",
+        size=len(data),
+        width=dimensions[0],
+        height=dimensions[1],
+    )
+    if constraint_error:
+        verdict = "invalid"
+    if verdict not in {"clean", "infected", "invalid"}:
         raise AntivirusError("Unknown antivirus verdict.")
+    if is_image_content_type(meta.get("content_type") if meta else ""):
+        logger.info(
+            "image_processed",
+            extra={
+                "key": key,
+                "width": dimensions[0],
+                "height": dimensions[1],
+                "bytes": len(data),
+                "original_size": coerce_int(meta.get("original_size") if meta else None),
+                "compressed_size": coerce_int(meta.get("compressed_size") if meta else None),
+                "constraint_error": constraint_error,
+            },
+        )
 
     _apply_av_metadata(key, verdict)
     photo = _finalize_photo_record(
@@ -441,7 +486,7 @@ def _run_scan_and_finalize(
         key=key,
         verdict=verdict,
         meta=meta or {},
-        dimensions=_extract_dimensions(data),
+        dimensions=dimensions,
     )
     return {"status": verdict, "photo_id": str(photo.id)}
 
@@ -454,9 +499,32 @@ def _run_scan_and_finalize_booking_photo(
     meta: Dict | None,
 ):
     data = _download_bytes(key)
+    dimensions = _extract_dimensions(data)
     verdict = _scan_bytes(data)
-    if verdict not in {"clean", "infected"}:
+    constraint_error = validate_image_limits(
+        content_type=meta.get("content_type") if meta else "",
+        size=len(data),
+        width=dimensions[0],
+        height=dimensions[1],
+    )
+    if constraint_error:
+        verdict = "invalid"
+    if verdict not in {"clean", "infected", "invalid"}:
         raise AntivirusError("Unknown antivirus verdict.")
+    if is_image_content_type(meta.get("content_type") if meta else ""):
+        logger.info(
+            "image_processed",
+            extra={
+                "key": key,
+                "width": dimensions[0],
+                "height": dimensions[1],
+                "bytes": len(data),
+                "original_size": coerce_int(meta.get("original_size") if meta else None),
+                "compressed_size": coerce_int(meta.get("compressed_size") if meta else None),
+                "booking_id": booking_id,
+                "constraint_error": constraint_error,
+            },
+        )
 
     _apply_av_metadata(key, verdict)
     photo = _finalize_booking_photo_record(
@@ -465,7 +533,7 @@ def _run_scan_and_finalize_booking_photo(
         key=key,
         verdict=verdict,
         meta=meta or {},
-        dimensions=_extract_dimensions(data),
+        dimensions=dimensions,
     )
     return {"status": verdict, "photo_id": str(photo.id)}
 
@@ -477,10 +545,44 @@ def _run_scan_and_finalize_dispute_evidence(
     uploaded_by_id: int,
     meta: Dict | None,
 ):
-    data = _download_bytes(key)
+    byte_limit = _dispute_video_scan_limit(meta)
+    data = _download_bytes(key, byte_limit=byte_limit)
+    if byte_limit:
+        logger.info(
+            "video_scan_sampled",
+            extra={
+                "key": key,
+                "byte_limit": byte_limit,
+                "downloaded_bytes": len(data),
+                "content_type": (meta or {}).get("content_type"),
+            },
+        )
+    dimensions = _extract_dimensions(data)
     verdict = _scan_bytes(data)
-    if verdict not in {"clean", "infected"}:
+    constraint_error = validate_image_limits(
+        content_type=meta.get("content_type") if meta else "",
+        size=len(data),
+        width=dimensions[0],
+        height=dimensions[1],
+    )
+    if constraint_error:
+        verdict = "invalid"
+    if verdict not in {"clean", "infected", "invalid"}:
         raise AntivirusError("Unknown antivirus verdict.")
+    if is_image_content_type(meta.get("content_type") if meta else ""):
+        logger.info(
+            "image_processed",
+            extra={
+                "key": key,
+                "width": dimensions[0],
+                "height": dimensions[1],
+                "bytes": len(data),
+                "original_size": coerce_int(meta.get("original_size") if meta else None),
+                "compressed_size": coerce_int(meta.get("compressed_size") if meta else None),
+                "dispute_id": dispute_id,
+                "constraint_error": constraint_error,
+            },
+        )
 
     _apply_av_metadata(key, verdict)
     evidence = _finalize_dispute_evidence_record(

@@ -158,6 +158,71 @@ def test_presign_rejects_oversized_files(monkeypatch, owner, listing, settings):
     assert "File too large" in resp.json()["detail"]
 
 
+def test_presign_rejects_when_photo_limit_reached(owner, listing, settings):
+    client = _auth_client(owner)
+    settings.LISTING_MAX_PHOTOS = 2
+    ListingPhoto.objects.create(
+        listing=listing,
+        owner=owner,
+        key="uploads/listings/1/1/one.jpg",
+        url="https://cdn.test/one.jpg",
+        status=ListingPhoto.Status.ACTIVE,
+    )
+    ListingPhoto.objects.create(
+        listing=listing,
+        owner=owner,
+        key="uploads/listings/1/1/two.jpg",
+        url="https://cdn.test/two.jpg",
+        status=ListingPhoto.Status.PENDING,
+    )
+
+    resp = client.post(
+        f"/api/listings/{listing.id}/photos/presign",
+        {"filename": "tool.jpg", "content_type": "image/jpeg", "size": 100},
+        format="json",
+    )
+
+    assert resp.status_code == 400
+    assert "Maximum of 2 photos" in resp.json()["detail"]
+
+
+def test_presign_rejects_over_image_limit(owner, listing, settings):
+    client = _auth_client(owner)
+    settings.S3_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+    settings.IMAGE_MAX_UPLOAD_BYTES = 6 * 1024 * 1024
+    too_large = settings.IMAGE_MAX_UPLOAD_BYTES + 1
+
+    resp = client.post(
+        f"/api/listings/{listing.id}/photos/presign",
+        {"filename": "tool.jpg", "content_type": "image/jpeg", "size": too_large},
+        format="json",
+    )
+
+    assert resp.status_code == 400
+    assert str(settings.IMAGE_MAX_UPLOAD_BYTES) in resp.json()["detail"]
+
+
+def test_complete_rejects_large_dimensions(owner, listing, settings):
+    client = _auth_client(owner)
+    settings.IMAGE_MAX_DIMENSION = 100
+
+    resp = client.post(
+        f"/api/listings/{listing.id}/photos/complete",
+        {
+            "key": "uploads/listings/1/1/fake-key-wide.jpg",
+            "etag": '"etag-1234"',
+            "filename": "too-wide.jpg",
+            "content_type": "image/jpeg",
+            "size": 2048,
+            "width": 200,
+            "height": 50,
+        },
+        format="json",
+    )
+    assert resp.status_code == 400
+    assert "dimension" in resp.json()["detail"]
+
+
 def test_owner_can_complete_upload(monkeypatch, owner, listing):
     client = _auth_client(owner)
 
@@ -174,6 +239,10 @@ def test_owner_can_complete_upload(monkeypatch, owner, listing):
         "filename": "new-photo.jpg",
         "content_type": "image/jpeg",
         "size": 2048,
+        "width": 800,
+        "height": 600,
+        "original_size": 3000000,
+        "compressed_size": 2048,
     }
     resp = client.post(
         f"/api/listings/{listing.id}/photos/complete",
@@ -189,6 +258,8 @@ def test_owner_can_complete_upload(monkeypatch, owner, listing):
     assert photo.filename == payload["filename"]
     assert photo.content_type == payload["content_type"]
     assert photo.size == payload["size"]
+    assert photo.width == payload["width"]
+    assert photo.height == payload["height"]
     assert photo.etag == "etag-1234"
 
     queued = delay_calls["call"]
@@ -197,6 +268,10 @@ def test_owner_can_complete_upload(monkeypatch, owner, listing):
     assert queued["owner_id"] == owner.id
     assert queued["meta"]["filename"] == payload["filename"]
     assert queued["meta"]["size"] == payload["size"]
+    assert queued["meta"]["width"] == payload["width"]
+    assert queued["meta"]["height"] == payload["height"]
+    assert queued["meta"]["original_size"] == payload["original_size"]
+    assert queued["meta"]["compressed_size"] == payload["compressed_size"]
 
 
 def test_non_owner_cannot_complete(monkeypatch, listing, other_user):

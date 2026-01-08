@@ -566,6 +566,41 @@ def test_before_photos_presign_returns_upload_details(
     assert captured["value"][3] == 1024
 
 
+def test_before_photos_presign_rejects_when_limit_reached(booking_factory, renter_user, settings):
+    settings.BOOKING_BEFORE_MAX_PHOTOS = 2
+    start = date.today() + timedelta(days=3)
+    booking = booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.CONFIRMED,
+        renter=renter_user,
+    )
+    BookingPhoto.objects.create(
+        booking=booking,
+        uploaded_by=renter_user,
+        role=BookingPhoto.Role.BEFORE,
+        s3_key="uploads/bookings/limit/a.jpg",
+        status=BookingPhoto.Status.ACTIVE,
+    )
+    BookingPhoto.objects.create(
+        booking=booking,
+        uploaded_by=renter_user,
+        role=BookingPhoto.Role.BEFORE,
+        s3_key="uploads/bookings/limit/b.jpg",
+        status=BookingPhoto.Status.PENDING,
+    )
+    client = auth(renter_user)
+
+    resp = client.post(
+        f"/api/bookings/{booking.id}/before-photos/presign/",
+        {"filename": "before.png", "content_type": "image/png", "size": 100},
+        format="json",
+    )
+
+    assert resp.status_code == 400
+    assert "Maximum of 2 before photos" in (resp.data.get("detail") or "")
+
+
 def test_before_photos_complete_creates_photo_and_schedules_scan(
     booking_factory,
     renter_user,

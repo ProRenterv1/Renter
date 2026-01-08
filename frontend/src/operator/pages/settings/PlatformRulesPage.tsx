@@ -53,6 +53,38 @@ const PLATFORM_RULE_ROWS: SettingRow[] = [
   },
 ];
 
+const UPLOAD_RULE_ROWS: SettingRow[] = [
+  {
+    key: "S3_MAX_UPLOAD_BYTES",
+    label: "Max upload size (all files)",
+    valueType: "int",
+    valueLabel: "Bytes",
+    formatValue: formatBytes,
+  },
+  {
+    key: "IMAGE_MAX_UPLOAD_BYTES",
+    label: "Image max upload size",
+    valueType: "int",
+    valueLabel: "Bytes",
+    formatValue: formatBytes,
+  },
+  {
+    key: "IMAGE_MAX_DIMENSION",
+    label: "Image max dimension",
+    valueType: "int",
+    valueLabel: "Pixels",
+    formatValue: (v) => formatPixels(v),
+  },
+  {
+    key: "DISPUTE_VIDEO_SCAN_SAMPLE_BYTES",
+    label: "Dispute video scan sample size",
+    valueType: "int",
+    valueLabel: "Bytes",
+    valueHelpText: "Only the first bytes of dispute videos are downloaded for AV scanning.",
+    formatValue: formatBytes,
+  },
+];
+
 const DISPUTES_POLICY_ROWS: SettingRow[] = [
   {
     key: "DISPUTE_FILING_WINDOW_HOURS",
@@ -135,7 +167,7 @@ export function PlatformRulesPage() {
         <div>
           <h2 className="mb-1">Platform Rules</h2>
           <p className="text-muted-foreground m-0">
-            Manage booking limits and dispute policy settings. These values override environment defaults when present.
+            Manage booking limits, upload limits, and dispute policy settings. These values override environment defaults when present.
           </p>
         </div>
         <Button variant="outline" onClick={load} disabled={loading}>
@@ -156,6 +188,23 @@ export function PlatformRulesPage() {
         </CardHeader>
         <CardContent className="space-y-3">
           {PLATFORM_RULE_ROWS.map((row) => (
+            <SettingRowItem
+              key={row.key}
+              row={row}
+              setting={settingsByKey.get(row.key) ?? null}
+              canEdit={isAdmin}
+              onEdit={() => handleOpenEdit(row)}
+            />
+          ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle>Uploads & media</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {UPLOAD_RULE_ROWS.map((row) => (
             <SettingRowItem
               key={row.key}
               row={row}
@@ -231,6 +280,8 @@ function SettingRowItem({
   const isOverridden = setting?.source === "db";
   const value = setting ? row.formatValue?.(setting.value_json) ?? formatRawValue(setting.value_json) : "—";
   const updatedAt = setting?.updated_at ? new Date(setting.updated_at) : null;
+  const updatedBy =
+    setting?.updated_by_name || (setting?.updated_by_id ? `User #${setting.updated_by_id}` : null);
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -248,7 +299,7 @@ function SettingRowItem({
         {isOverridden ? (
           <div className="mt-1 text-xs text-muted-foreground">
             Updated {updatedAt ? updatedAt.toLocaleString() : setting.updated_at}
-            {setting.updated_by_id ? ` • by #${setting.updated_by_id}` : ""}
+            {updatedBy ? ` • by ${updatedBy}` : ""}
             {setting.effective_at ? ` • effective ${new Date(setting.effective_at).toLocaleString()}` : ""}
           </div>
         ) : (
@@ -286,4 +337,29 @@ function formatIntWithUnit(value: unknown, unit: string) {
         : NaN;
   if (!Number.isFinite(parsed)) return "—";
   return pluralize(parsed, unit);
+}
+
+function coerceInt(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function formatBytes(value: unknown) {
+  const bytes = coerceInt(value);
+  if (bytes === null) return "—";
+  const kb = bytes / 1024;
+  const mb = kb / 1024;
+  if (mb >= 1) return `${mb.toFixed(1)} MB (${bytes.toLocaleString()} bytes)`;
+  if (kb >= 1) return `${kb.toFixed(1)} KB (${bytes.toLocaleString()} bytes)`;
+  return `${bytes.toLocaleString()} bytes`;
+}
+
+function formatPixels(value: unknown) {
+  const px = coerceInt(value);
+  if (px === null) return "—";
+  return `${px.toLocaleString()} px`;
 }

@@ -157,16 +157,25 @@ TWILIO_FROM_NUMBER = env("TWILIO_FROM_NUMBER", default=None)
 # --- S3 ---
 USE_S3 = env.bool("USE_S3", default=False)
 
-# Read AWS vars with safe defaults; only required if USE_S3=true
+# Read AWS/R2 vars with safe defaults; only required if USE_S3=true
+R2_ACCOUNT_ID            = env("R2_ACCOUNT_ID", default=None)
 AWS_ACCESS_KEY_ID        = env("AWS_ACCESS_KEY_ID", default=None)
 AWS_SECRET_ACCESS_KEY    = env("AWS_SECRET_ACCESS_KEY", default=None)
-AWS_S3_REGION_NAME       = env("AWS_S3_REGION_NAME", default="us-east-1")
+AWS_S3_REGION_NAME       = env("AWS_S3_REGION_NAME", default="auto")
 AWS_STORAGE_BUCKET_NAME  = env("AWS_STORAGE_BUCKET_NAME", default=None)
 AWS_S3_ENDPOINT_URL      = env("AWS_S3_ENDPOINT_URL", default=None)
-AWS_S3_FORCE_PATH_STYLE  = env.bool("AWS_S3_FORCE_PATH_STYLE", default=False)
+if not AWS_S3_ENDPOINT_URL and R2_ACCOUNT_ID:
+    AWS_S3_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+AWS_S3_FORCE_PATH_STYLE  = env.bool("AWS_S3_FORCE_PATH_STYLE", default=True)
+S3_PUBLIC_BASE_URL       = env("S3_PUBLIC_BASE_URL", default="")
 
 S3_UPLOADS_PREFIX        = env("S3_UPLOADS_PREFIX", default="uploads/listings")
 S3_MAX_UPLOAD_BYTES      = env.int("S3_MAX_UPLOAD_BYTES", default=15 * 1024 * 1024)
+IMAGE_MAX_UPLOAD_BYTES   = env.int("IMAGE_MAX_UPLOAD_BYTES", default=6 * 1024 * 1024)
+IMAGE_MAX_DIMENSION      = env.int("IMAGE_MAX_DIMENSION", default=1920)
+LISTING_MAX_PHOTOS       = env.int("LISTING_MAX_PHOTOS", default=5)
+BOOKING_BEFORE_MAX_PHOTOS = env.int("BOOKING_BEFORE_MAX_PHOTOS", default=3)
+BOOKING_AFTER_MAX_PHOTOS  = env.int("BOOKING_AFTER_MAX_PHOTOS", default=3)
 
 MEDIA_BASE_URL           = env("MEDIA_BASE_URL", default="")
 
@@ -182,9 +191,7 @@ if USE_S3:
     }
     # Optional tuning
     AWS_S3_OBJECT_PARAMETERS = {"CacheControl": "max-age=86400"}
-    # Path-style/endpoint support (e.g., MinIO/LocalStack)
-    if AWS_S3_ENDPOINT_URL:
-        AWS_S3_ADDRESSING_STYLE = "path" if AWS_S3_FORCE_PATH_STYLE else "auto"
+    AWS_S3_ADDRESSING_STYLE = "path" if AWS_S3_FORCE_PATH_STYLE else "auto"
 else:
     # Local filesystem for dev/tests/CI
     STORAGES = {
@@ -196,6 +203,9 @@ else:
 AV_ENABLED              = env.bool("AV_ENABLED", default=True)
 AV_ENGINE               = env("AV_ENGINE", default="clamd")
 AV_DUMMY_INFECT_MARKER  = env("AV_DUMMY_INFECT_MARKER", default="EICAR")
+DISPUTE_VIDEO_SCAN_SAMPLE_BYTES = env.int(
+    "DISPUTE_VIDEO_SCAN_SAMPLE_BYTES", default=2 * 1024 * 1024
+)
 
 # ClamAV daemon connection settings
 CLAMD_UNIX_SOCKET = env("CLAMD_UNIX_SOCKET", default=None)

@@ -14,6 +14,7 @@ from payments.receipts import (
     upload_promotion_receipt_pdf,
 )
 from promotions.models import PromotedSlot
+from storage import s3 as storage_s3
 
 pytestmark = pytest.mark.django_db
 
@@ -135,10 +136,7 @@ def test_upload_booking_receipt_pdf_uploads_and_returns_key(
 
     expected_key = f"uploads/private/receipts/{booking.id}_receipt.pdf"
     assert key == expected_key
-    expected_url = (
-        f"https://{settings.AWS_STORAGE_BUCKET_NAME}.s3."
-        f"{settings.AWS_S3_REGION_NAME}.amazonaws.com/{expected_key}"
-    )
+    expected_url = storage_s3.public_url(expected_key)
     assert url == expected_url
     assert isinstance(pdf_bytes, bytes)
     assert pdf_bytes.startswith(b"%PDF")
@@ -173,10 +171,7 @@ def test_upload_promotion_receipt_pdf_uploads_and_returns_key(
 
     expected_key = f"uploads/private/receipts/promotions/{promotion_slot.id}_promotion_receipt.pdf"
     assert key == expected_key
-    expected_url = (
-        f"https://{settings.AWS_STORAGE_BUCKET_NAME}.s3."
-        f"{settings.AWS_S3_REGION_NAME}.amazonaws.com/{expected_key}"
-    )
+    expected_url = storage_s3.public_url(expected_key)
     assert url == expected_url
     assert isinstance(pdf_bytes, bytes)
     assert pdf_bytes.startswith(b"%PDF")

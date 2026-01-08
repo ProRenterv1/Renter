@@ -53,19 +53,12 @@ def _install_dummy_twilio(monkeypatch):
     monkeypatch.setitem(sys.modules, "twilio.rest", twilio_rest)
 
 
-def _install_dummy_boto3(monkeypatch):
-    boto3 = ModuleType("boto3")
-
+def _install_dummy_s3_client(monkeypatch):
     class S3Client:
         def list_objects_v2(self, **kwargs):
             return {"ok": True}
 
-    def client(service_name, **kwargs):
-        assert service_name == "s3"
-        return S3Client()
-
-    boto3.client = client
-    monkeypatch.setitem(sys.modules, "boto3", boto3)
+    monkeypatch.setattr("storage.s3._client", lambda: S3Client())
 
 
 def test_operator_health_ok_when_all_checks_ok(operator_support_client, settings, monkeypatch):
@@ -82,7 +75,7 @@ def test_operator_health_ok_when_all_checks_ok(operator_support_client, settings
     monkeypatch.setattr(health_api_module, "get_redis_client", lambda: DummyRedis(ping_ok=True))
     _install_dummy_stripe(monkeypatch)
     _install_dummy_twilio(monkeypatch)
-    _install_dummy_boto3(monkeypatch)
+    _install_dummy_s3_client(monkeypatch)
 
     resp = operator_support_client.get("/api/operator/health/")
     assert resp.status_code == 200, resp.data

@@ -166,6 +166,8 @@ function FeeRowItem({
   const isOverridden = setting?.source === "db";
   const valueLabel = setting ? formatFeeValue(row.kind, setting.value_json) : "—";
   const updatedAt = setting?.updated_at ? new Date(setting.updated_at) : null;
+  const updatedBy =
+    setting?.updated_by_name || (setting?.updated_by_id ? `User #${setting.updated_by_id}` : null);
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -181,7 +183,7 @@ function FeeRowItem({
         {isOverridden ? (
           <div className="mt-1 text-xs text-muted-foreground">
             Updated {updatedAt ? updatedAt.toLocaleString() : setting.updated_at}
-            {setting.updated_by_id ? ` • by #${setting.updated_by_id}` : ""}
+            {updatedBy ? ` • by ${updatedBy}` : ""}
           </div>
         ) : (
           <div className="mt-1 text-xs text-muted-foreground">Default (env / code)</div>

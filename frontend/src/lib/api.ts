@@ -613,6 +613,10 @@ export interface PhotoCompletePayload {
   filename: string;
   content_type: string;
   size: number;
+  width?: number;
+  height?: number;
+  original_size?: number;
+  compressed_size?: number;
 }
 
 export interface PhotoCompleteResponse {
@@ -712,6 +716,10 @@ export interface DisputeEvidenceCompletePayload {
   size: number;
   etag: string;
   kind: "photo" | "video" | "other";
+  width?: number;
+  height?: number;
+  original_size?: number;
+  compressed_size?: number;
 }
 
 export type DisputeEvidenceCompleteResponse = {

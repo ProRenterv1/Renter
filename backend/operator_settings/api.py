@@ -58,6 +58,18 @@ def _safe_json_value(value):
     return value
 
 
+def _user_display(user) -> str | None:
+    if not user:
+        return None
+    full_name = (getattr(user, "get_full_name", lambda: "")() or "").strip()
+    if full_name:
+        return full_name
+    username = getattr(user, "username", "") or getattr(user, "email", "")
+    if username:
+        return username
+    return f"user-{getattr(user, 'pk', '')}".strip("-")
+
+
 def _db_setting_dict(setting: DbSetting | None) -> dict | None:
     if not setting:
         return None
@@ -70,6 +82,7 @@ def _db_setting_dict(setting: DbSetting | None) -> dict | None:
         "effective_at": setting.effective_at,
         "updated_at": setting.updated_at,
         "updated_by_id": setting.updated_by_id,
+        "updated_by_name": _user_display(getattr(setting, "updated_by", None)),
     }
 
 
@@ -231,6 +244,21 @@ class OperatorSettingsCurrentView(APIView):
                 str(getattr(settings, "UNVERIFIED_MAX_REPLACEMENT_CAD", "0")),
             ),
             (
+                "S3_MAX_UPLOAD_BYTES",
+                DbSetting.ValueType.INT,
+                int(getattr(settings, "S3_MAX_UPLOAD_BYTES", 0) or 0),
+            ),
+            (
+                "IMAGE_MAX_UPLOAD_BYTES",
+                DbSetting.ValueType.INT,
+                int(getattr(settings, "IMAGE_MAX_UPLOAD_BYTES", 0) or 0),
+            ),
+            (
+                "IMAGE_MAX_DIMENSION",
+                DbSetting.ValueType.INT,
+                int(getattr(settings, "IMAGE_MAX_DIMENSION", 0) or 0),
+            ),
+            (
                 "BOOKING_PLATFORM_FEE_BPS",
                 DbSetting.ValueType.INT,
                 _default_booking_platform_fee_bps(),
@@ -245,6 +273,11 @@ class OperatorSettingsCurrentView(APIView):
             ("DISPUTE_REBUTTAL_WINDOW_HOURS", DbSetting.ValueType.INT, 24),
             ("DISPUTE_APPEAL_WINDOW_DAYS", DbSetting.ValueType.INT, 5),
             ("DISPUTE_ALLOW_LATE_SAFETY_FRAUD", DbSetting.ValueType.BOOL, True),
+            (
+                "DISPUTE_VIDEO_SCAN_SAMPLE_BYTES",
+                DbSetting.ValueType.INT,
+                int(getattr(settings, "DISPUTE_VIDEO_SCAN_SAMPLE_BYTES", 0) or 0),
+            ),
         ]
 
         keys = [key for key, _, _ in defaults]
@@ -275,11 +308,13 @@ class OperatorSettingsCurrentView(APIView):
                             "effective_at": None,
                             "updated_at": None,
                             "updated_by_id": None,
+                            "updated_by_name": None,
                             "source": "default",
                         }
                     )
                 )
             else:
+                updated_by = getattr(row, "updated_by", None)
                 out.append(
                     _safe_json_value(
                         {
@@ -290,6 +325,7 @@ class OperatorSettingsCurrentView(APIView):
                             "effective_at": row.effective_at,
                             "updated_at": row.updated_at,
                             "updated_by_id": row.updated_by_id,
+                            "updated_by_name": _user_display(updated_by),
                             "source": "db",
                         }
                     )

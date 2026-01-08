@@ -57,6 +57,12 @@ import { VerifiedAvatar } from "@/components/VerifiedAvatar";
 import { ReviewModal } from "@/components/reviews/ReviewModal";
 import { startEventStream, type EventEnvelope } from "@/lib/events";
 import { DisputeWizard } from "@/components/disputes/DisputeWizard";
+import { compressImageFile } from "@/lib/imageCompression";
+import {
+  BOOKING_AFTER_MAX_PHOTOS,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGE_MB_LABEL,
+} from "@/lib/uploadLimits";
 
 type StatusFilter = "all" | Booking["status"];
 
@@ -197,7 +203,17 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   } | null>(null);
   const [confirmingPickupId, setConfirmingPickupId] = useState<number | null>(null);
   const [afterPhotosTarget, setAfterPhotosTarget] = useState<BookingRequestRow | null>(null);
-  const [afterPhotosFiles, setAfterPhotosFiles] = useState<{ file: File; previewUrl: string }[]>([]);
+  const [afterPhotosFiles, setAfterPhotosFiles] = useState<
+    {
+      file: File;
+      previewUrl: string;
+      originalSize: number;
+      compressedSize: number;
+      width: number;
+      height: number;
+    }[]
+  >([]);
+  const [afterCompressing, setAfterCompressing] = useState(false);
   const [afterUploadLoading, setAfterUploadLoading] = useState(false);
   const [afterUploadError, setAfterUploadError] = useState<string | null>(null);
   const [chatConversations, setChatConversations] = useState<ConversationSummary[]>([]);
@@ -549,6 +565,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     });
     setAfterUploadError(null);
     setAfterUploadLoading(false);
+    setAfterCompressing(false);
   };
 
   const openAfterPhotosDialog = (row: BookingRequestRow) => {
@@ -561,18 +578,52 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     setAfterPhotosTarget(null);
   };
 
-  const handleAfterPhotoInput = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleAfterPhotoInput = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files) {
       return;
     }
-    const uploads = Array.from(files).map((file) => ({
-      file,
-      previewUrl: URL.createObjectURL(file),
-    }));
-    setAfterPhotosFiles((prev) => [...prev, ...uploads]);
+    const remainingSlots = BOOKING_AFTER_MAX_PHOTOS - afterPhotosFiles.length;
+    if (remainingSlots <= 0) {
+      setAfterUploadError(`You can upload up to ${BOOKING_AFTER_MAX_PHOTOS} after photos.`);
+      event.target.value = "";
+      return;
+    }
+    setAfterCompressing(true);
     setAfterUploadError(null);
-    event.target.value = "";
+    try {
+      const selected = Array.from(files).slice(0, remainingSlots);
+      const oversize = selected.filter((file) => file.size > MAX_IMAGE_BYTES).length;
+      const eligible = selected.filter((file) => file.size <= MAX_IMAGE_BYTES);
+      if (oversize > 0 && eligible.length === 0) {
+        setAfterUploadError(`Photos must be ${MAX_IMAGE_MB_LABEL} MB or smaller.`);
+        return;
+      }
+      if (oversize > 0) {
+        setAfterUploadError(`Skipped ${oversize} file(s) over ${MAX_IMAGE_MB_LABEL} MB.`);
+      }
+      const uploads = await Promise.all(
+        eligible.map(async (file) => {
+          const compressed = await compressImageFile(file);
+          const previewUrl = URL.createObjectURL(compressed.file);
+          return {
+            file: compressed.file,
+            previewUrl,
+            originalSize: compressed.originalSize,
+            compressedSize: compressed.compressedSize,
+            width: compressed.width,
+            height: compressed.height,
+          };
+        }),
+      );
+      setAfterPhotosFiles((prev) => [...prev, ...uploads]);
+    } catch (err) {
+      console.error("after photo compression failed", err);
+      setAfterUploadError("Could not process one of the photos. Please try again.");
+    } finally {
+      setAfterCompressing(false);
+      event.target.value = "";
+    }
   };
 
   const removeAfterPhoto = (index: number) => {
@@ -590,8 +641,16 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     if (!afterPhotosTarget) {
       return;
     }
+    if (afterCompressing) {
+      setAfterUploadError("Please wait while we finish compressing your photos.");
+      return;
+    }
     if (afterPhotosFiles.length === 0) {
       setAfterUploadError("Please select at least one photo before continuing.");
+      return;
+    }
+    if (afterPhotosFiles.length > BOOKING_AFTER_MAX_PHOTOS) {
+      setAfterUploadError(`You can upload up to ${BOOKING_AFTER_MAX_PHOTOS} after photos.`);
       return;
     }
     setAfterUploadError(null);
@@ -632,6 +691,10 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
           filename: upload.file.name,
           content_type: upload.file.type || "application/octet-stream",
           size: upload.file.size,
+          width: upload.width || undefined,
+          height: upload.height || undefined,
+          original_size: upload.originalSize,
+          compressed_size: upload.compressedSize,
         });
       }
       const renterName = resolveRenterDisplayName(afterPhotosTarget);
@@ -1172,12 +1235,24 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
             )}
             <div
               className="border-2 border-dashed rounded-lg p-6 text-center cursor-pointer hover:border-primary transition-colors"
-              onClick={() => afterFileInputRef.current?.click()}
+              onClick={() => {
+                if (afterPhotosFiles.length >= BOOKING_AFTER_MAX_PHOTOS) {
+                  setAfterUploadError(
+                    `You can upload up to ${BOOKING_AFTER_MAX_PHOTOS} after photos.`,
+                  );
+                  return;
+                }
+                afterFileInputRef.current?.click();
+              }}
             >
               <p className="font-medium">Click to upload or drag and drop</p>
               <p className="text-sm text-muted-foreground">
-                PNG, JPG or WEBP (max. 15MB each)
+                Up to {BOOKING_AFTER_MAX_PHOTOS} photos, max {MAX_IMAGE_MB_LABEL} MB each (PNG, JPG
+                or WEBP; compressed to ~0.5-0.8MB, max 1920px)
               </p>
+              {afterCompressing && (
+                <p className="text-sm text-muted-foreground mt-1">Compressing photos...</p>
+              )}
               <input
                 ref={afterFileInputRef}
                 type="file"
@@ -1185,7 +1260,11 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                 accept="image/*"
                 className="hidden"
                 onChange={handleAfterPhotoInput}
-                disabled={afterUploadLoading}
+                disabled={
+                  afterUploadLoading ||
+                  afterCompressing ||
+                  afterPhotosFiles.length >= BOOKING_AFTER_MAX_PHOTOS
+                }
               />
             </div>
 
@@ -1205,7 +1284,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                       type="button"
                       className="absolute top-2 right-2 w-7 h-7 rounded-full bg-destructive text-white flex items-center justify-center"
                       onClick={() => removeAfterPhoto(index)}
-                      disabled={afterUploadLoading}
+                      disabled={afterUploadLoading || afterCompressing}
                     >
                       <X className="w-4 h-4" />
                     </button>
@@ -1222,13 +1301,15 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
             <Button
               variant="outline"
               onClick={closeAfterPhotosDialog}
-              disabled={afterUploadLoading}
+              disabled={afterUploadLoading || afterCompressing}
             >
               Cancel
             </Button>
             <Button
               onClick={handleAfterPhotosSubmit}
-              disabled={afterUploadLoading || afterPhotosFiles.length === 0}
+              disabled={
+                afterUploadLoading || afterCompressing || afterPhotosFiles.length === 0
+              }
             >
               {afterUploadLoading ? "Uploading..." : "Upload & finish"}
             </Button>

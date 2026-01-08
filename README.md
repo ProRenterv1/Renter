@@ -8,6 +8,7 @@ Full-stack renter experience built with Django, Celery, Postgres, Redis, and a V
 - [Daily Workflow](#daily-workflow)
 - [Working With Containers](#working-with-containers)
 - [Backend Development](#backend-development)
+- [Object Storage (S3/R2)](#object-storage-s3r2)
 - [Frontend Development](#frontend-development)
 - [Git & Branching Conventions](#git--branching-conventions)
 - [After Your PR Merges](#after-your-pr-merges)
@@ -93,6 +94,13 @@ All Docker commands run from `infra/`.
   cd infra
   docker compose exec api pytest backend/users/tests/test_login_events_api.py::test_login_events_list -q
   ```
+
+## Object Storage (S3/R2)
+- Set `USE_S3=true` and supply `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (R2 access keys work); bucket lives in `AWS_STORAGE_BUCKET_NAME`.
+- For R2, prefer `R2_ACCOUNT_ID` (or set `AWS_S3_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com`), keep `AWS_S3_REGION_NAME=auto`, and leave `AWS_S3_FORCE_PATH_STYLE=true`.
+- Public URLs are built from `S3_PUBLIC_BASE_URL` first (set to your `https://<bucket>.r2.dev` or custom domain), then `MEDIA_BASE_URL`, then the endpoint/bucket fallback.
+- Upload prefixes stay under `S3_UPLOADS_PREFIX` (default `uploads/listings`); presign flows remain compatible with AWS-style clients.
+- Cutover checklist: create the R2 bucket + access keys, configure `*.r2.dev` or a custom domain, copy existing objects (e.g., `aws s3 sync --endpoint-url https://<account-id>.r2.cloudflarestorage.com s3://old-bucket s3://new-bucket`), deploy with the new env vars, and smoke-test uploads/AV tagging.
 
 ## Frontend Development
 Run the frontend separately when iterating quickly on UI:

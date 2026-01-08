@@ -38,6 +38,7 @@ from payments_cancellation_policy import compute_refund_amounts
 from payments_refunds import apply_cancellation_settlement, get_platform_ledger_user
 from storage.s3 import booking_object_key, guess_content_type, presign_put, public_url
 from storage.tasks import scan_and_finalize_booking_photo
+from storage.validators import coerce_int, max_bytes_for_content_type, validate_image_limits
 
 from .domain import (
     ACTIVE_BOOKING_STATUSES,
@@ -720,6 +721,18 @@ class BookingViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        max_before = getattr(settings, "BOOKING_BEFORE_MAX_PHOTOS", None)
+        if max_before:
+            active_count = booking.photos.filter(
+                role=BookingPhoto.Role.BEFORE,
+                status__in=[BookingPhoto.Status.PENDING, BookingPhoto.Status.ACTIVE],
+            ).count()
+            if active_count >= max_before:
+                return Response(
+                    {"detail": f"Maximum of {max_before} before photos reached for this booking."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         filename = request.data.get("filename") or "upload"
         content_type = request.data.get("content_type") or guess_content_type(filename)
         content_md5 = request.data.get("content_md5")
@@ -737,12 +750,22 @@ class BookingViewSet(viewsets.ModelViewSet):
                 {"detail": "size must be greater than zero."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        max_bytes = getattr(settings, "S3_MAX_UPLOAD_BYTES", None)
+        max_bytes = max_bytes_for_content_type(content_type) or getattr(
+            settings, "S3_MAX_UPLOAD_BYTES", None
+        )
         if max_bytes and size_hint > max_bytes:
             return Response(
                 {"detail": f"File too large. Max allowed is {max_bytes} bytes."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        image_error = validate_image_limits(
+            content_type=content_type,
+            size=size_hint,
+            width=None,
+            height=None,
+        )
+        if image_error:
+            return Response({"detail": image_error}, status=status.HTTP_400_BAD_REQUEST)
 
         key = booking_object_key(
             booking_id=booking.id,
@@ -764,7 +787,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                 "key": key,
                 "upload_url": presigned["upload_url"],
                 "headers": presigned["headers"],
-                "max_bytes": getattr(settings, "S3_MAX_UPLOAD_BYTES", None),
+                "max_bytes": max_bytes,
                 "tagging": "av-status=pending",
             }
         )
@@ -783,6 +806,18 @@ class BookingViewSet(viewsets.ModelViewSet):
                 {"detail": "Cannot upload photos for a canceled or completed booking."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        max_before = getattr(settings, "BOOKING_BEFORE_MAX_PHOTOS", None)
+        if max_before:
+            active_count = booking.photos.filter(
+                role=BookingPhoto.Role.BEFORE,
+                status__in=[BookingPhoto.Status.PENDING, BookingPhoto.Status.ACTIVE],
+            ).count()
+            if active_count >= max_before:
+                return Response(
+                    {"detail": f"Maximum of {max_before} before photos reached for this booking."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         key = request.data.get("key")
         etag = request.data.get("etag")
@@ -807,12 +842,27 @@ class BookingViewSet(viewsets.ModelViewSet):
                 {"detail": "size must be greater than zero."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        max_bytes = getattr(settings, "S3_MAX_UPLOAD_BYTES", None)
+        width = coerce_int(request.data.get("width"))
+        height = coerce_int(request.data.get("height"))
+        original_size = coerce_int(request.data.get("original_size"))
+        compressed_size = coerce_int(request.data.get("compressed_size"))
+
+        max_bytes = max_bytes_for_content_type(content_type) or getattr(
+            settings, "S3_MAX_UPLOAD_BYTES", None
+        )
         if max_bytes and size_int > max_bytes:
             return Response(
                 {"detail": f"File too large. Max allowed is {max_bytes} bytes."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        image_error = validate_image_limits(
+            content_type=content_type,
+            size=size_int,
+            width=width,
+            height=height,
+        )
+        if image_error:
+            return Response({"detail": image_error}, status=status.HTTP_400_BAD_REQUEST)
 
         photo_url = public_url(key)
         photo, _ = BookingPhoto.objects.get_or_create(
@@ -829,8 +879,8 @@ class BookingViewSet(viewsets.ModelViewSet):
         photo.etag = (etag or "").strip('"')
         photo.status = BookingPhoto.Status.PENDING
         photo.av_status = BookingPhoto.AVStatus.PENDING
-        photo.width = None
-        photo.height = None
+        photo.width = width
+        photo.height = height
         photo.save()
 
         meta = {
@@ -839,6 +889,10 @@ class BookingViewSet(viewsets.ModelViewSet):
             "content_type": content_type,
             "size": size_int,
             "role": BookingPhoto.Role.BEFORE,
+            "width": width,
+            "height": height,
+            "original_size": original_size,
+            "compressed_size": compressed_size,
         }
         scan_and_finalize_booking_photo.delay(
             key=key,
@@ -863,6 +917,18 @@ class BookingViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        max_after = getattr(settings, "BOOKING_AFTER_MAX_PHOTOS", None)
+        if max_after:
+            active_count = booking.photos.filter(
+                role=BookingPhoto.Role.AFTER,
+                status__in=[BookingPhoto.Status.PENDING, BookingPhoto.Status.ACTIVE],
+            ).count()
+            if active_count >= max_after:
+                return Response(
+                    {"detail": f"Maximum of {max_after} after photos reached for this booking."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         filename = request.data.get("filename") or "upload"
         content_type = request.data.get("content_type") or guess_content_type(filename)
         content_md5 = request.data.get("content_md5")
@@ -880,12 +946,22 @@ class BookingViewSet(viewsets.ModelViewSet):
                 {"detail": "size must be greater than zero."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        max_bytes = getattr(settings, "S3_MAX_UPLOAD_BYTES", None)
+        max_bytes = max_bytes_for_content_type(content_type) or getattr(
+            settings, "S3_MAX_UPLOAD_BYTES", None
+        )
         if max_bytes and size_hint > max_bytes:
             return Response(
                 {"detail": f"File too large. Max allowed is {max_bytes} bytes."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        image_error = validate_image_limits(
+            content_type=content_type,
+            size=size_hint,
+            width=None,
+            height=None,
+        )
+        if image_error:
+            return Response({"detail": image_error}, status=status.HTTP_400_BAD_REQUEST)
 
         key = booking_object_key(
             booking_id=booking.id,
@@ -907,7 +983,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                 "key": key,
                 "upload_url": presigned["upload_url"],
                 "headers": presigned["headers"],
-                "max_bytes": getattr(settings, "S3_MAX_UPLOAD_BYTES", None),
+                "max_bytes": max_bytes,
                 "tagging": "av-status=pending",
             }
         )
@@ -921,6 +997,18 @@ class BookingViewSet(viewsets.ModelViewSet):
                 {"detail": "Cannot upload photos for a canceled or completed booking."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        max_after = getattr(settings, "BOOKING_AFTER_MAX_PHOTOS", None)
+        if max_after:
+            active_count = booking.photos.filter(
+                role=BookingPhoto.Role.AFTER,
+                status__in=[BookingPhoto.Status.PENDING, BookingPhoto.Status.ACTIVE],
+            ).count()
+            if active_count >= max_after:
+                return Response(
+                    {"detail": f"Maximum of {max_after} after photos reached for this booking."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         key = request.data.get("key")
         etag = request.data.get("etag")
@@ -945,12 +1033,27 @@ class BookingViewSet(viewsets.ModelViewSet):
                 {"detail": "size must be greater than zero."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        max_bytes = getattr(settings, "S3_MAX_UPLOAD_BYTES", None)
+        width = coerce_int(request.data.get("width"))
+        height = coerce_int(request.data.get("height"))
+        original_size = coerce_int(request.data.get("original_size"))
+        compressed_size = coerce_int(request.data.get("compressed_size"))
+
+        max_bytes = max_bytes_for_content_type(content_type) or getattr(
+            settings, "S3_MAX_UPLOAD_BYTES", None
+        )
         if max_bytes and size_int > max_bytes:
             return Response(
                 {"detail": f"File too large. Max allowed is {max_bytes} bytes."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        image_error = validate_image_limits(
+            content_type=content_type,
+            size=size_int,
+            width=width,
+            height=height,
+        )
+        if image_error:
+            return Response({"detail": image_error}, status=status.HTTP_400_BAD_REQUEST)
 
         photo_url = public_url(key)
         photo, _ = BookingPhoto.objects.get_or_create(
@@ -967,8 +1070,8 @@ class BookingViewSet(viewsets.ModelViewSet):
         photo.etag = (etag or "").strip('"')
         photo.status = BookingPhoto.Status.PENDING
         photo.av_status = BookingPhoto.AVStatus.PENDING
-        photo.width = None
-        photo.height = None
+        photo.width = width
+        photo.height = height
         photo.save()
 
         meta = {
@@ -977,6 +1080,10 @@ class BookingViewSet(viewsets.ModelViewSet):
             "content_type": content_type,
             "size": size_int,
             "role": BookingPhoto.Role.AFTER,
+            "width": width,
+            "height": height,
+            "original_size": original_size,
+            "compressed_size": compressed_size,
         }
         scan_and_finalize_booking_photo.delay(
             key=key,

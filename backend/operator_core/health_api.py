@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 
 from core.redis import get_redis_client
 from operator_core.permissions import HasOperatorRole, IsOperator
+from storage import s3 as storage_s3
 
 CELERY_HEARTBEAT_KEY = "ops:celery:last_seen"
 CELERY_STALE_SECONDS = 120
@@ -138,13 +139,7 @@ class OperatorHealthView(APIView):
                 if not bucket:
                     raise RuntimeError("AWS_STORAGE_BUCKET_NAME is not configured")
                 s3_payload["bucket"] = bucket
-                import boto3  # type: ignore
-
-                client = boto3.client(
-                    "s3",
-                    endpoint_url=getattr(settings, "AWS_S3_ENDPOINT_URL", None),
-                    region_name=getattr(settings, "AWS_S3_REGION_NAME", None),
-                )
+                client = storage_s3._client()
                 client.list_objects_v2(Bucket=bucket, MaxKeys=1)
                 s3_payload["ok"] = True
         except Exception as exc:

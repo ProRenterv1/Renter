@@ -9,15 +9,25 @@ from django.conf import settings
 from django.utils.text import slugify
 
 
+def _normalized_endpoint(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    if url.startswith(("http://", "https://")):
+        return url
+    return f"https://{url}"
+
+
 def _client():
+    addressing_style = "path" if getattr(settings, "AWS_S3_FORCE_PATH_STYLE", False) else "auto"
     cfg = Config(
         signature_version="s3v4",
-        s3={"addressing_style": "path" if settings.AWS_S3_FORCE_PATH_STYLE else "auto"},
+        s3={"addressing_style": addressing_style},
     )
+    endpoint = _normalized_endpoint(getattr(settings, "AWS_S3_ENDPOINT_URL", None))
     return boto3.client(
         "s3",
-        region_name=settings.AWS_S3_REGION_NAME,
-        endpoint_url=settings.AWS_S3_ENDPOINT_URL,
+        region_name=getattr(settings, "AWS_S3_REGION_NAME", None),
+        endpoint_url=endpoint,
         config=cfg,
     )
 
@@ -114,11 +124,27 @@ def set_metadata_copy(key: str, new_metadata: Dict[str, str]):
 
 
 def public_url(key: str) -> str:
-    endpoint = settings.AWS_S3_ENDPOINT_URL
-    bucket = settings.AWS_STORAGE_BUCKET_NAME
-    if endpoint and "localhost" in endpoint:
-        return f"{endpoint}/{bucket}/{key}"
-    return f"https://{bucket}.s3.{settings.AWS_S3_REGION_NAME}.amazonaws.com/{key}"
+    def _join(base: str, suffix: str) -> str:
+        return f"{base.rstrip('/')}/{suffix.lstrip('/')}"
+
+    bucket = getattr(settings, "AWS_STORAGE_BUCKET_NAME", "")
+    public_base = (getattr(settings, "S3_PUBLIC_BASE_URL", "") or "").strip()
+    media_base = (getattr(settings, "MEDIA_BASE_URL", "") or "").strip()
+    endpoint = (getattr(settings, "AWS_S3_ENDPOINT_URL", "") or "").strip()
+    region = getattr(settings, "AWS_S3_REGION_NAME", "") or ""
+
+    if public_base:
+        normalized = _normalized_endpoint(public_base) or public_base
+        return _join(normalized, key)
+    if media_base:
+        normalized = _normalized_endpoint(media_base) or media_base
+        return _join(normalized, key)
+    if endpoint:
+        normalized = _normalized_endpoint(endpoint) or endpoint
+        return _join(f"{normalized}/{bucket}", key)
+    if region and region != "auto":
+        return f"https://{bucket}.s3.{region}.amazonaws.com/{key}"
+    return f"https://{bucket}.s3.amazonaws.com/{key}"
 
 
 def guess_content_type(filename: str) -> str:
