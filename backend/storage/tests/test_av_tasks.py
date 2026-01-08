@@ -86,6 +86,34 @@ def _stub_s3(monkeypatch, payload: bytes):
     monkeypatch.setattr("storage.tasks._s3_client", lambda: _StubClient())
 
 
+def test_extract_dimensions_skips_full_load(monkeypatch):
+    img_bytes, dims = _image_bytes()
+
+    def explode_on_load(self, *args, **kwargs):
+        raise AssertionError("load should not be called when reading dimensions")
+
+    monkeypatch.setattr(tasks.Image.Image, "load", explode_on_load)
+
+    assert tasks._extract_dimensions(img_bytes) == dims
+
+
+def test_extract_dimensions_falls_back_when_fast_kwarg_missing(monkeypatch):
+    img_bytes, dims = _image_bytes()
+    call_kwargs: list[dict] = []
+    original_open = tasks.Image.open
+
+    def fake_open(fp, *args, **kwargs):
+        call_kwargs.append(kwargs)
+        if kwargs.get("fast"):
+            raise TypeError("fast not supported")
+        return original_open(fp, *args, **kwargs)
+
+    monkeypatch.setattr(tasks.Image, "open", fake_open)
+
+    assert tasks._extract_dimensions(img_bytes) == dims
+    assert call_kwargs and call_kwargs[0].get("fast") is True
+
+
 def test_apply_av_metadata_tags_only(monkeypatch):
     tag_calls: list[tuple[str, dict[str, str]]] = []
     meta_calls: list[tuple] = []

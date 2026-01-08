@@ -184,10 +184,24 @@ def _apply_av_metadata(key: str, status: str) -> None:
 
 def _extract_dimensions(data: bytes) -> Tuple[Optional[int], Optional[int]]:
     try:
-        with Image.open(io.BytesIO(data)) as img:
-            img.load()
-            width, height = img.size
-            return int(width), int(height)
+        stream = io.BytesIO(data)
+
+        def _size_from_stream(use_fast: bool) -> Tuple[int, int]:
+            kwargs: dict[str, Any] = {"fast": True} if use_fast else {}
+            with Image.open(stream, **kwargs) as img:
+                width, height = img.size
+                return int(width), int(height)
+
+        try:
+            return _size_from_stream(use_fast=True)
+        except TypeError:
+            # Pillow versions without the fast kwarg
+            stream.seek(0)
+        except UnidentifiedImageError:
+            return None, None
+        except Exception:
+            stream.seek(0)
+        return _size_from_stream(use_fast=False)
     except (UnidentifiedImageError, Exception):
         return None, None
 
