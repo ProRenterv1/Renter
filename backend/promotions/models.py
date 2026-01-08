@@ -52,6 +52,10 @@ class PromotedSlot(models.Model):
                 fields=("owner", "active"),
                 name="promo_owner_active_idx",
             ),
+            models.Index(
+                fields=("active", "starts_at", "ends_at"),
+                name="promo_active_window_idx",
+            ),
         ]
 
     def __str__(self) -> str:

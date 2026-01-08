@@ -189,5 +189,10 @@ class ListingPhoto(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["listing"]),
+        ]
+
     def __str__(self) -> str:
         return f"Photo {self.id} for listing {self.listing_id}"
