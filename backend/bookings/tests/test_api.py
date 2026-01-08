@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from django.core.cache import cache
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -80,6 +81,21 @@ def booking_payload(listing, start, end):
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
     }
+
+
+def test_my_bookings_cache_invalidation(renter_user, booking_factory):
+    cache.clear()
+    client = auth(renter_user)
+
+    first = client.get("/api/bookings/my/")
+    assert first.status_code == 200
+    assert first.data == []
+
+    booking_factory(renter=renter_user)
+
+    second = client.get("/api/bookings/my/")
+    assert second.status_code == 200
+    assert len(second.data) == 1
 
 
 def test_create_booking_success(renter_user, listing):
@@ -564,6 +580,41 @@ def test_before_photos_presign_returns_upload_details(
     assert resp.data["upload_url"] == "https://s3/upload"
     assert resp.data["tagging"] == "av-status=pending"
     assert captured["value"][3] == 1024
+
+
+def test_before_photos_presign_rejects_when_limit_reached(booking_factory, renter_user, settings):
+    settings.BOOKING_BEFORE_MAX_PHOTOS = 2
+    start = date.today() + timedelta(days=3)
+    booking = booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.CONFIRMED,
+        renter=renter_user,
+    )
+    BookingPhoto.objects.create(
+        booking=booking,
+        uploaded_by=renter_user,
+        role=BookingPhoto.Role.BEFORE,
+        s3_key="uploads/bookings/limit/a.jpg",
+        status=BookingPhoto.Status.ACTIVE,
+    )
+    BookingPhoto.objects.create(
+        booking=booking,
+        uploaded_by=renter_user,
+        role=BookingPhoto.Role.BEFORE,
+        s3_key="uploads/bookings/limit/b.jpg",
+        status=BookingPhoto.Status.PENDING,
+    )
+    client = auth(renter_user)
+
+    resp = client.post(
+        f"/api/bookings/{booking.id}/before-photos/presign/",
+        {"filename": "before.png", "content_type": "image/png", "size": 100},
+        format="json",
+    )
+
+    assert resp.status_code == 400
+    assert "Maximum of 2 before photos" in (resp.data.get("detail") or "")
 
 
 def test_before_photos_complete_creates_photo_and_schedules_scan(

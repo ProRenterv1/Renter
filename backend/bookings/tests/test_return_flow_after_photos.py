@@ -349,6 +349,64 @@ def test_after_photos_presign_rejects_oversized_upload(booking_factory, renter_u
     assert "File too large" in (resp.data.get("detail") or "")
 
 
+def test_after_photos_presign_rejects_when_limit_reached(booking_factory, renter_user, settings):
+    settings.BOOKING_AFTER_MAX_PHOTOS = 2
+    start = timezone.localdate()
+    booking = booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.PAID,
+        renter=renter_user,
+    )
+    BookingPhoto.objects.create(
+        booking=booking,
+        uploaded_by=renter_user,
+        role=BookingPhoto.Role.AFTER,
+        s3_key="uploads/bookings/1/1/a.jpg",
+        status=BookingPhoto.Status.ACTIVE,
+    )
+    BookingPhoto.objects.create(
+        booking=booking,
+        uploaded_by=renter_user,
+        role=BookingPhoto.Role.AFTER,
+        s3_key="uploads/bookings/1/1/b.jpg",
+        status=BookingPhoto.Status.PENDING,
+    )
+    client = auth(renter_user)
+
+    resp = client.post(
+        f"/api/bookings/{booking.id}/after-photos/presign/",
+        {"filename": "c.jpg", "size": 10, "content_type": "image/jpeg"},
+        format="json",
+    )
+
+    assert resp.status_code == 400
+    assert "Maximum of 2 after photos" in (resp.data.get("detail") or "")
+
+
+def test_after_photos_presign_rejects_over_image_limit(booking_factory, renter_user, settings):
+    settings.S3_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+    settings.IMAGE_MAX_UPLOAD_BYTES = 6 * 1024 * 1024
+    start = timezone.localdate()
+    booking = booking_factory(
+        start_date=start,
+        end_date=start + timedelta(days=2),
+        status=Booking.Status.PAID,
+        renter=renter_user,
+    )
+    client = auth(renter_user)
+    too_large = settings.IMAGE_MAX_UPLOAD_BYTES + 1
+
+    resp = client.post(
+        f"/api/bookings/{booking.id}/after-photos/presign/",
+        {"filename": "c.jpg", "size": too_large, "content_type": "image/jpeg"},
+        format="json",
+    )
+
+    assert resp.status_code == 400
+    assert str(settings.IMAGE_MAX_UPLOAD_BYTES) in (resp.data.get("detail") or "")
+
+
 def test_after_photos_complete_requires_valid_size(booking_factory, renter_user):
     start = timezone.localdate()
     booking = booking_factory(

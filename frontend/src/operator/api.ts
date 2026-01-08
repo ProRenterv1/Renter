@@ -526,6 +526,7 @@ export type OperatorDbSetting = {
   effective_at: string | null;
   updated_at: string;
   updated_by_id: number | null;
+  updated_by_name: string | null;
 };
 
 export type OperatorEffectiveSetting = {
@@ -536,6 +537,7 @@ export type OperatorEffectiveSetting = {
   effective_at: string | null;
   updated_at: string | null;
   updated_by_id: number | null;
+  updated_by_name: string | null;
   source: "db" | "default";
 };
 

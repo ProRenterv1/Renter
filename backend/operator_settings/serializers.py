@@ -7,6 +7,7 @@ from operator_settings.models import DbSetting, FeatureFlag, MaintenanceBanner, 
 
 class DbSettingSerializer(serializers.ModelSerializer):
     updated_by_id = serializers.IntegerField(read_only=True)
+    updated_by_name = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = DbSetting
@@ -19,7 +20,19 @@ class DbSettingSerializer(serializers.ModelSerializer):
             "effective_at",
             "updated_at",
             "updated_by_id",
+            "updated_by_name",
         ]
+
+    def get_updated_by_name(self, obj: DbSetting) -> str | None:
+        user = getattr(obj, "updated_by", None)
+        if not user:
+            return None
+        full_name = (user.get_full_name() or "").strip()
+        if full_name:
+            return full_name
+        if getattr(user, "username", ""):
+            return user.username
+        return f"user-{user.pk}"
 
 
 class DbSettingPutSerializer(serializers.Serializer):

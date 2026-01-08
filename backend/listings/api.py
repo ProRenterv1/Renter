@@ -5,7 +5,8 @@ from functools import lru_cache
 import redis
 import requests
 from django.conf import settings
-from django.db.models import Exists, OuterRef
+from django.core.cache import cache
+from django.db.models import BooleanField, Case, Value, When
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
@@ -15,10 +16,18 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from promotions.models import PromotedSlot
+from promotions.cache import get_active_promoted_listing_ids
 from storage.s3 import guess_content_type, object_key, presign_put, public_url
 from storage.tasks import scan_and_finalize_photo
+from storage.validators import coerce_int, max_bytes_for_content_type, validate_image_limits
 
+from .cache import (
+    categories_cache_timeout,
+    get_categories_cache_key,
+    invalidate_listing_feed_cache,
+    listing_feed_cache_key,
+    listings_cache_timeout,
+)
 from .models import Category, Listing, ListingPhoto
 from .serializers import CategorySerializer, ListingPhotoSerializer, ListingSerializer
 from .services import search_listings
@@ -288,12 +297,44 @@ class ListingViewSet(viewsets.ModelViewSet):
             city=city,
             owner_id=owner_id,
         )
-        active_slots = PromotedSlot.active_for_feed().filter(listing_id=OuterRef("pk"))
-        qs = qs.annotate(is_promoted=Exists(active_slots))
+        promoted_ids = get_active_promoted_listing_ids()
+        if promoted_ids:
+            qs = qs.annotate(
+                is_promoted=Case(
+                    When(pk__in=promoted_ids, then=Value(True)),
+                    default=Value(False),
+                    output_field=BooleanField(),
+                )
+            )
+        else:
+            qs = qs.annotate(is_promoted=Value(False))
         return qs.order_by("-is_promoted", "-created_at")
+
+    def list(self, request, *args, **kwargs):
+        cache_key = listing_feed_cache_key(request.query_params)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+        else:
+            serializer = self.get_serializer(queryset, many=True)
+            response = Response(serializer.data)
+
+        cache.set(cache_key, response.data, timeout=listings_cache_timeout())
+        return response
 
     def perform_create(self, serializer):
         serializer.save()
+        invalidate_listing_feed_cache()
+
+    def perform_update(self, serializer):
+        serializer.save()
+        invalidate_listing_feed_cache()
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -306,6 +347,7 @@ class ListingViewSet(viewsets.ModelViewSet):
         if hasattr(instance, "updated_at"):
             update_fields.append("updated_at")
         instance.save(update_fields=update_fields)
+        invalidate_listing_feed_cache()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["get"], url_path="photos")
@@ -357,6 +399,15 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
 
+    def list(self, request, *args, **kwargs):
+        cache_key = get_categories_cache_key()
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+        response = super().list(request, *args, **kwargs)
+        cache.set(cache_key, response.data, timeout=categories_cache_timeout())
+        return response
+
 
 def _require_listing_owner(listing_id: int, user) -> Listing:
     listing = get_object_or_404(Listing, id=listing_id)
@@ -365,31 +416,104 @@ def _require_listing_owner(listing_id: int, user) -> Listing:
     return listing
 
 
+def _log_presign_error(
+    reason: str, *, listing_id: int, user_id: int | None, extra: dict | None = None
+):
+    payload = {"reason": reason, "listing_id": listing_id, "user_id": user_id}
+    if extra:
+        reserved = {
+            "filename",
+            "asctime",
+            "message",
+            "lineno",
+            "module",
+            "funcName",
+        }
+        for key, value in extra.items():
+            safe_key = f"extra_{key}" if key in reserved else key
+            payload[safe_key] = value
+    logger.warning("photos_presign_rejected: %s", reason, extra=payload)
+
+
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
 def photos_presign(request, listing_id: int):
     listing_id = int(listing_id)
     listing = _require_listing_owner(listing_id, request.user)
+    max_photos = getattr(settings, "LISTING_MAX_PHOTOS", None)
+    if max_photos:
+        active_photos = listing.photos.filter(
+            status__in=[ListingPhoto.Status.PENDING, ListingPhoto.Status.ACTIVE]
+        ).count()
+        if active_photos >= max_photos:
+            _log_presign_error(
+                "max_photos_reached",
+                listing_id=listing.id,
+                user_id=getattr(request.user, "id", None),
+                extra={"active_photos": active_photos, "max_photos": max_photos},
+            )
+            return Response(
+                {"detail": f"Maximum of {max_photos} photos reached for this listing."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
     filename = request.data.get("filename") or "upload"
     content_type = request.data.get("content_type") or guess_content_type(filename)
     content_md5 = request.data.get("content_md5")
     size_raw = request.data.get("size")
     if size_raw in (None, ""):
+        _log_presign_error(
+            "size_missing",
+            listing_id=listing.id,
+            user_id=getattr(request.user, "id", None),
+            extra={"filename": filename},
+        )
         return Response({"detail": "size is required."}, status=status.HTTP_400_BAD_REQUEST)
     try:
         size_hint = int(size_raw)
     except (TypeError, ValueError):
+        _log_presign_error(
+            "size_not_int",
+            listing_id=listing.id,
+            user_id=getattr(request.user, "id", None),
+            extra={"size_raw": size_raw, "filename": filename},
+        )
         return Response({"detail": "size must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
     if size_hint <= 0:
+        _log_presign_error(
+            "size_non_positive",
+            listing_id=listing.id,
+            user_id=getattr(request.user, "id", None),
+            extra={"size_hint": size_hint, "filename": filename},
+        )
         return Response(
             {"detail": "size must be greater than zero."}, status=status.HTTP_400_BAD_REQUEST
         )
-    max_bytes = settings.S3_MAX_UPLOAD_BYTES
+    max_bytes = max_bytes_for_content_type(content_type) or settings.S3_MAX_UPLOAD_BYTES
     if max_bytes and size_hint > max_bytes:
+        _log_presign_error(
+            "file_too_large",
+            listing_id=listing.id,
+            user_id=getattr(request.user, "id", None),
+            extra={"size_hint": size_hint, "max_bytes": max_bytes, "filename": filename},
+        )
         return Response(
             {"detail": f"File too large. Max allowed is {max_bytes} bytes."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    image_error = validate_image_limits(
+        content_type=content_type,
+        size=size_hint,
+        width=None,
+        height=None,
+    )
+    if image_error:
+        _log_presign_error(
+            "image_constraint_error",
+            listing_id=listing.id,
+            user_id=getattr(request.user, "id", None),
+            extra={"detail": image_error, "size_hint": size_hint, "filename": filename},
+        )
+        return Response({"detail": image_error}, status=status.HTTP_400_BAD_REQUEST)
 
     key = object_key(listing_id=listing.id, owner_id=request.user.id, filename=filename)
     try:
@@ -399,14 +523,25 @@ def photos_presign(request, listing_id: int):
             content_md5=content_md5,
             size_hint=size_hint,
         )
-    except ValueError:
+    except ValueError as exc:
+        _log_presign_error(
+            "presign_put_error",
+            listing_id=listing.id,
+            user_id=getattr(request.user, "id", None),
+            extra={
+                "error": str(exc),
+                "size_hint": size_hint,
+                "filename": filename,
+                "content_type": content_type,
+            },
+        )
         return Response(status=status.HTTP_400_BAD_REQUEST)
     return Response(
         {
             "key": key,
             "upload_url": presigned["upload_url"],
             "headers": presigned["headers"],
-            "max_bytes": settings.S3_MAX_UPLOAD_BYTES,
+            "max_bytes": max_bytes,
             "tagging": "av-status=pending",
         }
     )
@@ -417,6 +552,16 @@ def photos_presign(request, listing_id: int):
 def photos_complete(request, listing_id: int):
     listing_id = int(listing_id)
     listing = _require_listing_owner(listing_id, request.user)
+    max_photos = getattr(settings, "LISTING_MAX_PHOTOS", None)
+    if max_photos:
+        active_photos = listing.photos.filter(
+            status__in=[ListingPhoto.Status.PENDING, ListingPhoto.Status.ACTIVE]
+        ).count()
+        if active_photos >= max_photos:
+            return Response(
+                {"detail": f"Maximum of {max_photos} photos reached for this listing."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
     key = request.data.get("key")
     etag = request.data.get("etag")
     if not key or not etag:
@@ -435,12 +580,24 @@ def photos_complete(request, listing_id: int):
         return Response(
             {"detail": "size must be greater than zero."}, status=status.HTTP_400_BAD_REQUEST
         )
-    max_bytes = settings.S3_MAX_UPLOAD_BYTES
+    width = coerce_int(request.data.get("width"))
+    height = coerce_int(request.data.get("height"))
+    original_size = coerce_int(request.data.get("original_size"))
+    compressed_size = coerce_int(request.data.get("compressed_size"))
+    max_bytes = max_bytes_for_content_type(content_type) or settings.S3_MAX_UPLOAD_BYTES
     if max_bytes and size_int > max_bytes:
         return Response(
             {"detail": f"File too large. Max allowed is {max_bytes} bytes."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    image_error = validate_image_limits(
+        content_type=content_type,
+        size=size_int,
+        width=width,
+        height=height,
+    )
+    if image_error:
+        return Response({"detail": image_error}, status=status.HTTP_400_BAD_REQUEST)
 
     photo_url = public_url(key)
     photo, _ = ListingPhoto.objects.get_or_create(
@@ -456,8 +613,8 @@ def photos_complete(request, listing_id: int):
     photo.etag = (etag or "").strip('"')
     photo.status = ListingPhoto.Status.PENDING
     photo.av_status = ListingPhoto.AVStatus.PENDING
-    photo.width = None
-    photo.height = None
+    photo.width = width
+    photo.height = height
     photo.save()
 
     meta = {
@@ -465,6 +622,10 @@ def photos_complete(request, listing_id: int):
         "filename": filename,
         "content_type": content_type,
         "size": size_int,
+        "width": width,
+        "height": height,
+        "original_size": original_size,
+        "compressed_size": compressed_size,
     }
     scan_and_finalize_photo.delay(
         key=key,

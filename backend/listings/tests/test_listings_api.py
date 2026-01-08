@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 import responses
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -446,6 +447,61 @@ def test_listing_feed_prioritizes_promoted_listings(owner_user):
     assert slugs[1] == regular_listing.slug
     assert resp.data["results"][0]["is_promoted"] is True
     assert resp.data["results"][1]["is_promoted"] is False
+
+
+def test_listing_feed_cache_invalidation_on_new_listing(owner_user):
+    cache.clear()
+    client = APIClient()
+
+    first = client.get("/api/listings/")
+    assert first.status_code == 200
+    assert first.data["count"] == 0
+
+    make_listing(owner_user, title="Cached Listing")
+    second = client.get("/api/listings/")
+    assert second.status_code == 200
+    assert second.data["count"] == 1
+
+
+def test_categories_cache_invalidation_on_change():
+    cache.clear()
+    Category.objects.create(name="Camping Gear")
+    client = APIClient()
+
+    first = client.get("/api/listings/categories/")
+    assert first.status_code == 200
+    assert len(first.data) == 1
+
+    Category.objects.create(name="Power Tools")
+    second = client.get("/api/listings/categories/")
+    assert second.status_code == 200
+    assert len(second.data) == 2
+
+
+def test_promoted_listing_cache_invalidation_on_slot_change(owner_user):
+    cache.clear()
+    listing = make_listing(owner_user, title="Promoted Tool")
+    now = timezone.now()
+    slot = PromotedSlot.objects.create(
+        listing=listing,
+        owner=owner_user,
+        price_per_day_cents=1500,
+        total_price_cents=1500 * 7,
+        starts_at=now - timedelta(days=1),
+        ends_at=now + timedelta(days=3),
+        active=True,
+    )
+
+    client = APIClient()
+    resp = client.get("/api/listings/")
+    assert resp.status_code == 200
+    assert resp.data["results"][0]["is_promoted"] is True
+
+    slot.delete()
+
+    resp_after = client.get("/api/listings/")
+    assert resp_after.status_code == 200
+    assert resp_after.data["results"][0]["is_promoted"] is False
 
 
 def test_listing_mine_returns_promoted_flag(owner_user):

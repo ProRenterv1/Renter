@@ -30,6 +30,12 @@ import {
 import { fetchConversations, type ConversationSummary } from "@/lib/chat";
 import { formatCurrency, parseMoney } from "@/lib/utils";
 import { startEventStream, type EventEnvelope } from "@/lib/events";
+import { compressImageFile } from "@/lib/imageCompression";
+import {
+  BOOKING_BEFORE_MAX_PHOTOS,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGE_MB_LABEL,
+} from "@/lib/uploadLimits";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -123,6 +129,10 @@ type BookingWithReturnFields = Booking & {
 type BeforePhotoUpload = {
   file: File;
   previewUrl: string;
+  originalSize: number;
+  compressedSize: number;
+  width: number;
+  height: number;
 };
 
 interface YourRentalsProps {
@@ -309,6 +319,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
   const [pickupTarget, setPickupTarget] = useState<RentalRow | null>(null);
   const [beforePhotos, setBeforePhotos] = useState<BeforePhotoUpload[]>([]);
   const [beforeUploadLoading, setBeforeUploadLoading] = useState(false);
+  const [beforeCompressing, setBeforeCompressing] = useState(false);
   const [beforeUploadError, setBeforeUploadError] = useState<string | null>(null);
   const [actionLoadingId, setActionLoadingId] = useState<number | null>(null);
   const [chatConversations, setChatConversations] = useState<ConversationSummary[]>([]);
@@ -808,20 +819,55 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     setPickupTarget(null);
     setBeforeUploadError(null);
     setBeforeUploadLoading(false);
+    setBeforeCompressing(false);
   };
 
-  const handleBeforePhotoInput = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleBeforePhotoInput = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files) {
       return;
     }
-    const uploads = Array.from(files).map((file) => ({
-      file,
-      previewUrl: URL.createObjectURL(file),
-    }));
-    setBeforePhotos((prev) => [...prev, ...uploads]);
+    const remainingSlots = BOOKING_BEFORE_MAX_PHOTOS - beforePhotos.length;
+    if (remainingSlots <= 0) {
+      setBeforeUploadError(`You can upload up to ${BOOKING_BEFORE_MAX_PHOTOS} photos.`);
+      event.target.value = "";
+      return;
+    }
+    setBeforeCompressing(true);
     setBeforeUploadError(null);
-    event.target.value = "";
+    try {
+      const selected = Array.from(files).slice(0, remainingSlots);
+      const oversize = selected.filter((file) => file.size > MAX_IMAGE_BYTES).length;
+      const eligible = selected.filter((file) => file.size <= MAX_IMAGE_BYTES);
+      if (oversize > 0 && eligible.length === 0) {
+        setBeforeUploadError(`Photos must be ${MAX_IMAGE_MB_LABEL} MB or smaller.`);
+        return;
+      }
+      if (oversize > 0) {
+        setBeforeUploadError(`Skipped ${oversize} file(s) over ${MAX_IMAGE_MB_LABEL} MB.`);
+      }
+      const uploads = await Promise.all(
+        eligible.map(async (file) => {
+          const compressed = await compressImageFile(file);
+          const previewUrl = URL.createObjectURL(compressed.file);
+          return {
+            file: compressed.file,
+            previewUrl,
+            originalSize: compressed.originalSize,
+            compressedSize: compressed.compressedSize,
+            width: compressed.width,
+            height: compressed.height,
+          };
+        }),
+      );
+      setBeforePhotos((prev) => [...prev, ...uploads]);
+    } catch (err) {
+      console.error("before photo compression failed", err);
+      setBeforeUploadError("Could not process one of the photos. Please try again.");
+    } finally {
+      setBeforeCompressing(false);
+      event.target.value = "";
+    }
   };
 
   const removeBeforePhoto = (index: number) => {
@@ -839,8 +885,16 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     if (!pickupTarget) {
       return;
     }
+    if (beforeCompressing) {
+      setBeforeUploadError("Please wait while we finish compressing your photos.");
+      return;
+    }
     if (beforePhotos.length === 0) {
       setBeforeUploadError("Please select at least one photo before continuing.");
+      return;
+    }
+    if (beforePhotos.length > BOOKING_BEFORE_MAX_PHOTOS) {
+      setBeforeUploadError(`You can upload up to ${BOOKING_BEFORE_MAX_PHOTOS} photos.`);
       return;
     }
     setBeforeUploadLoading(true);
@@ -878,6 +932,10 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
           filename: upload.file.name,
           content_type: upload.file.type || "application/octet-stream",
           size: upload.file.size,
+          width: upload.width || undefined,
+          height: upload.height || undefined,
+          original_size: upload.originalSize,
+          compressed_size: upload.compressedSize,
         });
       }
       const timestamp = new Date().toISOString();
@@ -1390,13 +1448,25 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
             </p>
             <div
               className="border-2 border-dashed rounded-lg p-6 text-center cursor-pointer hover:border-primary transition-colors"
-              onClick={() => beforeFileInputRef.current?.click()}
+              onClick={() => {
+                if (beforePhotos.length >= BOOKING_BEFORE_MAX_PHOTOS) {
+                  setBeforeUploadError(
+                    `You can upload up to ${BOOKING_BEFORE_MAX_PHOTOS} photos.`,
+                  );
+                  return;
+                }
+                beforeFileInputRef.current?.click();
+              }}
             >
               <Upload className="w-10 h-10 mx-auto mb-3 text-muted-foreground" />
               <p className="font-medium">Click to upload or drag and drop</p>
               <p className="text-sm text-muted-foreground">
-                PNG, JPG or WEBP (max. 15MB each)
+                Up to {BOOKING_BEFORE_MAX_PHOTOS} photos, max {MAX_IMAGE_MB_LABEL} MB each (PNG, JPG
+                or WEBP)
               </p>
+              {beforeCompressing && (
+                <p className="text-sm text-muted-foreground mt-1">Compressing photos...</p>
+              )}
               <input
                 ref={beforeFileInputRef}
                 type="file"
@@ -1404,7 +1474,11 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                 accept="image/*"
                 className="hidden"
                 onChange={handleBeforePhotoInput}
-                disabled={beforeUploadLoading}
+                disabled={
+                  beforeUploadLoading ||
+                  beforeCompressing ||
+                  beforePhotos.length >= BOOKING_BEFORE_MAX_PHOTOS
+                }
               />
             </div>
 
@@ -1447,7 +1521,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
               </Button>
               <Button
                 onClick={handleBeforePhotosSubmit}
-                disabled={beforeUploadLoading || beforePhotos.length === 0}
+                disabled={beforeUploadLoading || beforeCompressing || beforePhotos.length === 0}
               >
                 {beforeUploadLoading ? "Uploading..." : "Upload & continue"}
               </Button>

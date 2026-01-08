@@ -131,6 +131,16 @@ export default function Booking({
   }, [listing?.slug]);
 
   useEffect(() => {
+    const originalOverflow = document.body.style.overflow;
+    if (isLightboxOpen) {
+      document.body.style.overflow = "hidden";
+    }
+    return () => {
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [isLightboxOpen]);
+
+  useEffect(() => {
     if (!listing?.id) {
       setUnavailableDates([]);
       return;
@@ -1053,7 +1063,7 @@ export default function Booking({
 
       {isLightboxOpen && (
         <div
-          className="fixed inset-0 bg-black/90 z-50 flex flex-col"
+          className="fixed inset-0 bg-black/90 z-50 flex flex-col overflow-hidden"
           onClick={closeLightbox}
         >
           <button
@@ -1072,7 +1082,7 @@ export default function Booking({
             <img
               src={images[currentImageIndex]}
               alt={`${listing.title} preview`}
-              className="max-h-full max-w-full object-contain"
+              className="object-contain w-auto h-auto max-h-[90vh] max-w-[95vw]"
             />
             {images.length > 1 && (
               <>
@@ -1104,7 +1114,7 @@ export default function Booking({
 
           {images.length > 1 && (
             <div
-              className="p-4 bg-black/70 flex gap-3 overflow-x-auto"
+              className="p-4 bg-black/70 flex gap-3 overflow-x-auto no-scrollbar"
               onClick={(event) => event.stopPropagation()}
             >
               {images.map((image, index) => (

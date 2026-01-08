@@ -25,8 +25,12 @@ import {
   type UpdateListingPayload,
 } from "@/lib/api";
 import { ListingPromotionCheckout } from "./ListingPromotionCheckout";
-
-const MAX_PHOTOS = 6;
+import { compressImageFile } from "@/lib/imageCompression";
+import {
+  LISTING_MAX_PHOTOS,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGE_MB_LABEL,
+} from "@/lib/uploadLimits";
 
 const normalizePostalCodeInput = (value: string) => {
   const alphanumeric = value.toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -279,24 +283,40 @@ export function EditListing({
   const handleUploadPhoto = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    if (photos.length >= LISTING_MAX_PHOTOS) {
+      setFormError(`You can upload up to ${LISTING_MAX_PHOTOS} photos for a listing.`);
+      if (event.target) {
+        event.target.value = "";
+      }
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setFormError(`Images must be ${MAX_IMAGE_MB_LABEL} MB or smaller.`);
+      if (event.target) {
+        event.target.value = "";
+      }
+      return;
+    }
     setFormError(null);
     setPhotoUploading(true);
     try {
+      const compressed = await compressImageFile(file);
+      const uploadFile = compressed.file;
       const presign = await listingsAPI.presignPhoto(currentListing.id, {
-        filename: file.name,
-        content_type: file.type || "application/octet-stream",
-        size: file.size,
+        filename: uploadFile.name,
+        content_type: uploadFile.type || "application/octet-stream",
+        size: uploadFile.size,
       });
       const uploadHeaders: Record<string, string> = {
         ...presign.headers,
       };
-      if (file.type) {
-        uploadHeaders["Content-Type"] = file.type;
+      if (uploadFile.type) {
+        uploadHeaders["Content-Type"] = uploadFile.type;
       }
       const uploadResponse = await fetch(presign.upload_url, {
         method: "PUT",
         headers: uploadHeaders,
-        body: file,
+        body: uploadFile,
       });
       if (!uploadResponse.ok) {
         throw new Error("Could not upload that photo. Please try again.");
@@ -306,9 +326,13 @@ export function EditListing({
       await listingsAPI.completePhoto(currentListing.id, {
         key: presign.key,
         etag: etagHeader.replace(/"/g, ""),
-        filename: file.name,
-        content_type: file.type || "application/octet-stream",
-        size: file.size,
+        filename: uploadFile.name,
+        content_type: uploadFile.type || "application/octet-stream",
+        size: uploadFile.size,
+        width: compressed.width || undefined,
+        height: compressed.height || undefined,
+        original_size: compressed.originalSize,
+        compressed_size: compressed.compressedSize,
       });
       await refreshPhotos(currentListing.slug);
     } catch (err) {
@@ -393,13 +417,19 @@ export function EditListing({
       ) : (
         <>
           {loadError && (
-            <Alert variant="destructive">
-              <AlertDescription>{loadError}</AlertDescription>
+            <Alert
+              variant="destructive"
+              className="bg-[#FDEEEF] border-[#FDEEEF] text-[#7F1D1D]"
+            >
+              <AlertDescription className="text-[#7F1D1D]">{loadError}</AlertDescription>
             </Alert>
           )}
           {formError && (
-            <Alert variant="destructive">
-              <AlertDescription>{formError}</AlertDescription>
+            <Alert
+              variant="destructive"
+              className="bg-[#FDEEEF] border-[#FDEEEF] text-[#7F1D1D]"
+            >
+              <AlertDescription className="text-[#7F1D1D]">{formError}</AlertDescription>
             </Alert>
           )}
 
@@ -447,7 +477,7 @@ export function EditListing({
                   </div>
                 ))}
 
-                {photos.length < MAX_PHOTOS && (
+                {photos.length < LISTING_MAX_PHOTOS && (
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
@@ -470,8 +500,8 @@ export function EditListing({
                 onChange={handleUploadPhoto}
               />
               <p className="text-sm text-muted-foreground">
-                Upload up to 6 images. New uploads may take a moment to appear while we finish
-                processing them.
+                Upload up to {LISTING_MAX_PHOTOS} images (max {MAX_IMAGE_MB_LABEL} MB each). New
+                uploads may take a moment to appear while we finish processing them.
               </p>
             </CardContent>
           </Card>

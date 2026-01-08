@@ -8,6 +8,7 @@ import {
   type DisputeEvidenceCompletePayload,
   type PhotoPresignRequest,
 } from "@/lib/api";
+import { compressImageFile } from "@/lib/imageCompression";
 import {
   Dialog,
   DialogContent,
@@ -35,6 +36,10 @@ interface EvidenceFile {
   file: File;
   previewUrl: string;
   kind: DisputeEvidenceCompletePayload["kind"];
+  width?: number;
+  height?: number;
+  originalSize?: number;
+  compressedSize?: number;
 }
 
 export interface DisputeWizardProps {
@@ -117,6 +122,7 @@ export function DisputeWizard({
   const [description, setDescription] = useState("");
   const [files, setFiles] = useState<EvidenceFile[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [compressing, setCompressing] = useState(false);
 
   const options = useMemo(() => buildIssueOptions(role), [role]);
 
@@ -128,6 +134,7 @@ export function DisputeWizard({
       setDescription("");
       setStep(0);
       setSubmitting(false);
+      setCompressing(false);
     }
   }, [open, files]);
 
@@ -144,16 +151,38 @@ export function DisputeWizard({
     return files.length >= 1;
   }, [selectedIssue, files.length, photoCount, videoCount]);
 
-  const handleFilesAdded = (fileList: FileList | File[]) => {
-    const additions: EvidenceFile[] = [];
-    Array.from(fileList).forEach((file) => {
-      additions.push({
-        file,
-        previewUrl: URL.createObjectURL(file),
-        kind: detectKind(file),
-      });
-    });
-    setFiles((prev) => [...prev, ...additions]);
+  const handleFilesAdded = async (fileList: FileList | File[]) => {
+    setCompressing(true);
+    try {
+      const additions: EvidenceFile[] = [];
+      for (const file of Array.from(fileList)) {
+        const kind = detectKind(file);
+        if (kind === "photo") {
+          const compressed = await compressImageFile(file);
+          additions.push({
+            file: compressed.file,
+            previewUrl: URL.createObjectURL(compressed.file),
+            kind,
+            width: compressed.width,
+            height: compressed.height,
+            originalSize: compressed.originalSize,
+            compressedSize: compressed.compressedSize,
+          });
+        } else {
+          additions.push({
+            file,
+            previewUrl: URL.createObjectURL(file),
+            kind,
+          });
+        }
+      }
+      setFiles((prev) => [...prev, ...additions]);
+    } catch (err) {
+      console.error("evidence compression failed", err);
+      toast.error("Could not process one of the files. Please try again.");
+    } finally {
+      setCompressing(false);
+    }
   };
 
   const removeFile = (index: number) => {
@@ -169,6 +198,10 @@ export function DisputeWizard({
 
   const handleSubmit = async () => {
     if (!bookingId || !selectedIssue || submitting) {
+      return;
+    }
+    if (compressing) {
+      toast.error("Please wait for images to finish compressing.");
       return;
     }
     if (description.trim().length < minDescriptionLength) {
@@ -221,6 +254,10 @@ export function DisputeWizard({
           size: item.file.size,
           etag: cleanEtag,
           kind: item.kind,
+          width: item.width,
+          height: item.height,
+          original_size: item.originalSize,
+          compressed_size: item.compressedSize,
         };
         await disputesAPI.evidenceComplete(dispute.id, completePayload);
       }
@@ -342,22 +379,23 @@ export function DisputeWizard({
                   <label
                     className="inline-flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm shadow-sm"
                   >
-                    <Upload className="h-4 w-4" />
-                    Add files
-                    <input
-                      type="file"
-                      className="hidden"
-                      multiple
-                      accept="image/*,video/*"
-                      onChange={(event) => {
-                        if (event.target.files) {
-                          handleFilesAdded(event.target.files);
-                          event.target.value = "";
-                        }
-                      }}
-                    />
-                  </label>
-                </div>
+                      <Upload className="h-4 w-4" />
+                      Add files
+                      <input
+                        type="file"
+                        className="hidden"
+                        multiple
+                        accept="image/*,video/*"
+                        disabled={compressing}
+                        onChange={(event) => {
+                          if (event.target.files) {
+                              void handleFilesAdded(event.target.files);
+                              event.target.value = "";
+                          }
+                    }}
+                  />
+                </label>
+              </div>
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 {files.map((item, index) => (
@@ -410,6 +448,12 @@ export function DisputeWizard({
                     ? "Add at least two photos or one video."
                     : "Add at least one photo or video."}
                 </p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Images are compressed to reduce upload size; videos are uploaded as-is.
+              </p>
+              {compressing && (
+                <p className="text-sm text-muted-foreground">Compressing images...</p>
               )}
             </div>
             <div className="text-sm text-muted-foreground">

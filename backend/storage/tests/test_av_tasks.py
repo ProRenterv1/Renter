@@ -10,6 +10,7 @@ from django.utils import timezone
 from PIL import Image
 
 from bookings.models import Booking, BookingPhoto
+from disputes.models import DisputeCase, DisputeEvidence
 from listings.models import Listing, ListingPhoto
 from storage import tasks
 
@@ -286,3 +287,64 @@ def test_clamd_failure_falls_back_to_clamscan(monkeypatch, listing, owner, setti
     assert photo.status == ListingPhoto.Status.ACTIVE
     assert photo.av_status == ListingPhoto.AVStatus.CLEAN
     assert (photo.width, photo.height) == dims
+
+
+def test_dispute_video_scan_uses_byte_limit(monkeypatch, booking, renter, settings):
+    dispute = DisputeCase.objects.create(
+        booking=booking,
+        opened_by=renter,
+        opened_by_role=DisputeCase.OpenedByRole.RENTER,
+        category=DisputeCase.Category.DAMAGE,
+        description="Video evidence",
+    )
+
+    payload = b"x" * 5000
+    download_calls: dict[str, object] = {}
+
+    def _sliced_payload(extra_args):
+        range_header = (extra_args or {}).get("Range")
+        if not range_header:
+            return payload
+        try:
+            start, end = range_header.replace("bytes=", "").split("-", 1)
+            start_int = int(start)
+            end_int = int(end)
+            return payload[start_int : end_int + 1]
+        except Exception:
+            return payload
+
+    class _StubClient:
+        def download_fileobj(self, bucket, key, fileobj, ExtraArgs=None):
+            download_calls["range"] = ExtraArgs
+            fileobj.write(_sliced_payload(ExtraArgs))
+
+    monkeypatch.setattr("storage.tasks._s3_client", lambda: _StubClient())
+    monkeypatch.setattr("storage.tasks._apply_av_metadata", lambda *args, **kwargs: None)
+
+    scanned: dict[str, int] = {}
+
+    def fake_scan(data: bytes) -> str:
+        scanned["len"] = len(data)
+        return "clean"
+
+    monkeypatch.setattr("storage.tasks._scan_bytes", fake_scan)
+    settings.DISPUTE_VIDEO_SCAN_SAMPLE_BYTES = 1024
+
+    result = tasks.scan_and_finalize_dispute_evidence(
+        key="uploads/disputes/video.mp4",
+        dispute_id=dispute.id,
+        uploaded_by_id=renter.id,
+        meta={
+            "etag": '"etag-video"',
+            "filename": "evidence.mp4",
+            "content_type": "video/mp4",
+            "size": len(payload),
+            "kind": DisputeEvidence.Kind.VIDEO,
+        },
+    )
+
+    evidence = DisputeEvidence.objects.get(dispute=dispute, uploaded_by=renter)
+    assert result["status"] == "clean"
+    assert evidence.av_status == DisputeEvidence.AVStatus.CLEAN
+    assert scanned["len"] == settings.DISPUTE_VIDEO_SCAN_SAMPLE_BYTES
+    assert download_calls["range"] == {"Range": "bytes=0-1023"}

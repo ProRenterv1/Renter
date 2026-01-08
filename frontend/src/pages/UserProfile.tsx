@@ -37,6 +37,7 @@ import {
 import { VerifiedAvatar } from "@/components/VerifiedAvatar";
 import { DisputesPanel, countActiveDisputes } from "@/components/disputes/DisputesPanel";
 import { Separator } from "@/components/ui/separator";
+import { compressImageFile } from "@/lib/imageCompression";
 
 const TAB_KEYS = [
   "personal",
@@ -238,7 +239,8 @@ export default function UserProfile() {
 
     setAvatarUploading(true);
     try {
-      const updatedProfile = await authAPI.uploadAvatar(file);
+      const compressed = await compressImageFile(file);
+      const updatedProfile = await authAPI.uploadAvatar(compressed.file);
       setProfile(updatedProfile);
       AuthStore.setCurrentUser(updatedProfile);
       toast.success("Profile photo updated.");

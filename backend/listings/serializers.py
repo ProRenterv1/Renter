@@ -1,11 +1,10 @@
 from decimal import Decimal
 
 from django.conf import settings
-from django.utils import timezone
 from rest_framework import serializers
 
 from identity.models import is_user_identity_verified
-from promotions.models import PromotedSlot
+from promotions.cache import get_active_promoted_listing_ids
 
 from .models import Category, Listing, ListingPhoto
 
@@ -211,5 +210,5 @@ class ListingSerializer(serializers.ModelSerializer):
         annotated = getattr(obj, "is_promoted", None)
         if annotated is not None:
             return bool(annotated)
-        now = timezone.now()
-        return PromotedSlot.active_for_feed(now=now).filter(listing_id=obj.id).exists()
+        promoted_ids = get_active_promoted_listing_ids()
+        return obj.id in promoted_ids

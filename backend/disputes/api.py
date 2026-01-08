@@ -20,6 +20,7 @@ from core.settings_resolver import get_bool
 from listings.models import ListingPhoto
 from storage.s3 import booking_object_key, guess_content_type, presign_put, public_url
 from storage.tasks import scan_and_finalize_dispute_evidence
+from storage.validators import coerce_int, max_bytes_for_content_type, validate_image_limits
 
 from .intake import update_dispute_intake_status
 from .models import DisputeCase, DisputeEvidence, DisputeMessage
@@ -412,12 +413,22 @@ class DisputeCaseViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        max_bytes = getattr(settings, "S3_MAX_UPLOAD_BYTES", None)
+        max_bytes = max_bytes_for_content_type(content_type) or getattr(
+            settings, "S3_MAX_UPLOAD_BYTES", None
+        )
         if max_bytes and size_hint > max_bytes:
             return Response(
                 {"detail": f"File too large. Max allowed is {max_bytes} bytes."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        image_error = validate_image_limits(
+            content_type=content_type,
+            size=size_hint,
+            width=None,
+            height=None,
+        )
+        if image_error:
+            return Response({"detail": image_error}, status=status.HTTP_400_BAD_REQUEST)
 
         key = booking_object_key(
             booking_id=booking.id,
@@ -472,15 +483,29 @@ class DisputeCaseViewSet(viewsets.ModelViewSet):
                 {"detail": "size must be greater than zero."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        max_bytes = getattr(settings, "S3_MAX_UPLOAD_BYTES", None)
+        filename = request.data.get("filename") or "upload"
+        content_type = request.data.get("content_type") or guess_content_type(filename)
+        width = coerce_int(request.data.get("width"))
+        height = coerce_int(request.data.get("height"))
+        original_size = coerce_int(request.data.get("original_size"))
+        compressed_size = coerce_int(request.data.get("compressed_size"))
+        max_bytes = max_bytes_for_content_type(content_type) or getattr(
+            settings, "S3_MAX_UPLOAD_BYTES", None
+        )
         if max_bytes and size_int > max_bytes:
             return Response(
                 {"detail": f"File too large. Max allowed is {max_bytes} bytes."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        image_error = validate_image_limits(
+            content_type=content_type,
+            size=size_int,
+            width=width,
+            height=height,
+        )
+        if image_error:
+            return Response({"detail": image_error}, status=status.HTTP_400_BAD_REQUEST)
 
-        filename = request.data.get("filename") or "upload"
-        content_type = request.data.get("content_type") or guess_content_type(filename)
         kind = request.data.get("kind") or DisputeEvidence.Kind.PHOTO
 
         evidence, _ = DisputeEvidence.objects.get_or_create(
@@ -494,6 +519,10 @@ class DisputeCaseViewSet(viewsets.ModelViewSet):
         evidence.content_type = content_type
         evidence.size = size_int
         evidence.etag = (etag or "").strip('"')
+        if hasattr(evidence, "width"):
+            evidence.width = width
+        if hasattr(evidence, "height"):
+            evidence.height = height
         evidence.av_status = DisputeEvidence.AVStatus.PENDING
         evidence.save()
 
@@ -503,6 +532,10 @@ class DisputeCaseViewSet(viewsets.ModelViewSet):
             "content_type": content_type,
             "size": size_int,
             "kind": kind,
+            "width": width,
+            "height": height,
+            "original_size": original_size,
+            "compressed_size": compressed_size,
         }
         scan_and_finalize_dispute_evidence.delay(
             key=key,
