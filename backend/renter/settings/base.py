@@ -97,6 +97,13 @@ DATABASES = {
     )
 }
 
+direct_db = env.db("DATABASE_URL_DIRECT", default=None)
+if env.bool("DATABASE_USE_DIRECT", default=False) and direct_db:
+    DATABASES["default"] = direct_db
+
+DATABASES["default"]["CONN_MAX_AGE"] = None
+DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = True
+
 STATIC_URL = "/dj-static/"
 STATIC_ROOT = BASE_DIR / "static"
 MEDIA_URL = "/dj-media/"

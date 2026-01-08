@@ -51,6 +51,56 @@ class OperatorHealthView(APIView):
         checks["db"] = db_payload
         overall_ok = overall_ok and db_ok
 
+        # --- Pgbouncer ---
+        pgbouncer_payload: Dict[str, Any] = {"ok": False}
+        try:
+            engine = connection.settings_dict.get("ENGINE", "")
+            if "sqlite" in engine:
+                pgbouncer_payload = {"ok": True, "skipped": True}
+            else:
+                import psycopg2  # type: ignore
+
+                host = connection.settings_dict.get("HOST") or "localhost"
+                port = connection.settings_dict.get("PORT") or 5432
+                user = connection.settings_dict.get("USER") or ""
+                password = connection.settings_dict.get("PASSWORD") or ""
+                if not user:
+                    raise RuntimeError("DATABASE user is not configured")
+                with psycopg2.connect(
+                    dbname="pgbouncer",
+                    user=user,
+                    password=password,
+                    host=host,
+                    port=port,
+                    connect_timeout=3,
+                ) as pgconn:
+                    pgconn.autocommit = True
+                    with pgconn.cursor() as cursor:
+                        cursor.execute("SHOW POOLS;")
+                        rows = cursor.fetchall()
+                        columns = [col.name for col in cursor.description]
+                pool_dicts = [dict(zip(columns, row)) for row in rows]
+                cl_active = sum(int(row.get("cl_active") or 0) for row in pool_dicts)
+                cl_waiting = sum(int(row.get("cl_waiting") or 0) for row in pool_dicts)
+                sv_active = sum(int(row.get("sv_active") or 0) for row in pool_dicts)
+                sv_idle = sum(int(row.get("sv_idle") or 0) for row in pool_dicts)
+                pool_mode = pool_dicts[0].get("pool_mode") if pool_dicts else ""
+                pgbouncer_payload.update(
+                    {
+                        "ok": True,
+                        "pool_count": len(pool_dicts),
+                        "cl_active": cl_active,
+                        "cl_waiting": cl_waiting,
+                        "sv_active": sv_active,
+                        "sv_idle": sv_idle,
+                        "pool_mode": str(pool_mode) if pool_mode is not None else "",
+                    }
+                )
+        except Exception as exc:
+            pgbouncer_payload["error"] = _error_payload(exc)
+        checks["pgbouncer"] = pgbouncer_payload
+        overall_ok = overall_ok and bool(pgbouncer_payload.get("ok"))
+
         # --- Redis ---
         redis_ok = False
         redis_payload: Dict[str, Any] = {"ok": False}

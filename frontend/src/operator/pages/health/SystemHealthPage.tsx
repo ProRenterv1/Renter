@@ -56,6 +56,7 @@ export function SystemHealthPage() {
         payload: { ok: Boolean(result?.status), status: result?.status },
       },
       { key: "db", label: "DB", payload: checks["db"] || {} },
+      { key: "pgbouncer", label: "Pgbouncer", payload: checks["pgbouncer"] || {} },
       { key: "redis", label: "Redis", payload: checks["redis"] || {} },
       { key: "celery", label: "Celery", payload: checks["celery"] || {} },
       { key: "stripe", label: "Stripe", payload: checks["stripe"] || {} },
@@ -288,6 +289,28 @@ function buildDetails(checkKey: string, payload: Record<string, unknown>) {
     if (payload?.skipped) details.push("skipped: true");
     const bucket = typeof payload?.bucket === "string" ? payload.bucket : "";
     if (bucket) details.push(`bucket: ${bucket}`);
+    return details;
+  }
+
+  if (checkKey === "pgbouncer") {
+    if (payload?.skipped) {
+      details.push("skipped: true");
+      return details;
+    }
+    const poolMode = typeof payload?.pool_mode === "string" ? payload.pool_mode : "";
+    const poolCount = typeof payload?.pool_count === "number" ? payload.pool_count : null;
+    const clActive = typeof payload?.cl_active === "number" ? payload.cl_active : null;
+    const clWaiting = typeof payload?.cl_waiting === "number" ? payload.cl_waiting : null;
+    const svActive = typeof payload?.sv_active === "number" ? payload.sv_active : null;
+    const svIdle = typeof payload?.sv_idle === "number" ? payload.sv_idle : null;
+    if (poolMode) details.push(`mode: ${poolMode}`);
+    if (poolCount !== null) details.push(`pools: ${poolCount}`);
+    if (clActive !== null || clWaiting !== null) {
+      details.push(`clients active=${clActive ?? 0} waiting=${clWaiting ?? 0}`);
+    }
+    if (svActive !== null || svIdle !== null) {
+      details.push(`servers active=${svActive ?? 0} idle=${svIdle ?? 0}`);
+    }
     return details;
   }
 
