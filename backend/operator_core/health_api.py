@@ -58,7 +58,19 @@ class OperatorHealthView(APIView):
             if "sqlite" in engine:
                 pgbouncer_payload = {"ok": True, "skipped": True}
             else:
-                import psycopg2  # type: ignore
+                try:
+                    import psycopg  # type: ignore
+
+                    pg_connect = psycopg.connect
+                except ImportError:
+                    try:
+                        import psycopg2  # type: ignore
+
+                        pg_connect = psycopg2.connect
+                    except ImportError as exc:
+                        raise RuntimeError(
+                            "psycopg (v3) or psycopg2 is required for pgbouncer check"
+                        ) from exc
 
                 host = connection.settings_dict.get("HOST") or "localhost"
                 port = connection.settings_dict.get("PORT") or 5432
@@ -66,7 +78,7 @@ class OperatorHealthView(APIView):
                 password = connection.settings_dict.get("PASSWORD") or ""
                 if not user:
                     raise RuntimeError("DATABASE user is not configured")
-                with psycopg2.connect(
+                with pg_connect(
                     dbname="pgbouncer",
                     user=user,
                     password=password,

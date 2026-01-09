@@ -88,6 +88,12 @@ All Docker commands run from `infra/`.
   docker compose exec api python manage.py shell
   docker compose exec api python manage.py createsuperuser
   ```
+- **Seed operator roles / assign operator_admin**
+  ```bash
+  cd infra
+  docker compose exec api python manage.py bootstrap_operator_roles --assign-email ops@example.com
+  # or use --assign-username
+  ```
 - **Migrations inside the container**
   ```bash
   docker compose exec api python manage.py makemigrations
