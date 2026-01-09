@@ -1,5 +1,5 @@
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
   Card,
@@ -234,7 +234,6 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   const requestsRef = useRef<BookingRequestRow[]>([]);
   const afterFileInputRef = useRef<HTMLInputElement | null>(null);
   const currentUserId = AuthStore.getCurrentUser()?.id ?? null;
-  const navigate = useNavigate();
   const selectedTotals = selectedRequest?.booking.totals ?? null;
   const selectedOwnerAmount = Number(
     selectedTotals
@@ -462,23 +461,21 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     };
   }, [selectedRequest]);
 
+  const selectedRenterProfileHref = selectedRequest?.booking?.renter
+    ? `/users/${selectedRequest.booking.renter}`
+    : null;
+
   const handleViewRenterProfile = () => {
-    if (!selectedRequest?.booking?.renter) {
-      return;
-    }
-    const renterId = selectedRequest.booking.renter;
     setSelectedRequest(null);
-    navigate(`/users/${renterId}`);
   };
 
   const handleReviewProfileView = () => {
-    if (!ownerReviewTarget?.renterId) {
-      return;
-    }
-    const renterId = ownerReviewTarget.renterId;
     setOwnerReviewTarget(null);
-    navigate(`/users/${renterId}`);
   };
+
+  const reviewProfileHref = ownerReviewTarget?.renterId
+    ? `/users/${ownerReviewTarget.renterId}`
+    : undefined;
 
   const getBookingStatusBadge = (booking: Booking) => {
     const badgeVariant =
@@ -1147,14 +1144,19 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                           )}
                         </div>
                       </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="ml-auto whitespace-nowrap"
-                        onClick={handleViewRenterProfile}
-                      >
-                        View Profile
-                      </Button>
+                      {selectedRenterProfileHref ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="ml-auto whitespace-nowrap"
+                          asChild
+                          onClick={handleViewRenterProfile}
+                        >
+                          <Link to={selectedRenterProfileHref} reloadDocument>
+                            View Profile
+                          </Link>
+                        </Button>
+                      ) : null}
                     </div>
                   )}
                 </div>
@@ -1334,7 +1336,8 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
         bookingId={ownerReviewTarget?.bookingId ?? 0}
         otherPartyName={ownerReviewTarget?.renterName ?? ""}
         onClose={() => setOwnerReviewTarget(null)}
-        onViewProfile={ownerReviewTarget?.renterId ? handleReviewProfileView : undefined}
+        onViewProfile={reviewProfileHref ? handleReviewProfileView : undefined}
+        viewProfileHref={reviewProfileHref}
         onSubmitted={() => {
           toast.success("Thanks for reviewing your renter.");
         }}

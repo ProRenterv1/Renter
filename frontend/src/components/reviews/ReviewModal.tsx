@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Star } from "lucide-react";
 import { toast } from "sonner";
 import { reviewsAPI, type Review, type ReviewRole } from "@/lib/api";
@@ -23,6 +24,7 @@ interface ReviewModalProps {
   onSubmitted?: (review: Review) => void;
   onViewProfile?: () => void;
   viewProfileLabel?: string;
+  viewProfileHref?: string;
 }
 
 const roleHeading: Record<ReviewRole, string> = {
@@ -39,6 +41,7 @@ export function ReviewModal({
   onSubmitted,
   onViewProfile,
   viewProfileLabel = "View profile",
+  viewProfileHref,
 }: ReviewModalProps) {
   const [rating, setRating] = useState<number | null>(null);
   const [text, setText] = useState("");
@@ -96,6 +99,15 @@ export function ReviewModal({
       setSubmitting(false);
     }
   };
+
+  const handleViewProfile = () => {
+    if (submitting) return;
+    if (onViewProfile) {
+      onViewProfile();
+    }
+  };
+
+  const viewProfileDisabled = submitting;
 
   return (
     <Dialog
@@ -161,18 +173,27 @@ export function ReviewModal({
         </div>
 
         <DialogFooter className="gap-2">
-          {onViewProfile ? (
-            <Button
-              variant="outline"
-              onClick={() => {
-                if (!submitting) {
-                  onViewProfile();
-                }
-              }}
-              disabled={submitting}
-            >
-              {viewProfileLabel}
-            </Button>
+          {onViewProfile || viewProfileHref ? (
+            viewProfileHref ? (
+              <Button
+                variant="outline"
+                asChild
+                className={viewProfileDisabled ? "pointer-events-none opacity-50" : undefined}
+                onClick={handleViewProfile}
+              >
+                <Link to={viewProfileHref} reloadDocument>
+                  {viewProfileLabel}
+                </Link>
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                onClick={handleViewProfile}
+                disabled={viewProfileDisabled}
+              >
+                {viewProfileLabel}
+              </Button>
+            )
           ) : null}
           <Button
             variant="outline"
