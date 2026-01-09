@@ -43,6 +43,7 @@ import { Label } from "../../components/ui/label";
 import { Input } from "../../components/ui/input";
 import { Textarea } from "../../components/ui/textarea";
 import { Switch } from "../../components/ui/switch";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/table";
 import {
   Select,
   SelectContent,
@@ -57,6 +58,7 @@ import {
   formatOperatorUserName,
   operatorAPI,
   type OperatorBookingSummary,
+   type OperatorTransaction,
   type OperatorNote,
   type OperatorUserDetail,
 } from "../api";
@@ -95,6 +97,9 @@ export function UserDetail() {
   const [noteTags, setNoteTags] = useState("");
   const [noteReason, setNoteReason] = useState("");
   const [noteSubmitting, setNoteSubmitting] = useState(false);
+  const [financeRows, setFinanceRows] = useState<OperatorTransaction[]>([]);
+  const [financeLoading, setFinanceLoading] = useState(false);
+  const [financeError, setFinanceError] = useState<string | null>(null);
 
   const [suspendOpen, setSuspendOpen] = useState(false);
   const [reinstateOpen, setReinstateOpen] = useState(false);
@@ -216,6 +221,35 @@ export function UserDetail() {
     };
   }, [user?.id]);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!user?.id) {
+      setFinanceRows([]);
+      return;
+    }
+    setFinanceLoading(true);
+    setFinanceError(null);
+    operatorAPI
+      .financeTransactions({ user: user.id, page_size: 200 })
+      .then((data) => {
+        if (cancelled) return;
+        const list = Array.isArray((data as any)?.results) ? (data as any).results : (data as any);
+        setFinanceRows(Array.isArray(list) ? list : []);
+      })
+      .catch((err) => {
+        console.error("Failed to load finance data", err);
+        if (cancelled) return;
+        setFinanceError("Unable to load finance data for this user.");
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setFinanceLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
+
   const displayName = useMemo(() => (user ? formatOperatorUserName(user) : "User"), [user]);
   const initials = useMemo(() => {
     if (!user) return "U";
@@ -244,6 +278,34 @@ export function UserDetail() {
     const parts = [user.street_address, user.city, user.province, user.postal_code].filter(Boolean);
     return parts.length ? parts.join(", ") : "—";
   }, [user]);
+
+  const financeSummary = useMemo(() => {
+    const spendableKinds = new Set(["OWNER_EARNING", "REFUND", "OWNER_PAYOUT"]);
+    let balance = 0;
+    let totalPayouts = 0;
+    let totalEarnings = 0;
+    let totalCharges = 0;
+    let currency = "CAD";
+
+    financeRows.forEach((tx) => {
+      const amount = parseMoney(tx.amount);
+      currency = tx.currency?.toUpperCase?.() || currency;
+      if (tx.kind === "OWNER_PAYOUT") {
+        totalPayouts += Math.abs(amount);
+      }
+      if (tx.kind === "OWNER_EARNING") {
+        totalEarnings += amount;
+      }
+      if (spendableKinds.has(tx.kind)) {
+        balance += amount;
+      }
+      if (tx.kind === "BOOKING_CHARGE" || tx.kind === "PROMOTION_CHARGE") {
+        totalCharges += amount;
+      }
+    });
+
+    return { balance, totalPayouts, totalEarnings, totalCharges, currency };
+  }, [financeRows]);
 
   const bookings = Array.isArray(user?.bookings) ? user?.bookings : [];
   const isSuspended = !user?.is_active;
@@ -458,6 +520,16 @@ export function UserDetail() {
     }
   };
 
+  const formatTxnDate = (value: string) => {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    try {
+      return format(parsed, "yyyy-MM-dd HH:mm");
+    } catch {
+      return parsed.toLocaleString();
+    }
+  };
+
   if (loading) {
     return <UserDetailSkeleton onBack={() => navigate("/operator/users")} />;
   }
@@ -612,7 +684,7 @@ export function UserDetail() {
                     Listings
                   </TabsTrigger>
                   <TabsTrigger value="finance">
-                    <Lock className="w-4 h-4 mr-2" />
+                    <DollarSign className="w-4 h-4 mr-2" />
                     Finance
                   </TabsTrigger>
                   <TabsTrigger value="notes">
@@ -720,11 +792,96 @@ export function UserDetail() {
                 </TabsContent>
 
                 <TabsContent value="finance" className="mt-6">
-                  <LockedState
-                    icon={DollarSign}
-                    title="Finance Information"
-                    description="Financial data requires additional permissions to view"
-                  />
+                  {financeLoading ? (
+                    <div className="space-y-3">
+                      <Skeleton className="h-10 w-full" />
+                      <Skeleton className="h-24 w-full" />
+                      <Skeleton className="h-10 w-full" />
+                    </div>
+                  ) : financeError ? (
+                    <div className="text-sm text-destructive">{financeError}</div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+                        <FinanceStat
+                          label="Current balance"
+                          value={formatCurrency(financeSummary.balance, financeSummary.currency)}
+                          hint="Earnings + refunds − payouts"
+                        />
+                        <FinanceStat
+                          label="Total payouts"
+                          value={formatCurrency(financeSummary.totalPayouts, financeSummary.currency)}
+                          hint="Lifetime payouts sent"
+                        />
+                        <FinanceStat
+                          label="Total earnings"
+                          value={formatCurrency(financeSummary.totalEarnings, financeSummary.currency)}
+                          hint="Owner earnings credited"
+                        />
+                        <FinanceStat
+                          label="Charges"
+                          value={formatCurrency(Math.abs(financeSummary.totalCharges), financeSummary.currency)}
+                          hint="Charges and promotion debits"
+                        />
+                      </div>
+
+                      <Card>
+                        <CardHeader>
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <CardTitle className="text-base">Transactions</CardTitle>
+                            <div className="text-sm text-muted-foreground">
+                              Showing {financeRows.length} record{financeRows.length === 1 ? "" : "s"}
+                            </div>
+                          </div>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="overflow-x-auto">
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>Date</TableHead>
+                                  <TableHead>Kind</TableHead>
+                                  <TableHead>Booking</TableHead>
+                                  <TableHead>Amount</TableHead>
+                                  <TableHead>Stripe Ref</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {financeRows.map((tx) => {
+                                  const amount = parseMoney(tx.amount);
+                                  const displayCurrency = tx.currency?.toUpperCase?.() || "CAD";
+                                  const amountClass =
+                                    amount < 0 ? "text-destructive" : amount > 0 ? "text-emerald-700" : "";
+                                  return (
+                                    <TableRow key={tx.id}>
+                                      <TableCell className="whitespace-nowrap">{formatTxnDate(tx.created_at)}</TableCell>
+                                      <TableCell>
+                                        <Badge variant="outline" className="uppercase tracking-wide">
+                                          {tx.kind}
+                                        </Badge>
+                                      </TableCell>
+                                      <TableCell>{tx.booking_id ?? "—"}</TableCell>
+                                      <TableCell className={`font-semibold ${amountClass}`}>
+                                        {formatCurrency(amount, displayCurrency)}
+                                      </TableCell>
+                                      <TableCell className="text-xs">{tx.stripe_id || "—"}</TableCell>
+                                    </TableRow>
+                                  );
+                                })}
+                                {!financeRows.length && (
+                                  <TableRow>
+                                    <TableCell colSpan={5} className="text-center text-muted-foreground">
+                                      No finance activity yet for this user.
+                                    </TableCell>
+                                  </TableRow>
+                                )}
+                              </TableBody>
+                            </Table>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  )}
                 </TabsContent>
 
                 <TabsContent value="notes" className="mt-6">
@@ -1179,18 +1336,15 @@ function VerificationItem({ icon: Icon, label, verified }: { icon: React.Element
   );
 }
 
-function LockedState({ icon: Icon, title, description }: { icon: React.ElementType; title: string; description: string }) {
+function FinanceStat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <div className="flex flex-col items-center justify-center py-12 text-center">
-      <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4">
-        <Icon className="w-8 h-8 text-muted-foreground" />
-      </div>
-      <h3 className="mb-1">{title}</h3>
-      <p className="text-sm text-muted-foreground m-0 mb-4">{description}</p>
-      <Button variant="outline" size="sm">
-        Request Access
-      </Button>
-    </div>
+    <Card className="h-full">
+      <CardContent className="p-4 space-y-1">
+        <div className="text-sm text-muted-foreground">{label}</div>
+        <div className="text-2xl font-semibold">{value}</div>
+        {hint ? <div className="text-xs text-muted-foreground">{hint}</div> : null}
+      </CardContent>
+    </Card>
   );
 }
 

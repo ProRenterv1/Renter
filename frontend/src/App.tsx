@@ -2,9 +2,10 @@ import { Suspense, lazy, useEffect, useMemo, useState, type ReactNode } from "re
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
+import { MaintenanceBanner } from "@/components/MaintenanceBanner";
 import { Toaster } from "sonner";
 import { AuthStore } from "@/lib/auth";
-import { listingsAPI, type Listing as ApiListing } from "@/lib/api";
+import { listingsAPI, maintenanceAPI, type Listing as ApiListing, type MaintenanceBanner as MaintenanceBannerType } from "@/lib/api";
 
 const LandingPage = lazy(() => import("@/pages/LandingPage"));
 const Feed = lazy(() => import("@/pages/Feed"));
@@ -145,6 +146,30 @@ export default function App({ opsBuild }: AppProps) {
   const isOpsBuild = useMemo(() => opsBuild ?? isOpsBuildEnv, [opsBuild]);
   const location = useLocation();
   const [darkMode, setDarkMode] = useState(false);
+  const isOperatorRoute = location.pathname.startsWith("/operator");
+  const [maintenance, setMaintenance] = useState<MaintenanceBannerType | null>(null);
+  const [maintenanceFetched, setMaintenanceFetched] = useState(false);
+
+  useEffect(() => {
+    if (isOperatorRoute) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const data = await maintenanceAPI.banner();
+        if (!cancelled) setMaintenance(data);
+      } catch {
+        if (!cancelled) setMaintenance(null);
+      } finally {
+        if (!cancelled) setMaintenanceFetched(true);
+      }
+    };
+    void load();
+    const id = window.setInterval(load, 60000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [isOperatorRoute]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -165,6 +190,18 @@ export default function App({ opsBuild }: AppProps) {
     if (typeof document === "undefined") return;
     document.documentElement.classList.toggle("dark", darkMode);
   }, [darkMode]);
+
+  if (!isOperatorRoute && (!maintenanceFetched || maintenance?.enabled)) {
+    return (
+      <div className="min-h-screen bg-background text-foreground">
+        <MaintenanceBanner
+          severity={(maintenance?.severity as MaintenanceBannerType["severity"]) || "info"}
+          message={maintenance?.message || "We’re performing maintenance. Please check back soon."}
+          showRetry
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background text-foreground">

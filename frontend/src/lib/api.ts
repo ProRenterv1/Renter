@@ -56,6 +56,13 @@ export interface TwoFactorResendResponse {
   resend_available_at: string;
 }
 
+export type MaintenanceBanner = {
+  enabled: boolean;
+  severity: "info" | "warning" | "error";
+  message: string;
+  updated_at: string | null;
+};
+
 export type TokenResponse = AuthTokens | TwoFactorLoginStartResponse;
 
 export interface SignupPayload {
@@ -923,6 +930,12 @@ export const authAPI = {
     return jsonFetch<LoginHistoryEntry[]>(`/users/login-events/${query}`, {
       method: "GET",
     });
+  },
+};
+
+export const maintenanceAPI = {
+  banner() {
+    return jsonFetch<MaintenanceBanner>("/maintenance/", { method: "GET" });
   },
 };
 
