@@ -231,14 +231,6 @@ export function Header() {
     }
   };
 
-  const handleMessagesClick = () => {
-    navigate("/messages");
-  };
-
-  const handleProfileClick = () => {
-    navigate("/profile");
-  };
-
   const handleLogoutClick = () => {
     AuthStore.clearTokens();
     setIsAuthenticated(false);
@@ -344,40 +336,37 @@ export function Header() {
             <ThemeToggle />
             {isAuthenticated ? (
               <>
-                <Button 
-                  variant="ghost" 
-                  onClick={handleMessagesClick}
-                  className="relative"
-                >
-                  <MessageSquare className="w-4 h-4 mr-2" />
-                  {unreadCount > 0 && (
-                    <span
-                      className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none text-white"
-                      style={{ backgroundColor: "#5B8CA6" }}
-                    >
-                      {unreadCount > 98 ? "99+" : unreadCount}
-                    </span>
-                  )}
+                <Button asChild variant="ghost" className="relative text-foreground" type="button">
+                  <Link to="/messages">
+                    <MessageSquare className="w-4 h-4 mr-2" />
+                    {unreadCount > 0 && (
+                      <span
+                        className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none text-white"
+                        style={{ backgroundColor: "#5B8CA6" }}
+                      >
+                        {unreadCount > 98 ? "99+" : unreadCount}
+                      </span>
+                    )}
+                  </Link>
                 </Button>
-                <Button 
-                  variant="ghost" 
-                  onClick={handleProfileClick}
-                  className="relative"
-                >
-                  Profile
-                  {actionCount > 0 && (
-                    <span
-                      className="absolute -right-2 -top-2 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none text-white"
-                      style={{ backgroundColor: "#5B8CA6" }}
-                    >
-                      {actionCount > 98 ? "99+" : actionCount}
-                    </span>
-                  )}
+                <Button asChild variant="ghost" className="relative text-foreground" type="button">
+                  <Link to="/profile">
+                    Profile
+                    {actionCount > 0 && (
+                      <span
+                        className="absolute -right-2 -top-2 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none text-white"
+                        style={{ backgroundColor: "#5B8CA6" }}
+                      >
+                        {actionCount > 98 ? "99+" : actionCount}
+                      </span>
+                    )}
+                  </Link>
                 </Button>
-                <Button 
+                <Button
                   size="sm"
                   variant="ghost"
                   onClick={handleLogoutClick}
+                  type="button"
                 >
 
                   Log Out
@@ -385,29 +374,32 @@ export function Header() {
               </>
             ) : (
               <>
-                <Button 
-                  variant="ghost" 
+                <Button
+                  variant="ghost"
                   size="sm"
                   className="hidden sm:flex"
                   onClick={() => openModal("login")}
+                  type="button"
                 >
                   Log In
                 </Button>
-                <Button 
+                <Button
                   size="sm"
                   className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
                   style={{ color: 'var(--primary-foreground)' }}
                   onClick={() => openModal("signup")}
+                  type="button"
                 >
                   <User className="w-4 h-4 mr-2" />
                   Sign Up
                 </Button>
               </>
             )}
-            <Button 
-              variant="ghost" 
+            <Button
+              variant="ghost"
               size="icon"
               className="md:hidden"
+              type="button"
             >
               <Menu className="w-5 h-5" />
             </Button>

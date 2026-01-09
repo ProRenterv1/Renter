@@ -1314,6 +1314,8 @@ export const operatorAPI = {
       user: number | string;
       created_at_after: string;
       created_at_before: string;
+      page: number;
+      page_size: number;
     }> = {},
   ) {
     const query = buildQuery(params as Record<string, string | number>);

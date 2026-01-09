@@ -37,9 +37,10 @@ def normalize_query_params(params: QueryDict) -> str:
     return urlencode(items)
 
 
-def listing_feed_cache_key(params: QueryDict) -> str:
+def listing_feed_cache_key(params: QueryDict, *, variant: str = "full") -> str:
     normalized = normalize_query_params(params)
-    return f"{FEED_CACHE_PREFIX}:v{_get_feed_version()}:{normalized or 'all'}"
+    safe_variant = (variant or "full").replace(":", "_")
+    return f"{FEED_CACHE_PREFIX}:{safe_variant}:v{_get_feed_version()}:{normalized or 'all'}"
 
 
 def invalidate_listing_feed_cache() -> None:

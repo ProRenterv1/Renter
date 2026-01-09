@@ -65,6 +65,59 @@ class ListingPhotoSerializer(serializers.ModelSerializer):
         ]
 
 
+class ListingFeedSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for the public feed."""
+
+    category = serializers.ReadOnlyField(source="category.slug")
+    category_name = serializers.ReadOnlyField(source="category.name")
+    primary_photo_url = serializers.SerializerMethodField()
+    owner_rating = serializers.ReadOnlyField(source="owner.rating")
+    owner_review_count = serializers.ReadOnlyField(source="owner.review_count")
+    is_promoted = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Listing
+        fields = [
+            "id",
+            "slug",
+            "title",
+            "daily_price_cad",
+            "city",
+            "category",
+            "category_name",
+            "is_promoted",
+            "primary_photo_url",
+            "owner_rating",
+            "owner_review_count",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_primary_photo_url(self, obj) -> str | None:
+        photos = getattr(obj, "feed_photos", None)
+        if photos:
+            for photo in photos:
+                if getattr(photo, "url", None):
+                    return photo.url
+
+        photo = (
+            obj.photos.filter(
+                status=ListingPhoto.Status.ACTIVE,
+                av_status=ListingPhoto.AVStatus.CLEAN,
+            )
+            .order_by("id")
+            .first()
+        )
+        return getattr(photo, "url", None)
+
+    def get_is_promoted(self, obj) -> bool:
+        annotated = getattr(obj, "is_promoted", None)
+        if annotated is not None:
+            return bool(annotated)
+        promoted_ids = get_active_promoted_listing_ids()
+        return obj.id in promoted_ids
+
+
 class ListingSerializer(serializers.ModelSerializer):
     """Serializer for Listing that enforces business rules and permissions."""
 

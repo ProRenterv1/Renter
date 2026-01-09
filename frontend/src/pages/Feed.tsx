@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Search, SlidersHorizontal, X, MapPin } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -13,8 +13,9 @@ import {
 import {
   listingsAPI,
   type JsonError,
-  type Listing,
   type ListingCategory,
+  type ListingFeedItem,
+  type ListingFeedResponse,
   type ListingListParams,
 } from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
@@ -23,6 +24,13 @@ import { ListingCard } from "@/components/listings/ListingCard";
 
 const PRICE_SLIDER_MIN = 0;
 const PRICE_SLIDER_MAX = 1000;
+const FEED_PAGE_SIZE = 24;
+
+type FeedCacheEntry = {
+  pages: Map<number, ListingFeedItem[]>;
+  hasNext: boolean;
+  totalCount: number | null;
+};
 
 const clampPrice = (value: number) =>
   Math.min(Math.max(value, PRICE_SLIDER_MIN), PRICE_SLIDER_MAX);
@@ -38,7 +46,7 @@ interface FeedPageProps {
   onNavigateToMessages?: () => void;
   onNavigateToProfile?: () => void;
   onLogout?: () => void;
-  onOpenBooking?: (listing: Listing) => void;
+  onOpenBooking?: (listingSlug: string) => void;
 }
 
 export default function Feed({ onOpenBooking }: FeedPageProps) {
@@ -69,11 +77,18 @@ export default function Feed({ onOpenBooking }: FeedPageProps) {
     priceMin || "",
     priceMax || "",
   ]);
-  const [listings, setListings] = useState<Listing[]>([]);
+  const [listings, setListings] = useState<ListingFeedItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [availableCategories, setAvailableCategories] = useState<ListingCategory[]>([]);
+  const [hasNextPage, setHasNextPage] = useState(true);
+  const [page, setPage] = useState(1);
+  const [totalCount, setTotalCount] = useState<number | null>(null);
+  const feedCacheRef = useRef<Map<string, FeedCacheEntry>>(new Map());
+  const inFlightPagesRef = useRef<Set<number>>(new Set());
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setSearchText(q);
@@ -105,7 +120,70 @@ export default function Feed({ onOpenBooking }: FeedPageProps) {
     };
   }, []);
 
-  const hasActiveFilters = Boolean(q.trim() || category || priceMin || priceMax);
+  const hasActiveFilters = Boolean(q.trim() || category || city || priceMin || priceMax);
+
+  const mergeListings = useCallback(
+    (existing: ListingFeedItem[], incoming: ListingFeedItem[], reset: boolean = false) => {
+      const base = reset ? [] : [...existing];
+      const indexById = new Map<number, number>();
+      base.forEach((item, idx) => indexById.set(item.id, idx));
+
+      incoming.forEach((item) => {
+        const existingIndex = indexById.get(item.id);
+        if (existingIndex === undefined) {
+          indexById.set(item.id, base.length);
+          base.push(item);
+          return;
+        }
+        base[existingIndex] = { ...base[existingIndex], ...item };
+      });
+
+      return base;
+    },
+    [],
+  );
+
+  const filterKey = useMemo(
+    () =>
+      JSON.stringify({
+        q: q.trim(),
+        category: category.trim(),
+        city: city.trim(),
+        priceMin: priceMin.trim(),
+        priceMax: priceMax.trim(),
+        pageSize: FEED_PAGE_SIZE,
+      }),
+    [q, category, city, priceMin, priceMax],
+  );
+
+  const buildParams = useCallback(
+    (pageOverride?: number): ListingListParams => {
+      const params: ListingListParams = { page_size: FEED_PAGE_SIZE };
+      const trimmedQuery = q.trim();
+      const trimmedCategory = category.trim();
+      const trimmedCity = city.trim();
+      if (trimmedQuery) params.q = trimmedQuery;
+      if (trimmedCategory) params.category = trimmedCategory;
+      if (trimmedCity) params.city = trimmedCity;
+      if (priceMin.trim()) {
+        const numericMin = Number(priceMin);
+        if (Number.isFinite(numericMin)) {
+          params.price_min = numericMin;
+        }
+      }
+      if (priceMax.trim()) {
+        const numericMax = Number(priceMax);
+        if (Number.isFinite(numericMax)) {
+          params.price_max = numericMax;
+        }
+      }
+      if (typeof pageOverride === "number") {
+        params.page = pageOverride;
+      }
+      return params;
+    },
+    [q, category, city, priceMin, priceMax],
+  );
 
   const updateSearchParams = (updates: Record<string, string | null | undefined>) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -234,8 +312,143 @@ export default function Feed({ onOpenBooking }: FeedPageProps) {
     }
   };
 
+  const fetchPage = useCallback(
+    async (pageNumber: number, options: { prefetch?: boolean; replace?: boolean } = {}) => {
+      const { prefetch = false, replace = false } = options;
+      const resetList = replace || pageNumber === 1;
+
+      const cachedEntry = feedCacheRef.current.get(filterKey);
+      const cachedPage = cachedEntry?.pages.get(pageNumber);
+
+      if (cachedPage && !replace && !prefetch) {
+        setListings((prev) => mergeListings(prev, cachedPage, resetList));
+        setHasNextPage(cachedEntry?.hasNext ?? hasNextPage);
+        if (typeof cachedEntry?.totalCount === "number") {
+          setTotalCount(cachedEntry.totalCount);
+        }
+        setPage(pageNumber);
+        if (resetList) {
+          setLoading(false);
+        } else {
+          setLoadingMore(false);
+        }
+        return;
+      }
+
+      if (inFlightPagesRef.current.has(pageNumber)) {
+        return;
+      }
+
+      if (!prefetch) {
+        if (resetList) {
+          setLoading(true);
+        } else {
+          setLoadingMore(true);
+        }
+        setError(null);
+      }
+
+      inFlightPagesRef.current.add(pageNumber);
+
+      let responseData: ListingFeedResponse | null = null;
+      let attemptedAnonymousFallback = false;
+
+      try {
+        while (true) {
+          try {
+            responseData = await listingsAPI.feed(buildParams(pageNumber));
+            break;
+          } catch (err) {
+            const status =
+              typeof (err as JsonError)?.status === "number"
+                ? (err as JsonError).status
+                : null;
+
+            if (status === 304) {
+              if (cachedPage) {
+                responseData = {
+                  results: cachedPage,
+                  count: cachedEntry?.totalCount ?? cachedPage.length,
+                  next: cachedEntry?.hasNext ? "cached" : null,
+                  previous: null,
+                  page: pageNumber,
+                  page_size: FEED_PAGE_SIZE,
+                  has_next: cachedEntry?.hasNext,
+                };
+              }
+              break;
+            }
+
+            const canRetryAnonymously =
+              !attemptedAnonymousFallback && status && (status === 401 || status === 403);
+
+            if (canRetryAnonymously) {
+              attemptedAnonymousFallback = true;
+              AuthStore.clearTokens();
+              continue;
+            }
+
+            if (!prefetch) {
+              console.error("Failed to load listings", err);
+              setError("Unable to load listings. Please try again.");
+              if (resetList) {
+                setListings([]);
+                setTotalCount(null);
+                setHasNextPage(true);
+              }
+            } else {
+              console.error("Prefetch listings failed", err);
+            }
+            break;
+          }
+        }
+
+        if (!responseData) {
+          return;
+        }
+
+        const items = Array.isArray(responseData.results) ? responseData.results : [];
+        const resolvedHasNext =
+          typeof responseData.has_next === "boolean"
+            ? responseData.has_next
+            : Boolean(responseData.next);
+        const total = typeof responseData.count === "number" ? responseData.count : null;
+
+        const cacheEntry: FeedCacheEntry =
+          cachedEntry ??
+          {
+            pages: new Map<number, ListingFeedItem[]>(),
+            hasNext: resolvedHasNext,
+            totalCount: total,
+          };
+        cacheEntry.pages.set(pageNumber, items);
+        cacheEntry.hasNext = resolvedHasNext;
+        cacheEntry.totalCount = total ?? cacheEntry.totalCount ?? null;
+        feedCacheRef.current.set(filterKey, cacheEntry);
+
+        setListings((prev) => mergeListings(prev, items, resetList));
+        setHasNextPage(resolvedHasNext);
+        setPage(pageNumber);
+        if (total !== null) {
+          setTotalCount(total);
+        }
+      } finally {
+        inFlightPagesRef.current.delete(pageNumber);
+        if (!prefetch) {
+          if (resetList) {
+            setLoading(false);
+          } else {
+            setLoadingMore(false);
+          }
+        }
+      }
+    },
+    [buildParams, filterKey, hasNextPage, mergeListings],
+  );
+
   const clearFilters = () => {
     setSearchText("");
+    setCityText("");
     setPriceValues([PRICE_SLIDER_MIN, PRICE_SLIDER_MAX]);
     setPriceInputValues(["", ""]);
     updateSearchParams({
@@ -243,136 +456,54 @@ export default function Feed({ onOpenBooking }: FeedPageProps) {
       category: null,
       price_min: null,
       price_max: null,
+      city: null,
     });
   };
 
   useEffect(() => {
-    let isCancelled = false;
+    setListings([]);
+    setTotalCount(null);
+    setPage(1);
+    setHasNextPage(true);
+    setError(null);
+    inFlightPagesRef.current.clear();
+    setLoading(true);
 
-    const fetchListings = async () => {
-      setLoading(true);
-      setError(null);
-      let attemptedAnonymousFallback = false;
+    const cachedEntry = feedCacheRef.current.get(filterKey);
+    if (cachedEntry?.pages.has(1)) {
+      const cachedPage = cachedEntry.pages.get(1) ?? [];
+      setListings(cachedPage);
+      setHasNextPage(cachedEntry.hasNext);
+      setTotalCount(cachedEntry.totalCount);
+      setLoading(false);
+      fetchPage(1, { replace: true, prefetch: true });
+      return;
+    }
 
-      const buildParams = (): ListingListParams => {
-        const params: ListingListParams = {};
-        if (q.trim()) params.q = q.trim();
-        if (category.trim()) params.category = category.trim();
-        if (city.trim()) params.city = city.trim();
-        if (priceMin.trim()) {
-          const numericMin = Number(priceMin);
-          if (Number.isFinite(numericMin)) {
-            params.price_min = numericMin;
-          }
+    fetchPage(1, { replace: true });
+  }, [fetchPage, filterKey]);
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry.isIntersecting && hasNextPage && !loading && !loadingMore) {
+          fetchPage(page + 1);
         }
-        if (priceMax.trim()) {
-          const numericMax = Number(priceMax);
-          if (Number.isFinite(numericMax)) {
-            params.price_max = numericMax;
-          }
-        }
-        return params;
-      };
+      },
+      { rootMargin: "200px" },
+    );
 
-      while (true) {
-        try {
-          const response = await listingsAPI.list(buildParams());
-          if (!isCancelled) {
-            setListings(response.results ?? []);
-          }
-          break;
-        } catch (err) {
-          if (isCancelled) {
-            return;
-          }
-
-          const status =
-            typeof (err as JsonError)?.status === "number" ? (err as JsonError).status : null;
-          const canRetryAnonymously =
-            !attemptedAnonymousFallback && status && (status === 401 || status === 403);
-
-          if (canRetryAnonymously) {
-            attemptedAnonymousFallback = true;
-            AuthStore.clearTokens();
-            continue;
-          }
-
-          console.error("Failed to load listings", err);
-          if (!isCancelled) {
-            setError("Unable to load listings. Please try again.");
-            setListings([]);
-          }
-          break;
-        }
-      }
-
-      if (!isCancelled) {
-        setLoading(false);
-      }
-    };
-
-    fetchListings();
-
+    observer.observe(sentinel);
     return () => {
-      isCancelled = true;
+      observer.disconnect();
     };
-  }, [q, category, city, priceMin, priceMax]);
+  }, [fetchPage, hasNextPage, loading, loadingMore, page]);
 
-  const decoratedListings = listings.map((listing) => {
-    const priceNumber = Number(listing.daily_price_cad ?? "0");
-    const hasValidPrice = Number.isFinite(priceNumber) && priceNumber > 0;
-    const price = hasValidPrice ? `$${priceNumber}/day` : "On request";
-    const image =
-      listing.photos?.[0]?.url ??
-      "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800&q=80";
-
-    const feedItem = {
-      id: listing.id,
-      title: listing.title,
-      description: listing.description ?? "",
-      category: listing.category_name || "Other",
-      price,
-      image,
-      tags: [] as string[],
-    };
-
-    return { listing, feedItem };
-  });
-
-  const normalizedSearch = q.trim().toLowerCase();
-  const normalizedCity = city.trim().toLowerCase();
-  const activeCategory = category.trim();
-  const parsedMin = priceMin.trim() ? Number(priceMin) : NaN;
-  const parsedMax = priceMax.trim() ? Number(priceMax) : NaN;
-  const activeMin = Number.isFinite(parsedMin) ? parsedMin : null;
-  const activeMax = Number.isFinite(parsedMax) ? parsedMax : null;
-
-  const filteredItems = decoratedListings.filter(({ listing, feedItem }) => {
-    const matchesSearch =
-      !normalizedSearch ||
-      feedItem.title.toLowerCase().includes(normalizedSearch) ||
-      feedItem.description.toLowerCase().includes(normalizedSearch);
-
-    const matchesCategory = !activeCategory || listing.category === activeCategory;
-
-    const matchesCity =
-      !normalizedCity || listing.city.toLowerCase().includes(normalizedCity);
-
-    const listingPriceRaw = Number(listing.daily_price_cad);
-    const listingPrice = Number.isFinite(listingPriceRaw) ? listingPriceRaw : 0;
-    let matchesPrice = true;
-    if (activeMin !== null) {
-      matchesPrice = matchesPrice && listingPrice >= activeMin;
-    }
-    if (activeMax !== null) {
-      matchesPrice = matchesPrice && listingPrice <= activeMax;
-    }
-
-    return matchesSearch && matchesCategory && matchesCity && matchesPrice;
-  });
-
-  const showingCount = filteredItems.length;
-  const isEmptyState = !loading && showingCount === 0;
+  const isEmptyState = !loading && !loadingMore && listings.length === 0;
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -567,11 +698,12 @@ export default function Feed({ onOpenBooking }: FeedPageProps) {
         {/* Results Count */}
         <div className="mb-6">
           <p className="text-muted-foreground">
-            Showing {showingCount} results
+            Showing {listings.length}
+            {totalCount !== null ? ` of ${totalCount}` : ""} results
           </p>
         </div>
 
-        {loading && (
+        {loading && listings.length === 0 && (
           <div className="py-10 text-center text-muted-foreground">
             Loading listings...
           </div>
@@ -579,14 +711,22 @@ export default function Feed({ onOpenBooking }: FeedPageProps) {
 
         {/* Feed Grid */}
         <div className="grid grid-cols-2 gap-6 md:grid-cols-3 lg:grid-cols-4">
-          {filteredItems.map(({ listing }) => (
+          {listings.map((listing) => (
             <ListingCard
               key={listing.id}
               listing={listing}
-              onClick={() => onOpenBooking?.(listing)}
+              onClick={() => onOpenBooking?.(listing.slug)}
             />
           ))}
         </div>
+
+        {loadingMore && (
+          <div className="py-6 text-center text-muted-foreground">
+            Loading more listings...
+          </div>
+        )}
+
+        <div ref={sentinelRef} className="h-2" aria-hidden="true" />
 
         {/* Empty State */}
         {isEmptyState && (

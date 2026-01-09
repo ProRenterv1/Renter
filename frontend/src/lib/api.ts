@@ -56,6 +56,13 @@ export interface TwoFactorResendResponse {
   resend_available_at: string;
 }
 
+export type MaintenanceBanner = {
+  enabled: boolean;
+  severity: "info" | "warning" | "error";
+  message: string;
+  updated_at: string | null;
+};
+
 export type TokenResponse = AuthTokens | TwoFactorLoginStartResponse;
 
 export interface SignupPayload {
@@ -236,6 +243,32 @@ export interface Listing {
   is_promoted?: boolean;
 }
 
+export type PaginatedResponse<T> = {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: T[];
+  page?: number;
+  page_size?: number;
+  has_next?: boolean;
+  has_previous?: boolean;
+};
+
+export interface ListingFeedItem {
+  id: number;
+  slug: string;
+  title: string;
+  daily_price_cad: string;
+  city: string;
+  category: string | null;
+  category_name: string | null;
+  is_promoted?: boolean;
+  primary_photo_url?: string | null;
+  owner_rating?: number | null;
+  owner_review_count?: number;
+  created_at: string;
+}
+
 export interface CreateListingPayload {
   title: string;
   description?: string;
@@ -261,12 +294,8 @@ export type UpdateListingPayload = Partial<{
   is_available: boolean;
 }>;
 
-export interface ListingListResponse {
-  count: number;
-  next: string | null;
-  previous: string | null;
-  results: Listing[];
-}
+export type ListingListResponse = PaginatedResponse<Listing>;
+export type ListingFeedResponse = PaginatedResponse<ListingFeedItem>;
 
 export interface ListingListParams {
   q?: string;
@@ -276,6 +305,7 @@ export interface ListingListParams {
   price_max?: number;
   page?: number;
   owner_id?: number;
+  page_size?: number;
 }
 
 export interface ListingGeocodeParams {
@@ -926,6 +956,12 @@ export const authAPI = {
   },
 };
 
+export const maintenanceAPI = {
+  banner() {
+    return jsonFetch<MaintenanceBanner>("/maintenance/", { method: "GET" });
+  },
+};
+
 export const usersAPI = {
   publicProfile(userId: number) {
     return jsonFetch<PublicProfile>(`/users/public/${userId}/`, {
@@ -949,12 +985,39 @@ export const listingsAPI = {
     if (params.page !== undefined) {
       search.set("page", String(params.page));
     }
+    if (params.page_size !== undefined) {
+      search.set("page_size", String(params.page_size));
+    }
     if (params.owner_id !== undefined) {
       search.set("owner_id", String(params.owner_id));
     }
     const query = search.toString();
     const path = `/listings/${query ? `?${query}` : ""}`;
     return jsonFetch<ListingListResponse>(path, { method: "GET" });
+  },
+  feed(params: ListingListParams = {}) {
+    const search = new URLSearchParams();
+    if (params.q) search.set("q", params.q);
+    if (params.category) search.set("category", params.category);
+    if (params.city) search.set("city", params.city);
+    if (params.price_min !== undefined) {
+      search.set("price_min", String(params.price_min));
+    }
+    if (params.price_max !== undefined) {
+      search.set("price_max", String(params.price_max));
+    }
+    if (params.page !== undefined) {
+      search.set("page", String(params.page));
+    }
+    if (params.page_size !== undefined) {
+      search.set("page_size", String(params.page_size));
+    }
+    if (params.owner_id !== undefined) {
+      search.set("owner_id", String(params.owner_id));
+    }
+    const query = search.toString();
+    const path = `/listings/feed/${query ? `?${query}` : ""}`;
+    return jsonFetch<ListingFeedResponse>(path, { method: "GET" });
   },
   mine(params: ListingListParams = {}) {
     const search = new URLSearchParams();
@@ -969,6 +1032,9 @@ export const listingsAPI = {
     }
     if (params.page !== undefined) {
       search.set("page", String(params.page));
+    }
+    if (params.page_size !== undefined) {
+      search.set("page_size", String(params.page_size));
     }
     const query = search.toString();
     const path = `/listings/mine/${query ? `?${query}` : ""}`;
