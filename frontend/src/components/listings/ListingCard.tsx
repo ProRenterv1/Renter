@@ -1,13 +1,15 @@
 import { MapPin } from "lucide-react";
-import type { Listing } from "@/lib/api";
+import type { Listing, ListingFeedItem } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const FALLBACK_IMAGE =
   "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800&q=80";
 
+type ListingCardListing = Listing | ListingFeedItem;
+
 export interface ListingCardProps {
-  listing: Listing;
-  onClick?: (listing: Listing) => void;
+  listing: ListingCardListing;
+  onClick?: (listing: ListingCardListing) => void;
   className?: string;
 }
 
@@ -18,7 +20,7 @@ export function ListingCard({ listing, onClick, className }: ListingCardProps) {
   const priceNumber = Number(listing.daily_price_cad ?? "0");
   const hasValidPrice = Number.isFinite(priceNumber) && priceNumber > 0;
   const price = hasValidPrice ? `$${priceNumber}/day` : "On request";
-  const primaryPhoto = listing.photos?.[0]?.url ?? FALLBACK_IMAGE;
+  const primaryPhoto = listing.primary_photo_url ?? listing.photos?.[0]?.url ?? FALLBACK_IMAGE;
   const isPromoted = Boolean(listing.is_promoted);
 
   const handleClick = () => {

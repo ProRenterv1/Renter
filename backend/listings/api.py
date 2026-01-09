@@ -6,7 +6,7 @@ import redis
 import requests
 from django.conf import settings
 from django.core.cache import cache
-from django.db.models import BooleanField, Case, Value, When
+from django.db.models import BooleanField, Case, Prefetch, Value, When
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
@@ -29,7 +29,12 @@ from .cache import (
     listings_cache_timeout,
 )
 from .models import Category, Listing, ListingPhoto
-from .serializers import CategorySerializer, ListingPhotoSerializer, ListingSerializer
+from .serializers import (
+    CategorySerializer,
+    ListingFeedSerializer,
+    ListingPhotoSerializer,
+    ListingSerializer,
+)
 from .services import search_listings
 
 logger = logging.getLogger(__name__)
@@ -212,7 +217,32 @@ def geocode_listing_location(request):
 class ListingPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = "page_size"
-    max_page_size = 100
+    max_page_size = getattr(settings, "LISTING_MAX_PAGE_SIZE", 40)
+    max_results = getattr(settings, "LISTING_MAX_RESULTS", 1000)
+
+    def paginate_queryset(self, queryset, request, view=None):
+        limited_qs = queryset
+        if self.max_results:
+            limited_qs = queryset[: self.max_results]
+        return super().paginate_queryset(limited_qs, request, view=view)
+
+    def get_paginated_response(self, data):
+        page_size = self.get_page_size(self.request) or self.page.paginator.per_page
+        total_count = self.page.paginator.count
+        if self.max_results:
+            total_count = min(total_count, self.max_results)
+        return Response(
+            {
+                "count": total_count,
+                "next": self.get_next_link(),
+                "previous": self.get_previous_link(),
+                "page": getattr(self.page, "number", None),
+                "page_size": page_size,
+                "has_next": self.page.has_next(),
+                "has_previous": self.page.has_previous(),
+                "results": data,
+            }
+        )
 
 
 class IsOwnerOrReadOnly(permissions.BasePermission):
@@ -246,7 +276,7 @@ class ListingViewSet(viewsets.ModelViewSet):
     lookup_field = "slug"
 
     def get_permissions(self):
-        if getattr(self, "action", None) in {"list", "retrieve", "photos_list"}:
+        if getattr(self, "action", None) in {"list", "retrieve", "photos_list", "feed"}:
             return [permissions.AllowAny()]
         return [permission() for permission in self.permission_classes]
 
@@ -255,17 +285,12 @@ class ListingViewSet(viewsets.ModelViewSet):
         try:
             return super().perform_authentication(request)
         except AuthenticationFailed:
-            if getattr(self, "action", None) in {"list", "retrieve", "photos_list"}:
+            if getattr(self, "action", None) in {"list", "retrieve", "photos_list", "feed"}:
                 request._not_authenticated()
                 return
             raise
 
-    def get_queryset(self):
-        base_qs = (
-            Listing.objects.filter(is_deleted=False)
-            .select_related("owner", "category")
-            .prefetch_related("photos")
-        )
+    def _search_params(self) -> dict:
         params = self.request.query_params
         q = params.get("q") or None
         category = params.get("category") or None
@@ -275,28 +300,34 @@ class ListingViewSet(viewsets.ModelViewSet):
         price_max_raw = params.get("price_max")
         owner_id_raw = params.get("owner_id")
 
-        try:
-            price_min = float(price_min_raw) if price_min_raw not in (None, "") else None
-        except (TypeError, ValueError):
-            price_min = None
-        try:
-            price_max = float(price_max_raw) if price_max_raw not in (None, "") else None
-        except (TypeError, ValueError):
-            price_max = None
-        try:
-            owner_id = int(owner_id_raw) if owner_id_raw not in (None, "") else None
-        except (TypeError, ValueError):
-            owner_id = None
+        def _parse_float(value):
+            try:
+                return float(value) if value not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
 
-        qs = search_listings(
-            qs=base_qs,
-            q=q,
-            price_min=price_min,
-            price_max=price_max,
-            category=category,
-            city=city,
-            owner_id=owner_id,
-        )
+        def _parse_int(value):
+            try:
+                return int(value) if value not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
+
+        return {
+            "q": q,
+            "price_min": _parse_float(price_min_raw),
+            "price_max": _parse_float(price_max_raw),
+            "category": category,
+            "city": city,
+            "owner_id": _parse_int(owner_id_raw),
+        }
+
+    def _base_queryset(self):
+        return Listing.objects.filter(is_deleted=False).select_related("owner", "category")
+
+    def _filtered_queryset(self, *, base_qs=None):
+        return search_listings(qs=base_qs or self._base_queryset(), **self._search_params())
+
+    def _with_promotions(self, qs):
         promoted_ids = get_active_promoted_listing_ids()
         if promoted_ids:
             qs = qs.annotate(
@@ -310,11 +341,67 @@ class ListingViewSet(viewsets.ModelViewSet):
             qs = qs.annotate(is_promoted=Value(False))
         return qs.order_by("-is_promoted", "-created_at")
 
+    def get_queryset(self):
+        base_qs = self._base_queryset().prefetch_related("photos")
+        qs = self._filtered_queryset(base_qs=base_qs)
+        return self._with_promotions(qs)
+
+    def get_feed_queryset(self):
+        photo_qs = ListingPhoto.objects.filter(
+            status=ListingPhoto.Status.ACTIVE,
+            av_status=ListingPhoto.AVStatus.CLEAN,
+        ).order_by("id")
+        base_qs = self._base_queryset().prefetch_related(
+            Prefetch("photos", queryset=photo_qs, to_attr="feed_photos")
+        )
+        qs = self._filtered_queryset(base_qs=base_qs).only(
+            "id",
+            "slug",
+            "title",
+            "daily_price_cad",
+            "city",
+            "category",
+            "category__name",
+            "category__slug",
+            "owner",
+            "owner__rating",
+            "owner__review_count",
+            "created_at",
+            "is_active",
+            "is_available",
+            "is_deleted",
+        )
+        qs = self._with_promotions(qs)
+        max_feed_results = getattr(
+            settings,
+            "LISTING_MAX_FEED_RESULTS",
+            getattr(ListingPagination, "max_results", None),
+        )
+        if max_feed_results:
+            qs = qs[:max_feed_results]
+        return qs
+
+    def _etag_matches(self, request, etag: str) -> bool:
+        header = request.headers.get("If-None-Match") or ""
+        return etag in [token.strip() for token in header.split(",") if token.strip()]
+
+    def _with_cache_headers(self, response: Response, etag: str) -> Response:
+        response["ETag"] = etag
+        cache_ttl = listings_cache_timeout()
+        response["Cache-Control"] = f"public, max-age={cache_ttl}"
+        return response
+
     def list(self, request, *args, **kwargs):
-        cache_key = listing_feed_cache_key(request.query_params)
+        cache_key = listing_feed_cache_key(request.query_params, variant="full")
+        etag = f'W/"{cache_key}"'
         cached = cache.get(cache_key)
+        if cached is not None and self._etag_matches(request, etag):
+            return self._with_cache_headers(
+                Response(status=status.HTTP_304_NOT_MODIFIED),
+                etag,
+            )
         if cached is not None:
-            return Response(cached)
+            return self._with_cache_headers(Response(cached), etag)
 
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
@@ -326,7 +413,37 @@ class ListingViewSet(viewsets.ModelViewSet):
             response = Response(serializer.data)
 
         cache.set(cache_key, response.data, timeout=listings_cache_timeout())
-        return response
+        return self._with_cache_headers(response, etag)
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="feed",
+        permission_classes=[permissions.AllowAny],
+    )
+    def feed(self, request):
+        cache_key = listing_feed_cache_key(request.query_params, variant="summary")
+        etag = f'W/"{cache_key}"'
+        cached = cache.get(cache_key)
+        if cached is not None and self._etag_matches(request, etag):
+            return self._with_cache_headers(
+                Response(status=status.HTTP_304_NOT_MODIFIED),
+                etag,
+            )
+        if cached is not None:
+            return self._with_cache_headers(Response(cached), etag)
+
+        queryset = self.filter_queryset(self.get_feed_queryset())
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = ListingFeedSerializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+        else:
+            serializer = ListingFeedSerializer(queryset, many=True)
+            response = Response(serializer.data)
+
+        cache.set(cache_key, response.data, timeout=listings_cache_timeout())
+        return self._with_cache_headers(response, etag)
 
     def perform_create(self, serializer):
         serializer.save()

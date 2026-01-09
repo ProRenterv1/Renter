@@ -21,8 +21,8 @@ const OperatorApp = isOpsBuildEnv ? lazy(() => import("@/operator/OperatorApp"))
 function FeedPage() {
   const navigate = useNavigate();
 
-  const handleOpenBooking = (listing: ApiListing) => {
-    navigate(`/listings/${listing.slug}`, { state: { listing } });
+  const handleOpenBooking = (listingSlug: string) => {
+    navigate(`/listings/${listingSlug}`);
   };
 
   return (
