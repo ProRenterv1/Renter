@@ -92,8 +92,8 @@ class PromotionCheckoutSession(models.Model):
     class Meta:
         ordering = ("-created_at",)
         indexes = [
-            models.Index(fields=("listing", "owner"), name="promo_checkout_listing_owner_idx"),
-            models.Index(fields=("owner", "consumed_at"), name="promo_checkout_owner_consumed_idx"),
+            models.Index(fields=("listing", "owner"), name="promo_chk_list_owner_idx"),
+            models.Index(fields=("owner", "consumed_at"), name="promo_chk_owner_cons_idx"),
         ]
 
     def __str__(self) -> str:

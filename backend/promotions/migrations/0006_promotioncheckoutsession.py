@@ -47,14 +47,14 @@ class Migration(migrations.Migration):
             model_name="promotioncheckoutsession",
             index=models.Index(
                 fields=("listing", "owner"),
-                name="promo_checkout_listing_owner_idx",
+                name="promo_chk_list_owner_idx",
             ),
         ),
         migrations.AddIndex(
             model_name="promotioncheckoutsession",
             index=models.Index(
                 fields=("owner", "consumed_at"),
-                name="promo_checkout_owner_consumed_idx",
+                name="promo_chk_owner_cons_idx",
             ),
         ),
     ]

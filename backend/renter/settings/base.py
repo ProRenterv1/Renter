@@ -47,7 +47,6 @@ INSTALLED_APPS = [
     "notifications",
     "reviews",
     "promotions.apps.PromotionsConfig",
-    "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
@@ -58,6 +57,9 @@ INSTALLED_APPS = [
     "storages",
     "core",
 ]
+
+if ENABLE_DJANGO_ADMIN:
+    INSTALLED_APPS.insert(0, "django.contrib.admin")
 
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
