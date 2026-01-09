@@ -63,13 +63,23 @@ MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "operator_core.middleware.OpsOnlyRouteGatingMiddleware",
-    "django.contrib.sessions.middleware.SessionMiddleware",
-    "django.middleware.common.CommonMiddleware",
-    "django.middleware.csrf.CsrfViewMiddleware",
-    "django.contrib.auth.middleware.AuthenticationMiddleware",
-    "django.contrib.messages.middleware.MessageMiddleware",
-    "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
+if ENABLE_DJANGO_ADMIN:
+    # Admin UI needs session and CSRF handling; keep clickjacking protection for templates.
+    MIDDLEWARE += [
+        "django.contrib.sessions.middleware.SessionMiddleware",
+        "django.middleware.common.CommonMiddleware",
+        "django.middleware.csrf.CsrfViewMiddleware",
+        "django.contrib.auth.middleware.AuthenticationMiddleware",
+        "django.contrib.messages.middleware.MessageMiddleware",
+        "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    ]
+else:
+    # API-only stack: skip session, CSRF, and clickjacking middleware for JWT-only routes.
+    MIDDLEWARE += [
+        "django.middleware.common.CommonMiddleware",
+    ]
 
 ROOT_URLCONF = "renter.urls"
 WSGI_APPLICATION = "renter.wsgi.application"
