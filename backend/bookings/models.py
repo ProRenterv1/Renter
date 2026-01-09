@@ -242,6 +242,9 @@ class BookingPhoto(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["booking", "role"]),
+        ]
 
     def __str__(self) -> str:
         return f"BookingPhoto {self.pk} for booking {self.booking_id}"

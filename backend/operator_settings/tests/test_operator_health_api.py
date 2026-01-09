@@ -82,9 +82,19 @@ def test_operator_health_ok_when_all_checks_ok(operator_support_client, settings
     assert resp.data["ok"] is True
 
     checks = resp.data["checks"]
-    assert set(checks.keys()) == {"db", "redis", "celery", "stripe", "twilio", "s3", "email"}
+    assert set(checks.keys()) == {
+        "db",
+        "pgbouncer",
+        "redis",
+        "celery",
+        "stripe",
+        "twilio",
+        "s3",
+        "email",
+    }
     assert checks["redis"]["ok"] is True
     assert checks["celery"]["ok"] is True
+    assert checks["pgbouncer"]["ok"] is True
     assert checks["stripe"]["ok"] is True
     assert checks["twilio"]["ok"] is True
     assert checks["s3"]["ok"] is True

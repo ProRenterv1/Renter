@@ -105,3 +105,38 @@ class PaymentMethod(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user} {self.brand} ****{self.last4}"
+
+
+class PaymentSetupIntent(models.Model):
+    """Locally caches Stripe SetupIntent metadata for card saves."""
+
+    class IntentType(models.TextChoices):
+        DEFAULT_CARD = "default_card", "Default card"
+        PROMOTION_CARD = "promotion_card", "Promotion card"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="payment_setup_intents",
+        on_delete=models.CASCADE,
+    )
+    intent_type = models.CharField(
+        max_length=64,
+        choices=IntentType.choices,
+        default=IntentType.DEFAULT_CARD,
+    )
+    stripe_setup_intent_id = models.CharField(max_length=255, unique=True)
+    client_secret = models.TextField()
+    status = models.CharField(max_length=64, default="requires_confirmation")
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "intent_type"]),
+            models.Index(fields=["user", "consumed_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.user} setup_intent={self.stripe_setup_intent_id} ({self.intent_type})"

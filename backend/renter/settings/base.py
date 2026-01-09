@@ -47,7 +47,6 @@ INSTALLED_APPS = [
     "notifications",
     "reviews",
     "promotions.apps.PromotionsConfig",
-    "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
@@ -59,17 +58,30 @@ INSTALLED_APPS = [
     "core",
 ]
 
+if ENABLE_DJANGO_ADMIN:
+    INSTALLED_APPS.insert(0, "django.contrib.admin")
+
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "operator_core.middleware.OpsOnlyRouteGatingMiddleware",
-    "django.contrib.sessions.middleware.SessionMiddleware",
-    "django.middleware.common.CommonMiddleware",
-    "django.middleware.csrf.CsrfViewMiddleware",
-    "django.contrib.auth.middleware.AuthenticationMiddleware",
-    "django.contrib.messages.middleware.MessageMiddleware",
-    "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
+if ENABLE_DJANGO_ADMIN:
+    # Admin UI needs session and CSRF handling; keep clickjacking protection for templates.
+    MIDDLEWARE += [
+        "django.contrib.sessions.middleware.SessionMiddleware",
+        "django.middleware.common.CommonMiddleware",
+        "django.middleware.csrf.CsrfViewMiddleware",
+        "django.contrib.auth.middleware.AuthenticationMiddleware",
+        "django.contrib.messages.middleware.MessageMiddleware",
+        "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    ]
+else:
+    # API-only stack: skip session, CSRF, and clickjacking middleware for JWT-only routes.
+    MIDDLEWARE += [
+        "django.middleware.common.CommonMiddleware",
+    ]
 
 ROOT_URLCONF = "renter.urls"
 WSGI_APPLICATION = "renter.wsgi.application"
@@ -96,6 +108,13 @@ DATABASES = {
         default="postgresql://postgres:admin@localhost:5432/renter",
     )
 }
+
+direct_db = env.db("DATABASE_URL_DIRECT", default=None)
+if env.bool("DATABASE_USE_DIRECT", default=False) and direct_db:
+    DATABASES["default"] = direct_db
+
+DATABASES["default"]["CONN_MAX_AGE"] = None
+DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = True
 
 STATIC_URL = "/dj-static/"
 STATIC_ROOT = BASE_DIR / "static"

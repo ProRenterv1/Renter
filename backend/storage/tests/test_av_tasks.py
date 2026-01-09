@@ -86,9 +86,50 @@ def _stub_s3(monkeypatch, payload: bytes):
     monkeypatch.setattr("storage.tasks._s3_client", lambda: _StubClient())
 
 
-@pytest.fixture(autouse=True)
-def _disable_metadata(monkeypatch):
-    monkeypatch.setattr("storage.tasks._apply_av_metadata", lambda *args, **kwargs: None)
+def test_extract_dimensions_skips_full_load(monkeypatch):
+    img_bytes, dims = _image_bytes()
+
+    def explode_on_load(self, *args, **kwargs):
+        raise AssertionError("load should not be called when reading dimensions")
+
+    monkeypatch.setattr(tasks.Image.Image, "load", explode_on_load)
+
+    assert tasks._extract_dimensions(img_bytes) == dims
+
+
+def test_extract_dimensions_falls_back_when_fast_kwarg_missing(monkeypatch):
+    img_bytes, dims = _image_bytes()
+    call_kwargs: list[dict] = []
+    original_open = tasks.Image.open
+
+    def fake_open(fp, *args, **kwargs):
+        call_kwargs.append(kwargs)
+        if kwargs.get("fast"):
+            raise TypeError("fast not supported")
+        return original_open(fp, *args, **kwargs)
+
+    monkeypatch.setattr(tasks.Image, "open", fake_open)
+
+    assert tasks._extract_dimensions(img_bytes) == dims
+    assert call_kwargs and call_kwargs[0].get("fast") is True
+
+
+def test_apply_av_metadata_tags_only(monkeypatch):
+    tag_calls: list[tuple[str, dict[str, str]]] = []
+    meta_calls: list[tuple] = []
+
+    monkeypatch.setattr(
+        "storage.tasks.s3util.tag_object", lambda key, tags: tag_calls.append((key, tags))
+    )
+    monkeypatch.setattr(
+        "storage.tasks.s3util.set_metadata_copy",
+        lambda *args, **kwargs: meta_calls.append((args, kwargs)),
+    )
+
+    tasks._apply_av_metadata("k", "clean")
+
+    assert tag_calls == [("k", {"av-status": "clean"})]
+    assert meta_calls == []
 
 
 def test_scan_task_marks_photo_clean(monkeypatch, listing, owner):

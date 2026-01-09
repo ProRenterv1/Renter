@@ -59,6 +59,7 @@ All Docker commands run from `infra/`.
   docker compose logs --tail=100 api
   docker compose logs -f api   # follow logs
   docker compose restart api   # restart a single service
+  docker compose exec pgbouncer psql -h 127.0.0.1 -p 6432 -U postgres pgbouncer -c "SHOW POOLS;"   # pooler health
   ```
 - **Database & cache**
   Containers `db` and `redis` start automatically via `dev-up`. Use `docker compose exec db psql ...` for manual DB access.
@@ -68,11 +69,30 @@ All Docker commands run from `infra/`.
   docker compose down -v        # stop and drop volumes (only if you need a clean DB)
   ```
 
+## Pgbouncer (connection pooling)
+- Service `pgbouncer` runs on `localhost:6432` using config in `infra/pgbouncer/pgbouncer.ini` and `userlist.txt`; it sits in front of Postgres `db:5432`.
+- App env uses the pooler by default: `DATABASE_URL=postgresql://postgres:postgres@pgbouncer:6432/renters`. For long-running tasks that need a direct connection, set `DATABASE_USE_DIRECT=true` (uses `DATABASE_URL_DIRECT=postgresql://postgres:postgres@db:5432/renters`).
+- Adjust pool sizing/timeouts by editing `infra/pgbouncer/pgbouncer.ini` (`default_pool_size`, `max_client_conn`, `query_wait_timeout`, etc.), then restart: `cd infra && docker compose restart pgbouncer`.
+- Check health/stats:
+  ```bash
+  cd infra
+  docker compose exec pgbouncer psql -h 127.0.0.1 -p 6432 -U postgres pgbouncer -c "SHOW POOLS;"
+  docker compose exec pgbouncer psql -h 127.0.0.1 -p 6432 -U postgres pgbouncer -c "SHOW STATS;"
+  ```
+- Rotate credentials by updating `infra/pgbouncer/userlist.txt` (md5 hashes) and the Postgres password, then restarting `pgbouncer` and `db`.
+- Validate after changes: `docker compose up -d --build`, run migrations (`docker compose exec api python manage.py migrate`), hit `http://localhost:8080/api/healthz`, and confirm pooled connections via `SHOW POOLS;`/`SHOW STATS;`.
+
 ## Backend Development
 - **Open a Django shell / run management commands**
   ```bash
   docker compose exec api python manage.py shell
   docker compose exec api python manage.py createsuperuser
+  ```
+- **Seed operator roles / assign operator_admin**
+  ```bash
+  cd infra
+  docker compose exec api python manage.py bootstrap_operator_roles --assign-email ops@example.com
+  # or use --assign-username
   ```
 - **Migrations inside the container**
   ```bash
@@ -105,6 +125,7 @@ All Docker commands run from `infra/`.
 - For R2, prefer `R2_ACCOUNT_ID` (or set `AWS_S3_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com`), keep `AWS_S3_REGION_NAME=auto`, and leave `AWS_S3_FORCE_PATH_STYLE=true`.
 - Public URLs are built from `S3_PUBLIC_BASE_URL` first (set to your `https://<bucket>.r2.dev` or custom domain), then `MEDIA_BASE_URL`, then the endpoint/bucket fallback.
 - Upload prefixes stay under `S3_UPLOADS_PREFIX` (default `uploads/listings`); presign flows remain compatible with AWS-style clients.
+- AV markers are stored as S3 object tags (`av-status=*`) only; we no longer write `x-av` metadata. Ensure IAM/bucket policies (or R2 ACL) allow `PutObjectTagging` for the upload and AV finalize flows.
 - Cutover checklist: create the R2 bucket + access keys, configure `*.r2.dev` or a custom domain, copy existing objects (e.g., `aws s3 sync --endpoint-url https://<account-id>.r2.cloudflarestorage.com s3://old-bucket s3://new-bucket`), deploy with the new env vars, and smoke-test uploads/AV tagging.
 
 ## Frontend Development

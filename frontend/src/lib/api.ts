@@ -317,6 +317,12 @@ export interface PromotionPaymentPayload {
   stripe_customer_id?: string;
   save_payment_method?: boolean;
   pay_with_earnings?: boolean;
+  stripe_setup_intent_id?: string;
+  setup_intent_status?: string;
+  card_brand?: string;
+  card_last4?: string;
+  card_exp_month?: number;
+  card_exp_year?: number;
 }
 
 export interface PromotionSlot {
@@ -344,6 +350,15 @@ export interface PaymentMethod {
   is_default: boolean;
   stripe_payment_method_id: string;
   created_at: string;
+}
+
+export type PaymentSetupIntentType = "default_card" | "promotion_card";
+
+export interface PaymentMethodSetupIntentResponse {
+  setup_intent_id: string;
+  client_secret: string;
+  status: string;
+  intent_type: PaymentSetupIntentType;
 }
 
 export interface OwnerPayoutBalances {
@@ -1047,7 +1062,16 @@ export const bookingsAPI = {
   },
   pay(
     id: number,
-    payload: { stripe_payment_method_id: string; stripe_customer_id?: string },
+    payload: {
+      stripe_payment_method_id: string;
+      stripe_customer_id?: string;
+      stripe_setup_intent_id?: string;
+      setup_intent_status?: string;
+      card_brand?: string;
+      card_last4?: string;
+      card_exp_month?: number;
+      card_exp_year?: number;
+    },
   ) {
     return jsonFetch<Booking>(`/bookings/${id}/pay/`, {
       method: "POST",
@@ -1207,7 +1231,21 @@ export const paymentsAPI = {
   listPaymentMethods() {
     return jsonFetch<PaymentMethod[]>("/payments/methods/", { method: "GET" });
   },
-  addPaymentMethod(payload: { stripe_payment_method_id: string }) {
+  createPaymentMethodSetupIntent(payload: { intent_type?: PaymentSetupIntentType } = {}) {
+    return jsonFetch<PaymentMethodSetupIntentResponse>("/payments/methods/setup-intent/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  addPaymentMethod(payload: {
+    stripe_payment_method_id: string;
+    stripe_setup_intent_id?: string;
+    setup_intent_status?: string;
+    card_brand?: string;
+    card_last4?: string;
+    card_exp_month?: number | null;
+    card_exp_year?: number | null;
+  }) {
     return jsonFetch<PaymentMethod>("/payments/methods/", {
       method: "POST",
       body: payload,

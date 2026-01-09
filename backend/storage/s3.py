@@ -105,6 +105,8 @@ def head_object(key: str) -> Dict:
 
 
 def tag_object(key: str, tags: Dict[str, str]):
+    if not getattr(settings, "USE_S3", False):
+        return
     _client().put_object_tagging(
         Bucket=settings.AWS_STORAGE_BUCKET_NAME,
         Key=key,
@@ -113,6 +115,8 @@ def tag_object(key: str, tags: Dict[str, str]):
 
 
 def set_metadata_copy(key: str, new_metadata: Dict[str, str]):
+    if not getattr(settings, "USE_S3", False):
+        return
     c = _client()
     c.copy_object(
         Bucket=settings.AWS_STORAGE_BUCKET_NAME,

@@ -33,8 +33,24 @@ services:
       POSTGRES_DB: renters
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST_AUTH_METHOD: md5
     ports: ["5432:5432"]
     volumes: ["pgdata:/var/lib/postgresql/data"]
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    depends_on: [db]
+    environment:
+      PGPASSWORD: postgres
+    volumes:
+      - ./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    ports: ["6432:6432"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U postgres"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
   clamav:
     image: clamav/clamav:stable
     ports: ["3310:3310"]
