@@ -6,7 +6,7 @@ import contextvars
 import logging
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import stripe
 from django.conf import settings
@@ -44,6 +44,7 @@ _PAYMENT_METHOD_CACHE: contextvars.ContextVar[dict[str, Any]] = contextvars.Cont
     "stripe_payment_method_cache",
     default=None,  # type: ignore[arg-type]
 )
+T = TypeVar("T")
 
 
 def _log_stripe_call(kind: str, **extra: Any) -> None:
@@ -147,6 +148,25 @@ def _handle_stripe_error(exc: stripe.error.StripeError) -> None:
     raise StripePaymentError(exc.user_message or "Stripe payment failure.") from exc
 
 
+def call_stripe_callable(
+    fn: Callable[..., T],
+    *,
+    primary_kwargs: dict[str, Any],
+    fallback_kwargs: dict[str, Any],
+    error_keywords: tuple[str, ...] = ("cache_scope",),
+) -> T:
+    """
+    Invoke a Stripe helper while tolerating monkeypatched stubs that don't accept
+    newer optional keyword arguments (e.g., cache_scope).
+    """
+    try:
+        return fn(**primary_kwargs)
+    except TypeError as exc:
+        if any(keyword in str(exc) for keyword in error_keywords):
+            return fn(**fallback_kwargs)
+        raise
+
+
 def _account_object_value(account_data: Any, field: str, default: Any = None) -> Any:
     """Safely fetch a field from a Stripe account object or dict payload."""
     if isinstance(account_data, dict):
@@ -168,6 +188,28 @@ def _listify(value: Any) -> list[Any]:
         return list(value)
     except TypeError:
         return [value]
+
+
+def _cancel_payment_intent(intent_id: str) -> bool:
+    """
+    Cancel a PaymentIntent if the Stripe client exposes the cancel method.
+
+    Returns True when a cancel was attempted and did not raise, False when the client
+    does not support cancel (e.g., in lightweight test doubles).
+    """
+    cancel_fn = getattr(stripe.PaymentIntent, "cancel", None)
+    if cancel_fn is None:
+        logger.debug("stripe.PaymentIntent.cancel missing; skipping cancel for %s", intent_id)
+        return False
+    try:
+        cancel_fn(intent_id)
+        return True
+    except stripe.error.InvalidRequestError as exc:
+        if getattr(exc, "code", "") != "resource_missing":
+            _handle_stripe_error(exc)
+    except stripe.error.StripeError as exc:  # noqa: PERF203
+        _handle_stripe_error(exc)
+    return False
 
 
 def _serialize_account_requirements(account_data: Any) -> dict[str, Any]:
@@ -1170,27 +1212,13 @@ def create_booking_deposit_hold_intent(
         if status == "succeeded":
             return deposit_intent.id
         if intent_amount not in (None, deposit_amount_cents):
-            try:
-                stripe.PaymentIntent.cancel(deposit_intent.id)
-            except stripe.error.InvalidRequestError as exc:
-                if getattr(exc, "code", "") != "resource_missing":
-                    _handle_stripe_error(exc)
-            except stripe.error.StripeError as exc:  # noqa: PERF203
-                _handle_stripe_error(exc)
+            _cancel_payment_intent(deposit_intent.id)
             deposit_intent = None
         elif status in {"requires_capture", "processing"}:
             pass
-        elif status == "succeeded":
-            return deposit_intent.id
         else:
-            try:
-                stripe.PaymentIntent.cancel(deposit_intent.id)
-            except stripe.error.InvalidRequestError as exc:
-                if getattr(exc, "code", "") != "resource_missing":
-                    _handle_stripe_error(exc)
-            except stripe.error.StripeError as exc:  # noqa: PERF203
-                _handle_stripe_error(exc)
-            deposit_intent = None
+            if _cancel_payment_intent(deposit_intent.id):
+                deposit_intent = None
 
     if deposit_intent is None:
         try:

@@ -22,6 +22,7 @@ from payments.stripe_api import (
     StripeConfigurationError,
     StripePaymentError,
     StripeTransientError,
+    call_stripe_callable,
     charge_promotion_payment,
     ensure_connect_account,
     ensure_stripe_customer,
@@ -342,10 +343,17 @@ def _pay_for_promotion_with_card(
             setup_intent.save(update_fields=updates)
 
     try:
-        customer_id = ensure_stripe_customer(
-            request.user,
-            customer_id=provided_customer_id or None,
-            cache_scope=request,
+        customer_id = call_stripe_callable(
+            ensure_stripe_customer,
+            primary_kwargs={
+                "user": request.user,
+                "customer_id": provided_customer_id or None,
+                "cache_scope": request,
+            },
+            fallback_kwargs={
+                "user": request.user,
+                "customer_id": provided_customer_id or None,
+            },
         )
     except StripeTransientError:
         return Response(

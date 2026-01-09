@@ -16,6 +16,7 @@ from .stripe_api import (
     StripeTransientError,
     _ensure_payment_method_for_customer,
     _get_stripe_api_key,
+    call_stripe_callable,
     create_or_reuse_setup_intent,
     ensure_stripe_customer,
     fetch_payment_method_details,
@@ -99,12 +100,24 @@ class PaymentMethodSerializer(serializers.ModelSerializer):
             if updates:
                 setup_intent.save(update_fields=updates)
 
-        customer_id = ensure_stripe_customer(user, cache_scope=request)
-        _ensure_payment_method_for_customer(
-            payment_method_id,
-            customer_id,
-            attached_via_setup_intent=attached_via_setup_intent,
-            cache_scope=request,
+        customer_id = call_stripe_callable(
+            ensure_stripe_customer,
+            primary_kwargs={"user": user, "cache_scope": request},
+            fallback_kwargs={"user": user},
+        )
+        call_stripe_callable(
+            _ensure_payment_method_for_customer,
+            primary_kwargs={
+                "payment_method_id": payment_method_id,
+                "customer_id": customer_id,
+                "attached_via_setup_intent": attached_via_setup_intent,
+                "cache_scope": request,
+            },
+            fallback_kwargs={
+                "payment_method_id": payment_method_id,
+                "customer_id": customer_id,
+            },
+            error_keywords=("cache_scope", "attached_via_setup_intent"),
         )
 
         details = {}
@@ -116,9 +129,13 @@ class PaymentMethodSerializer(serializers.ModelSerializer):
                 "exp_year": card_exp_year,
             }
         else:
-            details = fetch_payment_method_details(
-                payment_method_id,
-                cache_scope=request,
+            details = call_stripe_callable(
+                fetch_payment_method_details,
+                primary_kwargs={
+                    "payment_method_id": payment_method_id,
+                    "cache_scope": request,
+                },
+                fallback_kwargs={"payment_method_id": payment_method_id},
             )
 
         brand = str(details.get("brand", "") or "").upper()

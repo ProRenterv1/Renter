@@ -29,6 +29,7 @@ from payments.stripe_api import (
     StripeConfigurationError,
     StripePaymentError,
     StripeTransientError,
+    call_stripe_callable,
     capture_deposit_amount,
     create_booking_charge_intent,
     create_late_fee_payment_intent,
@@ -1186,10 +1187,17 @@ class BookingViewSet(viewsets.ModelViewSet):
                 setup_intent.save(update_fields=updates)
 
         try:
-            customer_id = ensure_stripe_customer(
-                request.user,
-                customer_id=provided_customer_id or None,
-                cache_scope=request,
+            customer_id = call_stripe_callable(
+                ensure_stripe_customer,
+                primary_kwargs={
+                    "user": request.user,
+                    "customer_id": provided_customer_id or None,
+                    "cache_scope": request,
+                },
+                fallback_kwargs={
+                    "user": request.user,
+                    "customer_id": provided_customer_id or None,
+                },
             )
         except StripeTransientError:
             return Response(
@@ -1201,12 +1209,21 @@ class BookingViewSet(viewsets.ModelViewSet):
             return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            charge_id = create_booking_charge_intent(
-                booking=booking,
-                customer_id=customer_id,
-                payment_method_id=payment_method_id,
-                attached_via_setup_intent=attached_via_setup_intent,
-                cache_scope=request,
+            charge_id = call_stripe_callable(
+                create_booking_charge_intent,
+                primary_kwargs={
+                    "booking": booking,
+                    "customer_id": customer_id,
+                    "payment_method_id": payment_method_id,
+                    "attached_via_setup_intent": attached_via_setup_intent,
+                    "cache_scope": request,
+                },
+                fallback_kwargs={
+                    "booking": booking,
+                    "customer_id": customer_id,
+                    "payment_method_id": payment_method_id,
+                },
+                error_keywords=("cache_scope", "attached_via_setup_intent"),
             )
         except StripeTransientError:
             return Response(
