@@ -137,30 +137,59 @@ export function Payments() {
     setCardError(null);
     setAddingCard(true);
     try {
-      const { error, paymentMethod } = await stripe.createPaymentMethod({
-        type: "card",
-        card: cardElement,
-        billing_details: {
-          name: cardholderName || undefined,
-        },
+      const setupIntent = await paymentsAPI.createPaymentMethodSetupIntent({
+        intent_type: "default_card",
       });
+      const { error, setupIntent: confirmed } = await stripe.confirmCardSetup(
+        setupIntent.client_secret,
+        {
+          payment_method: {
+            card: cardElement,
+            billing_details: {
+              name: cardholderName || undefined,
+            },
+          },
+          expand: ["payment_method"],
+        },
+      );
 
-      if (error || !paymentMethod) {
+      if (error || !confirmed) {
         setCardError(error?.message || "We couldn't verify your card. Please try again.");
         setAddingCard(false);
         return;
       }
 
+      const pmId =
+        typeof confirmed.payment_method === "string"
+          ? confirmed.payment_method
+          : confirmed.payment_method?.id;
+      const cardDetails =
+        confirmed && typeof confirmed.payment_method === "object"
+          ? (confirmed.payment_method as any).card
+          : undefined;
+      if (!pmId) {
+        setCardError("We couldn't verify your card. Please try again.");
+        setAddingCard(false);
+        return;
+      }
+
       const created = await paymentsAPI.addPaymentMethod({
-        stripe_payment_method_id: paymentMethod.id,
+        stripe_payment_method_id: pmId,
+        stripe_setup_intent_id: confirmed.id,
+        setup_intent_status: confirmed.status,
+        card_brand: cardDetails?.brand,
+        card_last4: cardDetails?.last4,
+        card_exp_month: cardDetails?.exp_month ?? null,
+        card_exp_year: cardDetails?.exp_year ?? null,
       });
       setPaymentMethods((prev) => [created, ...prev]);
       setCardholderName("");
       cardElement.clear();
       setAddCardOpen(false);
       toast.success("Card added.");
-    } catch {
-      toast.error("Unable to add this card. Please try again in a moment.");
+    } catch (err) {
+      console.error("payments: add card failed", err);
+      setCardError("Unable to add this card. Please try again in a moment.");
     } finally {
       setAddingCard(false);
     }

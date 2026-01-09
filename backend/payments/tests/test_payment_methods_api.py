@@ -164,3 +164,36 @@ def test_delete_payment_method_detaches_best_effort(monkeypatch, renter_user, se
     assert PaymentMethod.objects.filter(id=pm.id).count() == 0
     assert detach_calls["count"] == 1
     assert detach_calls["last_id"] == "pm_delete"
+
+
+def test_setup_intent_endpoint_uses_reuse_helper(monkeypatch, renter_user, settings):
+    settings.STRIPE_SECRET_KEY = "sk_test"
+
+    class DummySetupIntent:
+        def __init__(self):
+            self.stripe_setup_intent_id = "seti_test_123"
+            self.client_secret = "seti_test_123_secret"
+            self.status = "open"
+            self.intent_type = "default_card"
+
+    helper_calls = {"count": 0, "intent_type": None}
+
+    def _fake_reuse(user, intent_type, cache_scope=None):
+        helper_calls["count"] += 1
+        helper_calls["intent_type"] = intent_type
+        return DummySetupIntent()
+
+    monkeypatch.setattr(payment_methods_api, "create_or_reuse_setup_intent", _fake_reuse)
+
+    client = _auth_client(renter_user)
+    resp = client.post(
+        "/api/payments/methods/setup-intent/",
+        {"intent_type": "default_card"},
+        format="json",
+    )
+
+    assert resp.status_code == 200
+    assert helper_calls["count"] == 1
+    assert helper_calls["intent_type"] == "default_card"
+    assert resp.data["setup_intent_id"] == "seti_test_123"
+    assert resp.data["client_secret"] == "seti_test_123_secret"

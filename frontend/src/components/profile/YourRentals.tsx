@@ -654,38 +654,74 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     setPaymentError(null);
     setPaymentLoading(true);
 
-    const { error, paymentMethod } = await stripe.createPaymentMethod({
-      type: "card",
-      card: cardElement,
-      billing_details: {
-        name: paymentForm.cardholderName || undefined,
-        address: {
-          city: paymentForm.city || undefined,
-          postal_code: paymentForm.postalCode || undefined,
-          state: paymentForm.province || undefined,
-          country: paymentForm.country || undefined,
-        },
-      },
-    });
-
-    if (error || !paymentMethod) {
-      setPaymentError(error?.message || "We couldn't verify your card. Please try again.");
-      setPaymentLoading(false);
-      return;
-    }
-
     try {
+      const setupIntent = await paymentsAPI.createPaymentMethodSetupIntent({
+        intent_type: "default_card",
+      });
+      const { error, setupIntent: confirmed } = await stripe.confirmCardSetup(
+        setupIntent.client_secret,
+        {
+          payment_method: {
+            card: cardElement,
+            billing_details: {
+              name: paymentForm.cardholderName || undefined,
+              address: {
+                city: paymentForm.city || undefined,
+                postal_code: paymentForm.postalCode || undefined,
+                state: paymentForm.province || undefined,
+                country: paymentForm.country || undefined,
+              },
+            },
+          },
+          expand: ["payment_method"],
+        },
+      );
+
+      if (error || !confirmed) {
+        setPaymentError(error?.message || "We couldn't verify your card. Please try again.");
+        setPaymentLoading(false);
+        return;
+      }
+
+      const pmId =
+        typeof confirmed.payment_method === "string"
+          ? confirmed.payment_method
+          : confirmed.payment_method?.id;
+      const cardDetails =
+        confirmed && typeof confirmed.payment_method === "object"
+          ? (confirmed.payment_method as any).card
+          : undefined;
+      if (!pmId) {
+        setPaymentError("We couldn't verify your card. Please try again.");
+        setPaymentLoading(false);
+        return;
+      }
+
       const stripeCustomerId = currentUser?.stripe_customer_id || undefined;
       const updatedBooking = await bookingsAPI.pay(payingRental.bookingId, {
-        stripe_payment_method_id: paymentMethod.id,
+        stripe_payment_method_id: pmId,
         stripe_customer_id: stripeCustomerId,
+        stripe_setup_intent_id: confirmed.id,
+        setup_intent_status: confirmed.status,
+        card_brand: cardDetails?.brand,
+        card_last4: cardDetails?.last4,
+        card_exp_month: cardDetails?.exp_month,
+        card_exp_year: cardDetails?.exp_year,
       });
       setBookings((prev) =>
         prev.map((booking) => (booking.id === updatedBooking.id ? updatedBooking : booking))
       );
       if (savePaymentMethod) {
         try {
-          await paymentsAPI.addPaymentMethod({ stripe_payment_method_id: paymentMethod.id });
+          await paymentsAPI.addPaymentMethod({
+            stripe_payment_method_id: pmId,
+            stripe_setup_intent_id: confirmed.id,
+            setup_intent_status: confirmed.status,
+            card_brand: cardDetails?.brand,
+            card_last4: cardDetails?.last4,
+            card_exp_month: cardDetails?.exp_month ?? null,
+            card_exp_year: cardDetails?.exp_year ?? null,
+          });
         } catch (saveErr) {
           console.error("payments: failed to save payment method", saveErr);
           toast.error("Payment succeeded, but we couldn't save this card.");

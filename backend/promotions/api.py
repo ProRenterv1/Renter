@@ -17,7 +17,7 @@ from core.settings_resolver import get_int
 from listings.models import Listing
 from notifications import tasks as notification_tasks
 from payments.ledger import compute_owner_available_balance, log_transaction
-from payments.models import OwnerPayoutAccount, Transaction
+from payments.models import OwnerPayoutAccount, PaymentSetupIntent, Transaction
 from payments.stripe_api import (
     StripeConfigurationError,
     StripePaymentError,
@@ -315,16 +315,37 @@ def _pay_for_promotion_with_card(
     data = request.data or {}
     payment_method_id = (data.get("stripe_payment_method_id") or "").strip()
     provided_customer_id = (data.get("stripe_customer_id") or "").strip()
+    setup_intent_id = (data.get("stripe_setup_intent_id") or "").strip()
+    setup_intent_status = (data.get("setup_intent_status") or "").strip()
+    attached_via_setup_intent = False
     if not payment_method_id:
         return Response(
             {"detail": "stripe_payment_method_id is required."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    if setup_intent_id:
+        setup_intent = PaymentSetupIntent.objects.filter(
+            stripe_setup_intent_id=setup_intent_id,
+        ).first()
+        if setup_intent is None or setup_intent.user_id != request.user.id:
+            return Response(
+                {"detail": "Invalid stripe_setup_intent_id for this user."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        attached_via_setup_intent = True
+        updates: list[str] = []
+        if setup_intent_status and setup_intent_status != setup_intent.status:
+            setup_intent.status = setup_intent_status
+            updates.append("status")
+        if updates:
+            setup_intent.save(update_fields=updates)
+
     try:
         customer_id = ensure_stripe_customer(
             request.user,
             customer_id=provided_customer_id or None,
+            cache_scope=request,
         )
     except StripeTransientError:
         return Response(
@@ -350,6 +371,8 @@ def _pay_for_promotion_with_card(
             amount_cents=total_price_cents,
             payment_method_id=payment_method_id,
             customer_id=customer_id,
+            attached_via_setup_intent=attached_via_setup_intent,
+            cache_scope=request,
             metadata={
                 "listing_id": str(listing.id),
                 "promotion_start": starts_at.isoformat(),

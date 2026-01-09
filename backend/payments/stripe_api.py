@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import logging
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -19,13 +20,36 @@ from bookings.models import Booking
 from identity.models import IdentityVerification
 from listings.models import Listing
 from payments.ledger import log_transaction
-from payments.models import OwnerPayoutAccount, Transaction
-from promotions.models import PromotedSlot
+from payments.models import OwnerPayoutAccount, PaymentSetupIntent, Transaction
+from promotions.models import PromotedSlot, PromotionCheckoutSession
 
 logger = logging.getLogger(__name__)
 IDEMPOTENCY_VERSION = "v2"
 AUTOMATIC_PAYMENT_METHODS_CONFIG = {"enabled": True, "allow_redirects": "never"}
 CONNECT_ACCOUNT_EXPAND = ["individual", "external_accounts"]
+CUSTOMER_VERIFY_TTL = timedelta(hours=12)
+SETUP_INTENT_REFRESH_AGE = timedelta(minutes=10)
+OPEN_SETUP_INTENT_STATUSES = {
+    "requires_payment_method",
+    "requires_action",
+    "requires_confirmation",
+    "processing",
+}
+CHECKOUT_SESSION_REFRESH_AGE = timedelta(minutes=5)
+_CUSTOMER_CACHE: contextvars.ContextVar[dict[int, str]] = contextvars.ContextVar(
+    "stripe_customer_cache",
+    default=None,  # type: ignore[arg-type]
+)
+_PAYMENT_METHOD_CACHE: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
+    "stripe_payment_method_cache",
+    default=None,  # type: ignore[arg-type]
+)
+
+
+def _log_stripe_call(kind: str, **extra: Any) -> None:
+    logger.debug("stripe_call", extra={"kind": kind, **extra})
+
+
 User = get_user_model()
 
 
@@ -636,14 +660,65 @@ def create_promotion_checkout_session(
     duration_days: int,
     starts_at: datetime,
     ends_at: datetime,
+    cache_scope: object | None = None,
 ) -> tuple[str, str]:
     """Create a Stripe Checkout session used to buy a promoted listing slot."""
     stripe.api_key = _get_stripe_api_key()
-    customer_id = ensure_stripe_customer(owner)
+    customer_id = ensure_stripe_customer(owner, cache_scope=cache_scope)
 
     success_url, cancel_url = _promotion_checkout_urls(listing.id)
     if amount_cents <= 0:
         raise StripePaymentError("Promotion total price must be greater than zero.")
+
+    existing_session = (
+        PromotionCheckoutSession.objects.filter(
+            owner=owner,
+            listing=listing,
+            starts_at=starts_at,
+            ends_at=ends_at,
+            amount_cents=amount_cents,
+            consumed_at__isnull=True,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    now = timezone.now()
+    if existing_session:
+        age = now - (existing_session.updated_at or existing_session.created_at)
+        if existing_session.status == "open" and age < CHECKOUT_SESSION_REFRESH_AGE:
+            return existing_session.stripe_session_id, existing_session.session_url
+
+        if existing_session.status == "open":
+            try:
+                _log_stripe_call(
+                    "checkout_session.retrieve",
+                    listing_id=listing.id,
+                    owner_id=owner.id,
+                )
+                refreshed = stripe.checkout.Session.retrieve(existing_session.stripe_session_id)
+                session_status = getattr(refreshed, "status", "") or existing_session.status
+                session_url = getattr(refreshed, "url", None) or existing_session.session_url
+                if session_status == "open":
+                    updates = []
+                    if session_url and session_url != existing_session.session_url:
+                        existing_session.session_url = session_url
+                        updates.append("session_url")
+                    if session_status != existing_session.status:
+                        existing_session.status = session_status
+                        updates.append("status")
+                    if updates:
+                        existing_session.save(update_fields=updates)
+                    return existing_session.stripe_session_id, session_url
+
+                existing_session.status = session_status or existing_session.status
+                existing_session.consumed_at = existing_session.consumed_at or now
+                existing_session.save(update_fields=["status", "consumed_at"])
+            except stripe.error.InvalidRequestError:
+                existing_session.status = "expired"
+                existing_session.consumed_at = existing_session.consumed_at or now
+                existing_session.save(update_fields=["status", "consumed_at"])
+            except stripe.error.StripeError as exc:
+                _handle_stripe_error(exc)
 
     listing_title = (listing.title or "").strip()
     product_name = f"Listing promotion ({duration_days} days)"
@@ -664,6 +739,12 @@ def create_promotion_checkout_session(
     }
 
     try:
+        _log_stripe_call(
+            "checkout_session.create",
+            listing_id=listing.id,
+            owner_id=owner.id,
+            amount_cents=amount_cents,
+        )
         session = stripe.checkout.Session.create(
             mode="payment",
             customer=customer_id,
@@ -696,6 +777,18 @@ def create_promotion_checkout_session(
         session_url = session.get("url")
     if not session_id or not session_url:
         raise StripeConfigurationError("Stripe did not return a checkout session URL.")
+
+    session_status = getattr(session, "status", "") or "open"
+    PromotionCheckoutSession.objects.create(
+        owner=owner,
+        listing=listing,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        amount_cents=amount_cents,
+        stripe_session_id=session_id,
+        session_url=session_url,
+        status=session_status,
+    )
 
     return session_id, session_url
 
@@ -915,6 +1008,8 @@ def create_booking_charge_intent(
     booking: Booking,
     customer_id: str,
     payment_method_id: str,
+    attached_via_setup_intent: bool = False,
+    cache_scope: object | None = None,
 ) -> str:
     """
     Create or reuse the rental charge PaymentIntent (automatic capture).
@@ -936,7 +1031,12 @@ def create_booking_charge_intent(
         customer_id or getattr(booking.renter, "stripe_customer_id", "") or ""
     ).strip() or None
     if customer_value and payment_method_id:
-        _ensure_payment_method_for_customer(payment_method_id, customer_value)
+        _ensure_payment_method_for_customer(
+            payment_method_id,
+            customer_value,
+            attached_via_setup_intent=attached_via_setup_intent,
+            cache_scope=cache_scope,
+        )
 
     idempotency_base = f"booking:{booking.id}:{IDEMPOTENCY_VERSION}"
     env_label = getattr(settings, "STRIPE_ENV", "dev") or "dev"
@@ -951,6 +1051,22 @@ def create_booking_charge_intent(
         getattr(booking, "charge_payment_intent_id", ""),
         label="booking_charge",
     )
+    if charge_intent is not None:
+        status = (getattr(charge_intent, "status", "") or "").lower()
+        intent_amount = getattr(charge_intent, "amount", None)
+        if status == "succeeded":
+            pass
+        elif intent_amount not in (None, charge_amount_cents):
+            try:
+                stripe.PaymentIntent.cancel(charge_intent.id)
+            except stripe.error.InvalidRequestError as exc:
+                if getattr(exc, "code", "") != "resource_missing":
+                    _handle_stripe_error(exc)
+            except stripe.error.StripeError as exc:  # noqa: PERF203
+                _handle_stripe_error(exc)
+            charge_intent = None
+        elif status == "canceled":
+            charge_intent = None
 
     if charge_intent is None:
         try:
@@ -998,6 +1114,8 @@ def create_booking_deposit_hold_intent(
     booking: Booking,
     customer_id: str,
     payment_method_id: str,
+    attached_via_setup_intent: bool = False,
+    cache_scope: object | None = None,
 ) -> str | None:
     """
     Create or reuse the damage deposit PaymentIntent (manual capture).
@@ -1008,6 +1126,7 @@ def create_booking_deposit_hold_intent(
         raise StripePaymentError("Damage deposit cannot be negative.")
     if damage_deposit <= Decimal("0"):
         return None
+    deposit_amount_cents = _to_cents(damage_deposit)
 
     stripe.api_key = _get_stripe_api_key()
     customer_value = (
@@ -1018,7 +1137,12 @@ def create_booking_deposit_hold_intent(
     if not payment_method_id:
         raise StripePaymentError("Payment method id is required to authorize a deposit.")
 
-    _ensure_payment_method_for_customer(payment_method_id, customer_value)
+    _ensure_payment_method_for_customer(
+        payment_method_id,
+        customer_value,
+        attached_via_setup_intent=attached_via_setup_intent,
+        cache_scope=cache_scope,
+    )
 
     idempotency_base = f"booking:{booking.id}:{IDEMPOTENCY_VERSION}"
     env_label = getattr(settings, "STRIPE_ENV", "dev") or "dev"
@@ -1040,9 +1164,35 @@ def create_booking_deposit_hold_intent(
         existing_id = getattr(booking, deposit_field_name, "") or ""
 
     deposit_intent = _retrieve_payment_intent(existing_id, label="damage_deposit")
+    if deposit_intent is not None:
+        status = (getattr(deposit_intent, "status", "") or "").lower()
+        intent_amount = getattr(deposit_intent, "amount", None)
+        if status == "succeeded":
+            return deposit_intent.id
+        if intent_amount not in (None, deposit_amount_cents):
+            try:
+                stripe.PaymentIntent.cancel(deposit_intent.id)
+            except stripe.error.InvalidRequestError as exc:
+                if getattr(exc, "code", "") != "resource_missing":
+                    _handle_stripe_error(exc)
+            except stripe.error.StripeError as exc:  # noqa: PERF203
+                _handle_stripe_error(exc)
+            deposit_intent = None
+        elif status in {"requires_capture", "processing"}:
+            pass
+        elif status == "succeeded":
+            return deposit_intent.id
+        else:
+            try:
+                stripe.PaymentIntent.cancel(deposit_intent.id)
+            except stripe.error.InvalidRequestError as exc:
+                if getattr(exc, "code", "") != "resource_missing":
+                    _handle_stripe_error(exc)
+            except stripe.error.StripeError as exc:  # noqa: PERF203
+                _handle_stripe_error(exc)
+            deposit_intent = None
 
     if deposit_intent is None:
-        deposit_amount_cents = _to_cents(damage_deposit)
         try:
             deposit_intent = stripe.PaymentIntent.create(
                 amount=deposit_amount_cents,
@@ -1273,17 +1423,78 @@ def release_deposit_hold(booking: Booking) -> None:
     )
 
 
-def ensure_stripe_customer(user: User, *, customer_id: str | None = None) -> str:
+def _get_customer_cache(cache_scope: object | None) -> dict[int, str]:
+    """
+    Return a per-request (or per-context) cache for Stripe customers.
+
+    When cache_scope is provided (e.g., the DRF request object), store the cache on it to
+    avoid leaking state across requests. Otherwise fall back to a contextvar-scoped cache.
+    """
+    if cache_scope is not None:
+        cached = getattr(cache_scope, "_stripe_customer_cache", None)
+        if cached is None:
+            cached = {}
+            cache_scope._stripe_customer_cache = cached  # type: ignore[attr-defined]
+        return cached
+
+    cached = _CUSTOMER_CACHE.get(None)
+    if cached is None:
+        cached = {}
+        _CUSTOMER_CACHE.set(cached)
+    return cached
+
+
+def _get_payment_method_cache(cache_scope: object | None) -> dict[str, Any]:
+    """
+    Return a request/context-scoped cache for Stripe PaymentMethod lookups.
+    """
+    if cache_scope is not None:
+        cached = getattr(cache_scope, "_stripe_payment_method_cache", None)
+        if cached is None:
+            cached = {}
+            cache_scope._stripe_payment_method_cache = cached  # type: ignore[attr-defined]
+        return cached
+
+    cached = _PAYMENT_METHOD_CACHE.get(None)
+    if cached is None:
+        cached = {}
+        _PAYMENT_METHOD_CACHE.set(cached)
+    return cached
+
+
+def ensure_stripe_customer(
+    user: User,
+    *,
+    customer_id: str | None = None,
+    cache_scope: object | None = None,
+) -> str:
     """
     Return an existing Stripe Customer ID for the user, creating one if necessary.
+
+    - Request-scoped cache avoids multiple Stripe Customer.retrieve calls per request.
+    - A verification timestamp throttles revalidation of existing customer IDs.
     """
     stripe.api_key = _get_stripe_api_key()
+    cache_key = getattr(user, "pk", None)
+    cache = _get_customer_cache(cache_scope)
+    if cache_key is not None:
+        cached_value = cache.get(int(cache_key))
+        if cached_value:
+            return cached_value
+
     stored_id = (getattr(user, "stripe_customer_id", "") or "").strip()
     candidate_id = (customer_id or stored_id or "").strip()
+    now = timezone.now()
+    verified_at = getattr(user, "stripe_customer_verified_at", None)
+    needs_verification = bool(candidate_id) and (
+        verified_at is None or (now - verified_at) > CUSTOMER_VERIFY_TTL
+    )
 
-    if candidate_id:
+    if candidate_id and needs_verification:
         try:
+            _log_stripe_call("customer.retrieve", user_id=user.id)
             stripe.Customer.retrieve(candidate_id)
+            verified_at = now
         except stripe.error.InvalidRequestError:
             logger.info("Stripe customer %s missing; recreating.", candidate_id)
             candidate_id = ""
@@ -1292,6 +1503,7 @@ def ensure_stripe_customer(user: User, *, customer_id: str | None = None) -> str
 
     if not candidate_id:
         try:
+            _log_stripe_call("customer.create", user_id=user.id)
             customer = stripe.Customer.create(
                 email=user.email or None,
                 name=(user.get_full_name() or user.username or f"user-{user.id}"),
@@ -1300,47 +1512,187 @@ def ensure_stripe_customer(user: User, *, customer_id: str | None = None) -> str
         except stripe.error.StripeError as exc:
             _handle_stripe_error(exc)
         candidate_id = customer.id
+        verified_at = now
 
+    update_fields: list[str] = []
     if candidate_id and candidate_id != stored_id:
         user.stripe_customer_id = candidate_id
-        user.save(update_fields=["stripe_customer_id"])
+        update_fields.append("stripe_customer_id")
+    if verified_at and verified_at != getattr(user, "stripe_customer_verified_at", None):
+        user.stripe_customer_verified_at = verified_at
+        update_fields.append("stripe_customer_verified_at")
+    if update_fields:
+        user.save(update_fields=update_fields)
+
+    if cache_key is not None and candidate_id:
+        cache[int(cache_key)] = candidate_id
 
     return candidate_id
 
 
-def _ensure_payment_method_for_customer(payment_method_id: str, customer_id: str) -> None:
+def _setup_intent_fields(payload: Any) -> tuple[str, str, str]:
+    """Extract id, client_secret, and status from a Stripe SetupIntent payload."""
+    intent_id = getattr(payload, "id", None)
+    if intent_id is None and hasattr(payload, "get"):
+        intent_id = payload.get("id")
+    client_secret = getattr(payload, "client_secret", None)
+    if client_secret is None and hasattr(payload, "get"):
+        client_secret = payload.get("client_secret")
+    status = getattr(payload, "status", None)
+    if status is None and hasattr(payload, "get"):
+        status = payload.get("status")
+    return (intent_id or "").strip(), (client_secret or "").strip(), (status or "").strip()
+
+
+def create_or_reuse_setup_intent(
+    *,
+    user: User,
+    intent_type: str = PaymentSetupIntent.IntentType.DEFAULT_CARD,
+    cache_scope: object | None = None,
+) -> PaymentSetupIntent:
+    """
+    Return an open SetupIntent for the given user/intent_type, creating one if needed.
+
+    Reuses a recent, still-open intent without hitting Stripe. Otherwise, refreshes its
+    status if stale before creating a new one.
+    """
+    stripe.api_key = _get_stripe_api_key()
+    customer_id = ensure_stripe_customer(user, cache_scope=cache_scope)
+    now = timezone.now()
+    existing = (
+        PaymentSetupIntent.objects.filter(
+            user=user,
+            intent_type=intent_type,
+            consumed_at__isnull=True,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+
+    if existing:
+        age = now - (existing.updated_at or existing.created_at)
+        if existing.status in OPEN_SETUP_INTENT_STATUSES and age < SETUP_INTENT_REFRESH_AGE:
+            return existing
+
+        if existing.status in OPEN_SETUP_INTENT_STATUSES:
+            try:
+                _log_stripe_call(
+                    "setup_intent.retrieve",
+                    intent_type=intent_type,
+                    user_id=user.id,
+                )
+                refreshed = stripe.SetupIntent.retrieve(existing.stripe_setup_intent_id)
+                intent_id, client_secret, status = _setup_intent_fields(refreshed)
+                status = status or existing.status
+                if status in OPEN_SETUP_INTENT_STATUSES:
+                    updates = []
+                    if status != existing.status:
+                        existing.status = status
+                        updates.append("status")
+                    if client_secret and client_secret != existing.client_secret:
+                        existing.client_secret = client_secret
+                        updates.append("client_secret")
+                    if updates:
+                        existing.save(update_fields=updates)
+                    return existing
+
+                existing.status = status or existing.status
+                existing.consumed_at = existing.consumed_at or now
+                existing.save(update_fields=["status", "consumed_at"])
+            except stripe.error.InvalidRequestError:
+                existing.status = "canceled"
+                existing.consumed_at = existing.consumed_at or now
+                existing.save(update_fields=["status", "consumed_at"])
+            except stripe.error.StripeError as exc:
+                _handle_stripe_error(exc)
+
+    try:
+        _log_stripe_call("setup_intent.create", intent_type=intent_type, user_id=user.id)
+        setup_intent = stripe.SetupIntent.create(
+            customer=customer_id,
+            payment_method_types=["card"],
+            usage="off_session",
+            metadata={
+                "user_id": str(user.id),
+                "intent_type": intent_type,
+                "env": getattr(settings, "STRIPE_ENV", "dev") or "dev",
+            },
+        )
+    except stripe.error.StripeError as exc:
+        _handle_stripe_error(exc)
+
+    intent_id, client_secret, status = _setup_intent_fields(setup_intent)
+    if not intent_id or not client_secret:
+        raise StripeConfigurationError("Stripe did not return a SetupIntent client secret.")
+
+    return PaymentSetupIntent.objects.create(
+        user=user,
+        intent_type=intent_type,
+        stripe_setup_intent_id=intent_id,
+        client_secret=client_secret,
+        status=status or "requires_confirmation",
+    )
+
+
+def _ensure_payment_method_for_customer(
+    payment_method_id: str,
+    customer_id: str,
+    *,
+    attached_via_setup_intent: bool = False,
+    cache_scope: object | None = None,
+) -> None:
     """Attach the payment method to the Stripe customer if not already linked."""
     if not payment_method_id or not customer_id:
         return
+    if attached_via_setup_intent:
+        return
+
     stripe.api_key = _get_stripe_api_key()
-    try:
-        payment_method = stripe.PaymentMethod.retrieve(payment_method_id)
-    except stripe.error.StripeError as exc:
-        _handle_stripe_error(exc)
+    cache = _get_payment_method_cache(cache_scope)
+    payment_method = cache.get(payment_method_id)
+    if payment_method is None:
+        try:
+            _log_stripe_call("payment_method.retrieve", customer_id=customer_id)
+            payment_method = stripe.PaymentMethod.retrieve(payment_method_id)
+            cache[payment_method_id] = payment_method
+        except stripe.error.StripeError as exc:
+            _handle_stripe_error(exc)
     attached_customer = getattr(payment_method, "customer", None)
     if attached_customer == customer_id:
         return
     if attached_customer and attached_customer != customer_id:
         try:
+            _log_stripe_call("payment_method.detach", customer_id=attached_customer)
             stripe.PaymentMethod.detach(payment_method_id)
         except stripe.error.StripeError as exc:
             _handle_stripe_error(exc)
     try:
-        stripe.PaymentMethod.attach(payment_method_id, customer=customer_id)
+        _log_stripe_call("payment_method.attach", customer_id=customer_id)
+        attached_pm = stripe.PaymentMethod.attach(payment_method_id, customer=customer_id)
+        cache[payment_method_id] = attached_pm
     except stripe.error.StripeError as exc:
         _handle_stripe_error(exc)
 
 
-def fetch_payment_method_details(payment_method_id: str) -> dict[str, object]:
+def fetch_payment_method_details(
+    payment_method_id: str,
+    *,
+    cache_scope: object | None = None,
+) -> dict[str, object]:
     """Return brand/last4/exp_month/exp_year for a Stripe PaymentMethod."""
     if not payment_method_id:
         raise StripePaymentError("payment_method_id is required.")
 
     stripe.api_key = _get_stripe_api_key()
-    try:
-        pm = stripe.PaymentMethod.retrieve(payment_method_id)
-    except stripe.error.StripeError as exc:
-        _handle_stripe_error(exc)
+    cache = _get_payment_method_cache(cache_scope)
+    pm = cache.get(payment_method_id)
+    if pm is None:
+        try:
+            _log_stripe_call("payment_method.retrieve", customer_id=None)
+            pm = stripe.PaymentMethod.retrieve(payment_method_id)
+            cache[payment_method_id] = pm
+        except stripe.error.StripeError as exc:
+            _handle_stripe_error(exc)
 
     card = getattr(pm, "card", None) or getattr(pm, "card", {}) or {}
     if hasattr(card, "get"):
@@ -1363,6 +1715,8 @@ def charge_promotion_payment(
     amount_cents: int,
     payment_method_id: str,
     customer_id: str,
+    attached_via_setup_intent: bool = False,
+    cache_scope: object | None = None,
     metadata: dict[str, str] | None = None,
 ) -> str:
     """Charge a promotion amount immediately using Stripe PaymentIntents."""
@@ -1370,7 +1724,12 @@ def charge_promotion_payment(
         raise StripePaymentError("Promotion total must be greater than zero.")
 
     stripe.api_key = _get_stripe_api_key()
-    _ensure_payment_method_for_customer(payment_method_id, customer_id)
+    _ensure_payment_method_for_customer(
+        payment_method_id,
+        customer_id,
+        attached_via_setup_intent=attached_via_setup_intent,
+        cache_scope=cache_scope,
+    )
 
     metadata_payload = {
         "env": getattr(settings, "STRIPE_ENV", "dev") or "dev",
@@ -1534,11 +1893,25 @@ def stripe_webhook(request):
     if event_type == "checkout.session.completed":
         session_metadata = metadata or {}
         if session_metadata.get("kind") != "promotion_slot":
+            session_id = data_object.get("id", "")
+            session_url = data_object.get("url", "") or ""
+            if session_id:
+                PromotionCheckoutSession.objects.filter(stripe_session_id=session_id).update(
+                    status="completed",
+                    session_url=session_url or None,
+                    consumed_at=timezone.now(),
+                )
             return Response(status=status.HTTP_200_OK)
         session_id = data_object.get("id", "")
+        session_url = data_object.get("url", "") or ""
         if not session_id:
             logger.warning("stripe_webhook: promotion session missing id")
             return Response(status=status.HTTP_200_OK)
+        PromotionCheckoutSession.objects.filter(stripe_session_id=session_id).update(
+            status="completed",
+            session_url=session_url or None,
+            consumed_at=timezone.now(),
+        )
         slot = (
             PromotedSlot.objects.filter(stripe_session_id=session_id)
             .select_related("listing")

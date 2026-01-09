@@ -64,3 +64,37 @@ class PromotedSlot(models.Model):
     @classmethod
     def active_for_feed(cls, now=None):
         return cls.objects.active_for_feed(now=now)
+
+
+class PromotionCheckoutSession(models.Model):
+    """Cached Checkout Sessions for card-based promotion purchases."""
+
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="promotion_checkout_sessions",
+    )
+    listing = models.ForeignKey(
+        "listings.Listing",
+        on_delete=models.CASCADE,
+        related_name="promotion_checkout_sessions",
+    )
+    starts_at = models.DateTimeField()
+    ends_at = models.DateTimeField()
+    amount_cents = models.PositiveIntegerField()
+    stripe_session_id = models.CharField(max_length=255, unique=True)
+    session_url = models.TextField()
+    status = models.CharField(max_length=32, default="open")
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=("listing", "owner"), name="promo_checkout_listing_owner_idx"),
+            models.Index(fields=("owner", "consumed_at"), name="promo_checkout_owner_consumed_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Checkout session {self.stripe_session_id} for listing {self.listing_id}"

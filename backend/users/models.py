@@ -66,6 +66,11 @@ class User(AbstractUser):
         default="",
         help_text="Stripe Customer ID for renter payments.",
     )
+    stripe_customer_verified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Last time we confirmed the stored Stripe customer still exists.",
+    )
     rating = models.FloatField(null=True, blank=True)
     review_count = models.PositiveIntegerField(default=0)
     birth_date = models.DateField(null=True, blank=True, help_text="Optional birth date for KYC.")
