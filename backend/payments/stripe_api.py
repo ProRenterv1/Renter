@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextvars
 import logging
 from datetime import date, datetime, timedelta
+from datetime import timezone as datetime_timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Callable, TypeVar
 
@@ -356,6 +357,9 @@ def _sync_payout_account_from_stripe(
     payout_account.charges_enabled = charges_enabled
     payout_account.payouts_enabled = payouts_enabled
     payout_account.requirements_due = requirements_due
+    business_type = (_account_object_value(account_data, "business_type", "") or "").lower()
+    if business_type:
+        payout_account.business_type = business_type
     payout_account.is_fully_onboarded = bool(
         charges_enabled and payouts_enabled and not disabled_reason
     )
@@ -382,10 +386,17 @@ def _sanitize_business_url(raw_url: str) -> str:
     return cleaned
 
 
-def ensure_connect_account(user: User) -> OwnerPayoutAccount:
+def ensure_connect_account(user: User, business_type: str | None = None) -> OwnerPayoutAccount:
     """Ensure the owner has a Stripe Connect Express account and sync it locally."""
     stripe.api_key = _get_stripe_api_key()
     job_title = getattr(settings, "CONNECT_JOB_TITLE", "") or "Renter"
+    allowed_business_types = {"individual"}
+
+    def _normalize_business_type(value: str | None) -> str | None:
+        if not value:
+            return None
+        normalized = str(value).strip().lower()
+        return normalized if normalized in allowed_business_types else None
 
     try:
         payout_account = user.payout_account
@@ -393,6 +404,22 @@ def ensure_connect_account(user: User) -> OwnerPayoutAccount:
     except OwnerPayoutAccount.DoesNotExist:
         payout_account = None
         existing_account_id = ""
+    desired_business_type = (
+        _normalize_business_type(business_type)
+        or _normalize_business_type(getattr(payout_account, "business_type", None))
+        or "individual"
+    )
+
+    business_url = getattr(settings, "CONNECT_BUSINESS_URL", "") or getattr(
+        settings, "FRONTEND_ORIGIN", ""
+    )
+    business_profile = {
+        "name": getattr(settings, "CONNECT_BUSINESS_NAME", "") or "Renter",
+        "product_description": getattr(settings, "CONNECT_BUSINESS_PRODUCT_DESCRIPTION", "")
+        or "Peer-to-peer rentals platform",
+        "url": _sanitize_business_url(business_url),
+        "mcc": getattr(settings, "CONNECT_BUSINESS_MCC", "") or "7399",
+    }
 
     account_data: Any | None = None
     if existing_account_id:
@@ -410,16 +437,9 @@ def ensure_connect_account(user: User) -> OwnerPayoutAccount:
         except stripe.error.StripeError as exc:
             _handle_stripe_error(exc)
 
-    business_url = getattr(settings, "CONNECT_BUSINESS_URL", "") or getattr(
-        settings, "FRONTEND_ORIGIN", ""
-    )
-    business_profile = {
-        "name": getattr(settings, "CONNECT_BUSINESS_NAME", "") or "Renter",
-        "product_description": getattr(settings, "CONNECT_BUSINESS_PRODUCT_DESCRIPTION", "")
-        or "Peer-to-peer rentals platform",
-        "url": _sanitize_business_url(business_url),
-        "mcc": getattr(settings, "CONNECT_BUSINESS_MCC", "") or "7399",
-    }
+        business_url = getattr(settings, "CONNECT_BUSINESS_URL", "") or getattr(
+            settings, "FRONTEND_ORIGIN", ""
+        )
     individual: dict[str, str] = {}
     if user.first_name:
         individual["first_name"] = user.first_name
@@ -427,7 +447,52 @@ def ensure_connect_account(user: User) -> OwnerPayoutAccount:
         individual["last_name"] = user.last_name
     if user.email:
         individual["email"] = user.email
+    if getattr(user, "phone", None):
+        individual["phone"] = user.phone
+    dob_value = getattr(user, "birth_date", None)
+    if dob_value:
+        if isinstance(dob_value, str):
+            try:
+                dob_value = date.fromisoformat(dob_value)
+            except ValueError:
+                dob_value = None
+        elif isinstance(dob_value, datetime):
+            dob_value = dob_value.date()
+        if dob_value:
+            individual["dob"] = {
+                "day": dob_value.day,
+                "month": dob_value.month,
+                "year": dob_value.year,
+            }
+    address_fields = [
+        getattr(user, "street_address", "").strip(),
+        getattr(user, "city", "").strip(),
+        getattr(user, "province", "").strip(),
+        getattr(user, "postal_code", "").strip(),
+    ]
+    if any(address_fields):
+        individual["address"] = {
+            "line1": getattr(user, "street_address", ""),
+            "city": getattr(user, "city", ""),
+            "state": getattr(user, "province", ""),
+            "postal_code": getattr(user, "postal_code", ""),
+            "country": getattr(user, "country", "CA") or "CA",
+        }
     individual["relationship"] = {"title": job_title}
+
+    if account_data is not None:
+        actual_type = _normalize_business_type(
+            _account_object_value(account_data, "business_type", "")
+        )
+        if actual_type and actual_type != desired_business_type and existing_account_id:
+            try:
+                stripe.Account.modify(existing_account_id, business_type=desired_business_type)
+                try:
+                    account_data = _retrieve_account_with_expand(existing_account_id)
+                except stripe.error.StripeError as exc:  # noqa: PERF203
+                    _handle_stripe_error(exc)
+            except stripe.error.StripeError as exc:
+                _handle_stripe_error(exc)
 
     if account_data is None:
         try:
@@ -438,7 +503,7 @@ def ensure_connect_account(user: User) -> OwnerPayoutAccount:
                     "card_payments": {"requested": True},
                     "transfers": {"requested": True},
                 },
-                "business_type": "individual",
+                "business_type": desired_business_type,
                 "business_profile": business_profile,
                 "metadata": {"user_id": str(user.id), "job_title": job_title},
             }
@@ -474,12 +539,27 @@ def ensure_connect_account(user: User) -> OwnerPayoutAccount:
                 )
             except stripe.error.StripeError as exc:
                 _handle_stripe_error(exc)
+        # Keep individual/relationship in sync when the account already exists.
+        if individual and existing_account_id:
+            try:
+                stripe.Account.modify(existing_account_id, individual=individual)
+            except stripe.error.PermissionError:
+                logger.warning(
+                    "connect_sync_profile_permission_denied",
+                    extra={"user_id": user.id, "account_id": existing_account_id},
+                )
+                # Non-fatal; downstream onboarding flows will surface config issues.
+            except stripe.error.StripeError as exc:
+                _handle_stripe_error(exc)
 
     if payout_account is None:
         payout_account = OwnerPayoutAccount(
             user=user,
             stripe_account_id=_account_object_value(account_data, "id", ""),
+            business_type=desired_business_type,
         )
+    else:
+        payout_account.business_type = desired_business_type
 
     return _sync_payout_account_from_stripe(payout_account, account_data)
 
@@ -526,9 +606,16 @@ def get_connect_available_balance(payout_account: OwnerPayoutAccount) -> Decimal
         return None
 
 
-def sync_connect_account_personal_info(user: User) -> None:
+def sync_connect_account_personal_info(
+    user: User,
+    *,
+    business_type: str | None = None,
+    payout_account: OwnerPayoutAccount | None = None,
+    # kept for backwards compatibility; permission errors are now non-fatal
+    fail_on_permission: bool = False,
+) -> None:
     """Push the user's personal details to Stripe Connect."""
-    payout_account = ensure_connect_account(user)
+    payout_account = payout_account or ensure_connect_account(user, business_type=business_type)
     stripe.api_key = _get_stripe_api_key()
     individual: dict[str, Any] = {}
 
@@ -538,15 +625,28 @@ def sync_connect_account_personal_info(user: User) -> None:
         individual["last_name"] = user.last_name
     if user.email:
         individual["email"] = user.email
-    if user.phone:
-        individual["phone"] = user.phone
+    phone_value = getattr(user, "phone", None)
+    if phone_value is None and getattr(user, "pk", None):
+        try:
+            phone_value = User.objects.filter(pk=user.pk).values_list("phone", flat=True).first()
+        except Exception:
+            phone_value = None
+    individual["phone"] = phone_value or ""
     if getattr(user, "birth_date", None):
         dob_value = user.birth_date
-        individual["dob"] = {
-            "day": dob_value.day,
-            "month": dob_value.month,
-            "year": dob_value.year,
-        }
+        if isinstance(dob_value, str):
+            try:
+                dob_value = date.fromisoformat(dob_value)
+            except ValueError:
+                dob_value = None
+        elif isinstance(dob_value, datetime):
+            dob_value = dob_value.date()
+        if dob_value:
+            individual["dob"] = {
+                "day": dob_value.day,
+                "month": dob_value.month,
+                "year": dob_value.year,
+            }
 
     address_fields = [
         getattr(user, "street_address", "").strip(),
@@ -560,25 +660,41 @@ def sync_connect_account_personal_info(user: User) -> None:
             "city": getattr(user, "city", ""),
             "state": getattr(user, "province", ""),
             "postal_code": getattr(user, "postal_code", ""),
-            "country": "CA",
+            "country": getattr(user, "country", "CA") or "CA",
         }
 
     if not individual:
         return
+
+    def _log_prefill_failure(exc: Exception, *, level: int = logging.WARNING) -> None:
+        logger.log(
+            level,
+            "connect_prefill_failed",
+            extra={
+                "user_id": user.id,
+                "account_id": payout_account.stripe_account_id,
+                "error": str(exc),
+                "stripe_error_code": getattr(exc, "code", None),
+                "stripe_error_type": getattr(getattr(exc, "error", None), "type", None)
+                or exc.__class__.__name__,
+                "stripe_request_id": getattr(exc, "request_id", None),
+            },
+        )
 
     try:
         stripe.Account.modify(
             payout_account.stripe_account_id,
             individual=individual,
         )
-    except stripe.error.PermissionError:
-        logger.warning(
-            "connect_sync_profile_permission_denied",
-            extra={"user_id": user.id, "account_id": payout_account.stripe_account_id},
-            exc_info=True,
-        )
+    except TypeError as exc:
+        # Defensive: some older stripe-mock exceptions may raise TypeError on bad kwargs.
+        _log_prefill_failure(exc)
+        return
+    except stripe.error.PermissionError as exc:
+        _log_prefill_failure(exc)
         return
     except stripe.error.StripeError as exc:
+        _log_prefill_failure(exc, level=logging.ERROR)
         _handle_stripe_error(exc)
 
 
@@ -835,9 +951,13 @@ def create_promotion_checkout_session(
     return session_id, session_url
 
 
-def create_connect_onboarding_link(user: User) -> str:
+def create_connect_onboarding_link(
+    user: User,
+    payout_account: OwnerPayoutAccount | None = None,
+    business_type: str | None = None,
+) -> str:
     """Create a Stripe Connect onboarding link for the owner."""
-    payout_account = ensure_connect_account(user)
+    payout_account = payout_account or ensure_connect_account(user, business_type=business_type)
     stripe.api_key = _get_stripe_api_key()
 
     base_origin = _get_frontend_origin()
@@ -859,6 +979,126 @@ def create_connect_onboarding_link(user: User) -> str:
     if not link_url:
         raise StripeConfigurationError("Stripe did not return an onboarding link.")
     return link_url
+
+
+def create_connect_onboarding_session(
+    user: User,
+    business_type: str | None = None,
+) -> dict[str, Any]:
+    """
+    Create an embedded Connect Account Session for onboarding.
+
+    Returns a payload containing client_secret, stripe_account_id, expires_at (ISO string),
+    a legacy onboarding_url fallback (may be None), and the mode ("embedded" or "hosted_fallback").
+    """
+    payout_account = ensure_connect_account(user, business_type=business_type)
+    # Best-effort: prefill safe personal info so embedded onboarding is hydrated.
+    try:
+        sync_connect_account_personal_info(
+            user,
+            business_type=business_type,
+            payout_account=payout_account,
+            fail_on_permission=False,
+        )
+    except Exception as exc:  # pragma: no cover - defensive catch; logging happens in sync helper
+        logger.warning(
+            "connect_prefill_failed",
+            extra={
+                "user_id": user.id,
+                "account_id": payout_account.stripe_account_id,
+                "error": str(exc),
+            },
+        )
+        raise
+
+    stripe.api_key = _get_stripe_api_key()
+
+    def _log_stripe_issue(event_name: str, exc: Exception, *, level: int = logging.WARNING) -> None:
+        logger.log(
+            level,
+            event_name,
+            extra={
+                "user_id": user.id,
+                "account_id": payout_account.stripe_account_id,
+                "error": str(exc),
+                "stripe_error_code": getattr(exc, "code", None),
+                "stripe_error_type": getattr(getattr(exc, "error", None), "type", None)
+                or exc.__class__.__name__,
+                "stripe_request_id": getattr(exc, "request_id", None),
+            },
+        )
+
+    def _serialize_expires(raw_value: Any) -> str | None:
+        if raw_value in (None, ""):
+            return None
+        try:
+            parsed = int(raw_value)
+        except (TypeError, ValueError):
+            return str(raw_value)
+        return (
+            datetime.fromtimestamp(parsed, tz=datetime_timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+
+    session = None
+    try:
+        session = stripe.AccountSession.create(
+            account=payout_account.stripe_account_id,
+            components={"account_onboarding": {"enabled": True}},
+        )
+    except (stripe.error.StripeError, TypeError) as exc:
+        _log_stripe_issue("connect_account_session_failed", exc)
+        session = None
+
+    def _safe_create_onboarding_link(raise_on_error: bool) -> str | None:
+        try:
+            return create_connect_onboarding_link(
+                user,
+                payout_account=payout_account,
+                business_type=business_type,
+            )
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - we want to capture custom Stripe exception classes too
+            _log_stripe_issue(
+                "connect_account_link_failed",
+                exc,
+                level=logging.ERROR if raise_on_error else logging.WARNING,
+            )
+            if raise_on_error:
+                raise
+            return None
+
+    if session is None:
+        onboarding_url = _safe_create_onboarding_link(raise_on_error=True)
+        return {
+            "client_secret": None,
+            "stripe_account_id": payout_account.stripe_account_id,
+            "expires_at": None,
+            "onboarding_url": onboarding_url,
+            "mode": "hosted_fallback",
+        }
+
+    onboarding_url = _safe_create_onboarding_link(raise_on_error=False)
+
+    client_secret = getattr(session, "client_secret", None)
+    if client_secret is None and hasattr(session, "get"):
+        client_secret = session.get("client_secret")
+
+    expires_at = getattr(session, "expires_at", None)
+    if expires_at is None and hasattr(session, "get"):
+        expires_at = session.get("expires_at")
+
+    mode = "embedded" if client_secret else "hosted_fallback"
+
+    return {
+        "client_secret": client_secret,
+        "stripe_account_id": payout_account.stripe_account_id,
+        "expires_at": _serialize_expires(expires_at),
+        "onboarding_url": onboarding_url,
+        "mode": mode,
+    }
 
 
 def create_instant_payout(
@@ -1022,7 +1262,26 @@ def _handle_connect_account_updated_event(account_payload: Any) -> None:
             defaults={"stripe_account_id": stripe_account_id},
         )
 
-    _sync_payout_account_from_stripe(payout_account, account_payload)
+    payout_account = _sync_payout_account_from_stripe(payout_account, account_payload)
+
+    if payout_account.is_fully_onboarded:
+        try:
+            IdentityVerification.objects.update_or_create(
+                user=payout_account.user,
+                session_id=stripe_account_id,
+                defaults={
+                    "status": IdentityVerification.Status.VERIFIED,
+                    "verified_at": timezone.now(),
+                    "last_error_code": "",
+                    "last_error_reason": "",
+                },
+            )
+        except Exception:
+            logger.warning(
+                "connect_identity_mark_failed",
+                extra={"user_id": payout_account.user_id, "account_id": stripe_account_id},
+                exc_info=True,
+            )
 
 
 def _retrieve_payment_intent(intent_id: str, *, label: str) -> stripe.PaymentIntent | None:

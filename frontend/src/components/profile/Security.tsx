@@ -1,5 +1,7 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
-import { AlertCircle, CheckCircle2, Eye, EyeOff, Loader2, IdCard } from "lucide-react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { loadConnectAndInitialize } from "@stripe/connect-js";
+import { ConnectAccountOnboarding, ConnectComponentsProvider } from "@stripe/react-connect-js";
+import { AlertCircle, ArrowLeft, CheckCircle2, Eye, EyeOff, Loader2, IdCard } from "lucide-react";
 import { toast } from "sonner";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -29,6 +31,7 @@ import {
   type IdentityStatusLatest,
   paymentsAPI,
   type OwnerPayoutConnect,
+  type OwnerPayoutOnboardingResponse,
 } from "@/lib/api";
 
 type SecurityProps = {
@@ -193,6 +196,15 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
   const [identityLoading, setIdentityLoading] = useState<boolean>(false);
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [showKycFlow, setShowKycFlow] = useState(false);
+  const [embeddedOpen, setEmbeddedOpen] = useState(false);
+  const [embeddedLoading, setEmbeddedLoading] = useState(false);
+  const [embeddedError, setEmbeddedError] = useState<string | null>(null);
+  const [embeddedFallbackUrl, setEmbeddedFallbackUrl] = useState<string | null>(null);
+  const [connectInstance, setConnectInstance] = useState<any>(null);
+  const needsOnboardingBanner =
+    connectSummary ? !connectSummary.is_fully_onboarded : identityStatus !== "verified";
+  const prevIdentityVerifiedRef = useRef<boolean>(false);
+  const prevConnectVerifiedRef = useRef<boolean>(false);
   const phoneVerified = profile?.phone_verified ?? false;
   const emailVerified = profile?.email_verified ?? false;
   const switchesDisabled = twoFactorLoading || twoFactorSaving;
@@ -200,6 +212,16 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
     sms: "Verify your phone before enabling SMS 2FA.",
     email: "Verify your email before enabling email 2FA.",
   };
+
+  const debugLog = (...args: unknown[]) => {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.debug(...args);
+    }
+  };
+
+  const maskClientSecret = (secret: string | null | undefined) =>
+    secret ? `${secret.slice(0, 6)}...${secret.slice(-4)}` : "none";
 
   const setSwitchValue = (channel: TwoFactorChannel, value: boolean) => {
     if (channel === "sms") {
@@ -302,6 +324,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
     setIdentityInitialLoading(true);
     setIdentityLoading(true);
     setIdentityError(null);
+    const wasVerified = prevIdentityVerifiedRef.current;
     try {
       const res = await identityAPI.status();
       const latest = res.latest ?? null;
@@ -311,6 +334,10 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
           ? (latest.status as IdentityVerificationStatus)
           : "none";
       updateIdentityState(nextStatus, latest);
+      prevIdentityVerifiedRef.current = nextStatus === "verified";
+      if (!wasVerified && nextStatus === "verified") {
+        toast.success("Identity verification completed.");
+      }
     } catch (error) {
       console.error("Unable to load identity status", error);
       setIdentityError(
@@ -328,9 +355,15 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
   }, [refreshIdentityStatus]);
 
   const refreshConnectSummary = useCallback(async () => {
+    const wasVerified = prevConnectVerifiedRef.current;
     try {
       const summary = await paymentsAPI.ownerPayoutsSummaryRaw();
       setConnectSummary(summary.connect);
+      const nowVerified = summary.connect?.is_fully_onboarded ?? false;
+      prevConnectVerifiedRef.current = nowVerified;
+      if (!wasVerified && nowVerified) {
+        toast.success("Payout onboarding completed.");
+      }
     } catch (err) {
       console.error("Unable to load connect summary", err);
     }
@@ -339,6 +372,25 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
   useEffect(() => {
     void refreshConnectSummary();
   }, [refreshConnectSummary]);
+
+  useEffect(() => {
+    if (!embeddedOpen) return;
+    const intervalId = window.setInterval(() => {
+      void refreshIdentityStatus();
+      void refreshConnectSummary();
+    }, 8000);
+    return () => window.clearInterval(intervalId);
+  }, [embeddedOpen, refreshIdentityStatus, refreshConnectSummary]);
+
+  const teardownEmbedded = useCallback(() => {
+    setConnectInstance(null);
+  }, []);
+
+  const handleExitKycFlow = useCallback(() => {
+    setShowKycFlow(false);
+    setEmbeddedOpen(false);
+    teardownEmbedded();
+  }, [teardownEmbedded]);
 
   useEffect(() => {
     if (onboardingResumeChecked) return;
@@ -354,10 +406,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
         try {
           const response = await paymentsAPI.ownerPayoutsStartOnboarding();
           sessionStorage.setItem(repeatFlag, "1");
-          if (response.onboarding_url) {
-            window.location.href = response.onboarding_url;
-            return;
-          }
+          setEmbeddedFallbackUrl(response.onboarding_url || null);
         } catch (err) {
           console.error("onboarding auto-repeat failed", err);
         }
@@ -602,7 +651,55 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
 
   const handleStartConnectKyc = async () => {
     setIdentityError(null);
+    setEmbeddedError(null);
     setIdentityLoading(true);
+    setEmbeddedLoading(true);
+    setEmbeddedFallbackUrl(null);
+
+    let lastResponse: OwnerPayoutOnboardingResponse | null = null;
+    const publishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY;
+    debugLog("connect_onboarding_start", {
+      hasPublishableKey: Boolean(publishableKey),
+    });
+
+    const fetchOnboardingSession = async () => {
+      const response = await paymentsAPI.ownerPayoutsStartOnboarding();
+      lastResponse = response;
+      setEmbeddedFallbackUrl(response.onboarding_url || null);
+      debugLog("connect_onboarding_response", {
+        hasClientSecret: Boolean(response.client_secret),
+        maskedClientSecret: maskClientSecret(response.client_secret),
+        mode: response.mode,
+      });
+      return response;
+    };
+
+    const redirectToHosted = async (message?: string) => {
+      const fallbackUrl =
+        lastResponse?.onboarding_url ??
+        (await (async () => {
+          try {
+            const refreshed = await fetchOnboardingSession();
+            return refreshed.onboarding_url || null;
+          } catch (err) {
+            console.error("connect onboarding fallback fetch failed", err);
+            return null;
+          }
+        })());
+      if (message) {
+        setEmbeddedError(message);
+      }
+      if (fallbackUrl) {
+        window.location.href = fallbackUrl;
+        return true;
+      }
+      if (message) {
+        toast.error(message);
+      } else {
+        toast.error("Embedded onboarding is unavailable right now.");
+      }
+      return false;
+    };
 
     try {
       // Refresh profile to ensure we have latest phone/address verification state
@@ -614,24 +711,64 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
       if (!ok) {
         setKycPrereqMissing(missing);
         setKycPrereqOpen(true);
-        setIdentityLoading(false);
         return;
       }
 
-      const response = await paymentsAPI.ownerPayoutsStartOnboarding();
-      if (!response.onboarding_url) {
-        toast.error("Unable to start verification right now.");
+      if (!publishableKey || typeof loadConnectAndInitialize !== "function") {
+        await redirectToHosted("Embedded onboarding is unavailable. Redirecting to Stripe.");
         return;
       }
-      window.location.href = response.onboarding_url;
+
+      const connect = await loadConnectAndInitialize({
+        publishableKey,
+        appearance: { overlays: "dialog" },
+        fetchClientSecret: async () => {
+          const response = await fetchOnboardingSession();
+          const clientSecret = response.client_secret;
+          if (!clientSecret) {
+            throw new Error("Missing client secret from server.");
+          }
+          return clientSecret;
+        },
+      });
+
+      if (!connect || typeof connect.create !== "function") {
+        await redirectToHosted("Embedded onboarding is unavailable. Redirecting to Stripe.");
+        return;
+      }
+
+      const onboardingElement = connect.create("account-onboarding");
+      if (!onboardingElement) {
+        await redirectToHosted("Embedded onboarding is unavailable. Redirecting to Stripe.");
+        return;
+      }
+
+      setConnectInstance(connect);
+      setEmbeddedError(null);
+      setEmbeddedOpen(true);
+      debugLog("connect_onboarding_embedded_ready", {
+        mode: lastResponse?.mode ?? "embedded",
+      });
     } catch (error) {
+      console.error("Unable to start embedded onboarding", error);
       const message =
         extractDetailMessage(error) ??
-        "Unable to start verification. Please try again.";
-      setIdentityError(message);
-      toast.error(message);
+        (error instanceof Error ? error.message : "Unable to start verification.");
+      const fallbackUrl = lastResponse?.onboarding_url ?? embeddedFallbackUrl;
+      const handled =
+        fallbackUrl && fallbackUrl.length
+          ? (() => {
+              window.location.href = fallbackUrl;
+              return true;
+            })()
+          : await redirectToHosted(message);
+      if (!handled) {
+        setIdentityError(message);
+        setEmbeddedError(message);
+      }
     } finally {
       setIdentityLoading(false);
+      setEmbeddedLoading(false);
     }
   };
 
@@ -995,23 +1132,64 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
         : null;
 
     const hasAccount = connectSummary?.has_account ?? false;
-    const idVerified = connectSummary?.is_fully_onboarded ?? identityStatus === "verified";
-    const personalVerified = hasAccount;
+    const steps = connectSummary?.kyc_steps;
+    const personalComplete = steps?.personal_complete ?? false;
+    const idRequired = steps?.id_required ?? false;
+    const kycLocked = steps?.kyc_locked ?? false;
+    const idSubmittedPending = steps?.id_submitted_pending ?? false;
+    const personalVerified = personalComplete || hasAccount;
+    const idVerified =
+      (connectSummary?.is_fully_onboarded ?? false) || identityStatus === "verified";
     const requirements = connectSummary?.requirements_due;
     const outstanding =
       (requirements?.currently_due?.length ?? 0) + (requirements?.past_due?.length ?? 0) > 0;
+    const effectiveIdRequired = idRequired || outstanding;
+    const waitingDecision = idSubmittedPending || identityStatus === "pending";
+    const locked = kycLocked || identityStatus === "pending";
+
+    const personalBadgeText = personalVerified ? "Completed" : "Required";
+    const idBadgeText = idVerified
+      ? "Verified"
+      : locked
+        ? "Pending review"
+        : effectiveIdRequired
+          ? "Required"
+          : "Pending";
+    const step1ButtonDisabled = locked || personalVerified || identityLoading || identityInitialLoading;
+    const step2ButtonDisabled =
+      locked || !personalVerified || identityLoading || identityInitialLoading;
+    const step1ButtonLabel = personalVerified ? "Completed" : "Verify";
+    const step2ButtonLabel = idVerified
+      ? "Completed"
+      : locked
+        ? "Pending"
+        : effectiveIdRequired
+          ? "Verify"
+          : "Continue";
 
     const handleStartPersonal = () => {
+      if (step1ButtonDisabled) return;
       void handleStartConnectKyc();
     };
 
     const handleStartId = () => {
+      if (step2ButtonDisabled) return;
       void handleStartConnectKyc();
     };
 
     return (
       <Card>
         <CardHeader className="flex flex-col gap-2 space-y-0 md:flex-row md:items-center md:justify-between">
+          <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 px-2 text-muted-foreground"
+                    onClick={handleExitKycFlow}
+                  >
+                    <ArrowLeft className="mr-1 h-4 w-4" />
+                    Back
+                  </Button>
           <div>
             <CardTitle>Identity Verification (KYC)</CardTitle>
             <CardDescription>
@@ -1030,7 +1208,10 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
           <div className="space-y-4">
             <div className="flex items-center justify-between rounded-lg border bg-muted/40 p-4">
               <div>
-                <p className="font-medium">1. Personal info & consent</p>
+                <div className="flex items-center gap-2">
+                  
+                  <p className="font-medium">1. Personal info & consent</p>
+                </div>
                 <p className="text-sm text-muted-foreground">
                   Confirm name, contact, address, bank, and agree to Stripe terms.
                 </p>
@@ -1042,16 +1223,16 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
               </div>
               <div className="flex items-center gap-2">
                 <Badge variant={personalVerified ? "default" : "secondary"}>
-                  {personalVerified ? "Verified" : "Pending"}
+                  {personalBadgeText}
                 </Badge>
                 <Button
                   size="sm"
                   className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
                   style={{ color: "var(--primary-foreground)" }}
                   onClick={handleStartPersonal}
-                  disabled={identityLoading || identityInitialLoading}
+                  disabled={step1ButtonDisabled}
                 >
-                  {identityLoading ? "Opening..." : personalVerified ? "Reopen" : "Verify"}
+                  {identityLoading ? "Opening..." : step1ButtonLabel}
                 </Button>
               </div>
             </div>
@@ -1065,19 +1246,24 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
               </div>
               <div className="flex items-center gap-2">
                 <Badge variant={idVerified ? "default" : "secondary"}>
-                  {idVerified ? "Verified" : outstanding ? "Required" : "Pending"}
+                  {idBadgeText}
                 </Badge>
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={handleStartId}
-                  disabled={identityLoading || identityInitialLoading || !personalVerified}
+                  disabled={step2ButtonDisabled}
                 >
-                  {identityLoading ? "Opening..." : idVerified ? "Reopen" : "Verify"}
+                  {identityLoading ? "Opening..." : step2ButtonLabel}
                 </Button>
               </div>
             </div>
 
+            {(locked || waitingDecision) && (
+              <p className="text-xs text-muted-foreground">
+                Stripe is reviewing your verification. Refresh status to check for updates.
+              </p>
+            )}
             <p className="text-xs text-muted-foreground">
               Stripe may still ask you to re-confirm details based on their requirements.
             </p>
@@ -1135,6 +1321,63 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
               )}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={embeddedOpen}
+        onOpenChange={(open) => {
+          setEmbeddedOpen(open);
+          if (!open) {
+            teardownEmbedded();
+            void refreshIdentityStatus();
+            void refreshConnectSummary();
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-4xl max-h-[calc(100vh-6rem)] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Complete identity verification</DialogTitle>
+            <DialogDescription>
+              Finish Stripe onboarding without leaving the app. Information is securely handled by Stripe.
+            </DialogDescription>
+          </DialogHeader>
+          {embeddedError && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{embeddedError}</AlertDescription>
+            </Alert>
+          )}
+          <div className="rounded-lg border bg-muted/40 p-4 min-h-[420px]">
+            {embeddedLoading && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Preparing Stripe onboarding...
+              </div>
+            )}
+            {connectInstance ? (
+              <ConnectComponentsProvider connectInstance={connectInstance}>
+                <ConnectAccountOnboarding />
+              </ConnectComponentsProvider>
+            ) : (
+              <div className="min-h-[360px]" />
+            )}
+          </div>
+          {embeddedFallbackUrl && (
+            <div className="flex items-center justify-between rounded-md bg-muted/30 p-3 text-sm text-muted-foreground">
+              <span>If the embedded experience fails to load, continue in Stripe.</span>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  teardownEmbedded();
+                  window.location.href = embeddedFallbackUrl;
+                }}
+              >
+                Open Stripe
+              </Button>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

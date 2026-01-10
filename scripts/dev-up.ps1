@@ -10,6 +10,15 @@ if (Test-Path $frontendEnvPath) {
       $env:VITE_GOOGLE_OAUTH_CLIENT_ID = $googleValue
     }
   }
+  $stripeLine = Get-Content $frontendEnvPath |
+    Where-Object { $_ -match "^\s*VITE_STRIPE_PUBLISHABLE_KEY\s*=" } |
+    Select-Object -First 1
+  if ($stripeLine) {
+    $stripeValue = ($stripeLine -split "=", 2)[1].Trim().Trim("'").Trim('"')
+    if ($stripeValue) {
+      $env:VITE_STRIPE_PUBLISHABLE_KEY = $stripeValue
+    }
+  }
 }
 
 Set-Location $repoRoot\infra

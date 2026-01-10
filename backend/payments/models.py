@@ -62,6 +62,11 @@ class OwnerPayoutAccount(models.Model):
     payouts_enabled = models.BooleanField(default=False)
     charges_enabled = models.BooleanField(default=False)
     requirements_due = models.JSONField(default=dict, blank=True)
+    business_type = models.CharField(
+        max_length=32,
+        default="individual",
+        help_text="Stripe business_type (individual/company) chosen by the owner.",
+    )
     is_fully_onboarded = models.BooleanField(
         default=False,
         help_text="Charges and payouts enabled, no disabled_reason.",

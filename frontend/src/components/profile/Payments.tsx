@@ -1,15 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { loadConnectAndInitialize } from "@stripe/connect-js";
+import { ConnectAccountOnboarding, ConnectComponentsProvider } from "@stripe/react-connect-js";
 import { CardElement, useElements, useStripe } from "@stripe/react-stripe-js";
-import { CreditCard, Plus, Building2, Loader2 } from "lucide-react";
+import { CreditCard, Plus, Building2, Loader2, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import {
   paymentsAPI,
+  identityAPI,
   type InstantPayoutResponse,
   type PaymentMethod,
   type OwnerPayoutHistoryRow,
   type OwnerPayoutSummary,
   type JsonError,
+  type OwnerPayoutOnboardingResponse,
 } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -60,6 +64,23 @@ export function Payments() {
   const [instantAgree, setInstantAgree] = useState(false);
   const [instantQuote, setInstantQuote] = useState<InstantPayoutResponse | null>(null);
   const [startingOnboarding, setStartingOnboarding] = useState(false);
+  const [businessType, setBusinessType] = useState<"individual" | "company">("individual");
+  const [embeddedOpen, setEmbeddedOpen] = useState(false);
+  const [embeddedLoading, setEmbeddedLoading] = useState(false);
+  const [embeddedError, setEmbeddedError] = useState<string | null>(null);
+  const [embeddedFallbackUrl, setEmbeddedFallbackUrl] = useState<string | null>(null);
+  const [connectInstance, setConnectInstance] = useState<any>(null);
+  const prevConnectVerifiedRef = useRef<boolean>(false);
+
+  const debugLog = (...args: unknown[]) => {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.debug(...args);
+    }
+  };
+
+  const maskClientSecret = (secret: string | null | undefined) =>
+    secret ? `${secret.slice(0, 6)}...${secret.slice(-4)}` : "none";
 
   useEffect(() => {
     let cancelled = false;
@@ -75,8 +96,19 @@ export function Payments() {
         ]);
         if (cancelled) return;
         setPaymentMethods(methods);
+        const nowVerified = summaryRes?.connect?.is_fully_onboarded ?? false;
+        const wasVerified = prevConnectVerifiedRef.current;
+        prevConnectVerifiedRef.current = nowVerified;
         setSummary(summaryRes);
+        if (!wasVerified && nowVerified) {
+          toast.success("Payout onboarding completed.");
+        }
         setHistory(historyRes.results ?? []);
+        if (summaryRes?.connect?.business_type === "company") {
+          setBusinessType("company");
+        } else if (summaryRes?.connect?.business_type === "individual") {
+          setBusinessType("individual");
+        }
         setBankForm({
           transit_number: summaryRes?.connect?.bank_details?.transit_number ?? "",
           institution_number: summaryRes?.connect?.bank_details?.institution_number ?? "",
@@ -199,6 +231,7 @@ export function Payments() {
   const bankDetails = connect?.bank_details;
   const hasConnectAccount = connect?.has_account;
   const canStartOnboarding = !loading && (connect ? !connect.is_fully_onboarded : true);
+  const needsOnboardingBanner = false;
 
   const handleBankSubmit = async () => {
     setSavingBank(true);
@@ -293,28 +326,150 @@ export function Payments() {
     }
   };
 
+  const teardownEmbedded = () => {
+    setConnectInstance(null);
+  };
+
+  const refreshAfterOnboarding = useCallback(async () => {
+    try {
+      const [summaryRes] = await Promise.all([
+        paymentsAPI.ownerPayoutsSummary(),
+        identityAPI.status().catch(() => null),
+      ]);
+      const nowVerified = summaryRes?.connect?.is_fully_onboarded ?? false;
+      const wasVerified = prevConnectVerifiedRef.current;
+      prevConnectVerifiedRef.current = nowVerified;
+      setSummary(summaryRes);
+      if (!wasVerified && nowVerified) {
+        toast.success("Payout onboarding completed.");
+      }
+    } catch (err) {
+      console.error("Unable to refresh onboarding status", err);
+    }
+  }, []);
+
   const handleStartOnboarding = async () => {
     setStartingOnboarding(true);
+    setEmbeddedLoading(true);
+    setEmbeddedError(null);
+    setEmbeddedFallbackUrl(null);
+
+    let lastResponse: OwnerPayoutOnboardingResponse | null = null;
+    const publishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY;
+    debugLog("connect_onboarding_start", {
+      hasPublishableKey: Boolean(publishableKey),
+    });
+
+    const fetchOnboardingSession = async () => {
+      const response = await paymentsAPI.ownerPayoutsStartOnboarding({
+        business_type: businessType,
+      });
+      lastResponse = response;
+      setEmbeddedFallbackUrl(response.onboarding_url || null);
+      debugLog("connect_onboarding_response", {
+        hasClientSecret: Boolean(response.client_secret),
+        maskedClientSecret: maskClientSecret(response.client_secret),
+        mode: response.mode,
+      });
+      return response;
+    };
+
+    const redirectToHosted = async (message?: string) => {
+      const fallbackUrl =
+        lastResponse?.onboarding_url ??
+        (await (async () => {
+          try {
+            const refreshed = await fetchOnboardingSession();
+            return refreshed.onboarding_url || null;
+          } catch (err) {
+            console.error("connect onboarding fallback fetch failed", err);
+            return null;
+          }
+        })());
+      if (message) {
+        setEmbeddedError(message);
+      }
+      if (fallbackUrl) {
+        window.location.href = fallbackUrl;
+        return true;
+      }
+      if (message) {
+        toast.error(message);
+      } else {
+        toast.error("Embedded onboarding is unavailable right now.");
+      }
+      return false;
+    };
+
     try {
-      const response = await paymentsAPI.ownerPayoutsStartOnboarding();
-      if (!response.onboarding_url) {
-        toast.error("Unable to start verification right now.");
+      if (!publishableKey || typeof loadConnectAndInitialize !== "function") {
+        await redirectToHosted("Embedded onboarding is unavailable. Redirecting to Stripe.");
         return;
       }
-      window.location.href = response.onboarding_url;
-    } catch (err) {
-      let detail: string | null = null;
-      if (err && typeof err === "object" && "data" in err) {
-        const data = (err as JsonError).data as Record<string, unknown>;
-        if (data && typeof data.detail === "string") {
-          detail = data.detail;
-        }
+
+      const connect = await loadConnectAndInitialize({
+        publishableKey,
+        appearance: { overlays: "dialog" },
+        fetchClientSecret: async () => {
+          const response = await fetchOnboardingSession();
+          const clientSecret = response.client_secret;
+          if (!clientSecret) {
+            throw new Error("Missing client secret from server.");
+          }
+          return clientSecret;
+        },
+      });
+
+      if (!connect || typeof connect.create !== "function") {
+        await redirectToHosted("Embedded onboarding is unavailable. Redirecting to Stripe.");
+        return;
       }
-      toast.error(detail || "Unable to start verification right now.");
+
+      const onboardingElement = connect.create("account-onboarding");
+      if (!onboardingElement) {
+        await redirectToHosted("Embedded onboarding is unavailable. Redirecting to Stripe.");
+        return;
+      }
+
+      setConnectInstance(connect);
+      setEmbeddedError(null);
+      setEmbeddedOpen(true);
+      debugLog("connect_onboarding_embedded_ready", {
+        mode: lastResponse?.mode ?? "embedded",
+      });
+    } catch (err) {
+      console.error("Unable to start embedded onboarding", err);
+      const detail =
+        err && typeof err === "object" && "data" in err && (err as JsonError).data?.detail
+          ? (err as JsonError).data.detail
+          : err instanceof Error
+            ? err.message
+            : null;
+      const message = detail || "Embedded onboarding is unavailable right now.";
+      const fallbackUrl = lastResponse?.onboarding_url ?? embeddedFallbackUrl;
+      const handled =
+        fallbackUrl && fallbackUrl.length
+          ? (() => {
+              window.location.href = fallbackUrl;
+              return true;
+            })()
+          : await redirectToHosted(message);
+      if (!handled) {
+        setEmbeddedError(message);
+      }
     } finally {
       setStartingOnboarding(false);
+      setEmbeddedLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!embeddedOpen) return;
+    const intervalId = window.setInterval(() => {
+      void refreshAfterOnboarding();
+    }, 8000);
+    return () => window.clearInterval(intervalId);
+  }, [embeddedOpen, refreshAfterOnboarding]);
 
   const transactions = useMemo(() => {
     return history
@@ -432,6 +587,44 @@ export function Payments() {
 
   return (
     <div className="space-y-6">
+      {needsOnboardingBanner && (
+        <Alert className="bg-amber-50 text-amber-900 border-amber-200">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <span>Finish payout setup to start receiving money.</span>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
+                style={{ color: "var(--primary-foreground)" }}
+                onClick={handleStartOnboarding}
+                disabled={startingOnboarding || embeddedLoading}
+              >
+                {embeddedLoading || startingOnboarding ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Resuming...
+                  </>
+                ) : (
+                  "Continue onboarding"
+                )}
+              </Button>
+              {embeddedFallbackUrl && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    teardownEmbedded();
+                    window.location.href = embeddedFallbackUrl;
+                  }}
+                >
+                  Open in Stripe
+                </Button>
+              )}
+            </div>
+          </AlertDescription>
+        </Alert>
+      )}
       <div>
         <h1 className="text-3xl">Payments</h1>
         <p className="mt-2" style={{ color: "var(--text-muted)" }}>
@@ -473,7 +666,7 @@ export function Payments() {
           <CardTitle>Payout Method</CardTitle>
           <CardDescription>Where you receive your earnings</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-lg bg-muted flex items-center justify-center">
@@ -508,24 +701,6 @@ export function Payments() {
               </div>
             </div>
             <div className="flex items-center gap-2 flex-wrap justify-end">
-              {canStartOnboarding && (
-                <Button
-                  size="sm"
-                  className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
-                  style={{ color: "var(--primary-foreground)" }}
-                  onClick={handleStartOnboarding}
-                  disabled={startingOnboarding}
-                >
-                  {startingOnboarding ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Starting verification...
-                    </>
-                  ) : (
-                    "Start verification"
-                  )}
-                </Button>
-              )}
               <Button variant="outline" size="sm" onClick={() => setBankDialogOpen(true)}>
                 Update
               </Button>
@@ -721,6 +896,62 @@ export function Payments() {
               Save details
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={embeddedOpen}
+        onOpenChange={(open) => {
+          setEmbeddedOpen(open);
+          if (!open) {
+            teardownEmbedded();
+            void refreshAfterOnboarding();
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>Complete identity verification</DialogTitle>
+            <DialogDescription>
+              Finish Stripe onboarding without leaving the app. Information is securely handled by Stripe.
+            </DialogDescription>
+          </DialogHeader>
+          {embeddedError && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{embeddedError}</AlertDescription>
+            </Alert>
+          )}
+          <div className="rounded-lg border bg-muted/40 p-4 min-h-[420px]">
+            {embeddedLoading && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Preparing Stripe onboarding...
+              </div>
+            )}
+            {connectInstance ? (
+              <ConnectComponentsProvider connectInstance={connectInstance}>
+                <ConnectAccountOnboarding />
+              </ConnectComponentsProvider>
+            ) : (
+              <div className="min-h-[360px]" />
+            )}
+          </div>
+          {embeddedFallbackUrl && (
+            <div className="flex items-center justify-between rounded-md bg-muted/30 p-3 text-sm text-muted-foreground">
+              <span>If the embedded experience fails to load, continue in Stripe.</span>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  teardownEmbedded();
+                  window.location.href = embeddedFallbackUrl;
+                }}
+              >
+                Open Stripe
+              </Button>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

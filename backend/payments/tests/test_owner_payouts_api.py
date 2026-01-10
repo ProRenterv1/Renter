@@ -7,11 +7,13 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+import stripe
 from rest_framework.test import APIClient
 
 from backend.payments.stripe_api import StripeConfigurationError, StripeTransientError
 from bookings.models import Booking
 from payments import api as payments_api
+from payments import stripe_api
 from payments.ledger import log_transaction
 from payments.models import OwnerPayoutAccount, Transaction
 
@@ -103,6 +105,13 @@ def test_owner_payouts_summary_returns_balances(owner_user, booking_factory, mon
     assert connect["bank_details"]["account_last4"] == "6789"
     assert connect["bank_details"]["transit_number"] == "12345"
     assert connect["bank_details"]["institution_number"] == "678"
+    kyc_steps = connect["kyc_steps"]
+    assert kyc_steps["personal_complete"] is True
+    assert kyc_steps["id_required"] is False
+    assert kyc_steps["id_submitted_pending"] is False
+    assert kyc_steps["kyc_locked"] is False
+    assert kyc_steps["personal_due"] == []
+    assert kyc_steps["id_due"] == []
 
     balances = resp.data["balances"]
     # OWNER_EARNING 120 + REFUND -20 + DEPOSIT_CAPTURE 50 == 150 net
@@ -126,7 +135,112 @@ def test_owner_payouts_summary_handles_stripe_errors(owner_user, monkeypatch):
     assert resp.data["connect"]["has_account"] is False
     assert resp.data["connect"]["stripe_account_id"] is None
     assert resp.data["connect"]["bank_details"] is None
+    assert resp.data["connect"]["kyc_steps"]["personal_complete"] is False
+    assert resp.data["connect"]["kyc_steps"]["id_required"] is False
+    assert resp.data["connect"]["kyc_steps"]["id_submitted_pending"] is False
+    assert resp.data["connect"]["kyc_steps"]["kyc_locked"] is False
+    assert resp.data["connect"]["kyc_steps"]["personal_due"] == []
+    assert resp.data["connect"]["kyc_steps"]["id_due"] == []
     assert resp.data["balances"]["net_earnings"] == "0.00"
+
+
+@pytest.mark.parametrize(
+    ("requirements_due", "is_fully_onboarded", "expected"),
+    [
+        (
+            {
+                "currently_due": ["individual.first_name", "external_account"],
+                "eventually_due": [],
+                "past_due": [],
+                "disabled_reason": "",
+            },
+            False,
+            {
+                "personal_complete": False,
+                "id_required": False,
+                "id_submitted_pending": False,
+                "kyc_locked": False,
+                "personal_due": ["external_account", "individual.first_name"],
+                "id_due": [],
+            },
+        ),
+        (
+            {
+                "currently_due": [],
+                "eventually_due": [],
+                "past_due": ["individual.verification.additional_document"],
+                "disabled_reason": "",
+            },
+            False,
+            {
+                "personal_complete": True,
+                "id_required": True,
+                "id_submitted_pending": False,
+                "kyc_locked": False,
+                "personal_due": [],
+                "id_due": ["individual.verification.additional_document"],
+            },
+        ),
+        (
+            {
+                "currently_due": [],
+                "eventually_due": [],
+                "past_due": [],
+                "disabled_reason": None,
+            },
+            False,
+            {
+                "personal_complete": True,
+                "id_required": False,
+                "id_submitted_pending": True,
+                "kyc_locked": True,
+                "personal_due": [],
+                "id_due": [],
+            },
+        ),
+        (
+            {
+                "currently_due": [],
+                "eventually_due": [],
+                "past_due": [],
+                "disabled_reason": None,
+            },
+            True,
+            {
+                "personal_complete": True,
+                "id_required": False,
+                "id_submitted_pending": False,
+                "kyc_locked": False,
+                "personal_due": [],
+                "id_due": [],
+            },
+        ),
+    ],
+)
+def test_owner_payouts_summary_includes_kyc_steps(
+    owner_user, monkeypatch, requirements_due, is_fully_onboarded, expected
+):
+    OwnerPayoutAccount.objects.filter(user=owner_user).delete()
+    payout_account = OwnerPayoutAccount.objects.create(
+        user=owner_user,
+        stripe_account_id="acct_steps_123",
+        requirements_due=requirements_due,
+        is_fully_onboarded=is_fully_onboarded,
+    )
+    monkeypatch.setattr(payments_api, "ensure_connect_account", lambda user: payout_account)
+    monkeypatch.setattr(payments_api, "get_connect_available_balance", lambda account: None)
+
+    client = _auth_client(owner_user)
+    resp = client.get("/api/owner/payouts/summary/")
+
+    assert resp.status_code == 200, resp.data
+    steps = resp.data["connect"]["kyc_steps"]
+    assert steps["personal_complete"] is expected["personal_complete"]
+    assert steps["id_required"] is expected["id_required"]
+    assert steps["id_submitted_pending"] is expected["id_submitted_pending"]
+    assert steps["kyc_locked"] is expected["kyc_locked"]
+    assert steps.get("personal_due") == expected["personal_due"]
+    assert steps.get("id_due") == expected["id_due"]
 
 
 def test_owner_payouts_history_returns_paginated_results(owner_user, booking_factory):
@@ -209,44 +323,180 @@ def test_owner_payouts_history_includes_booking_charge_with_all_scope(
     assert charge_row["direction"] == "debit"
 
 
-def test_owner_payouts_start_onboarding_returns_link(owner_user, monkeypatch):
+def test_owner_payouts_start_onboarding_embedded_mode(owner_user, monkeypatch):
     OwnerPayoutAccount.objects.filter(user=owner_user).delete()
     payout_account = OwnerPayoutAccount.objects.create(
         user=owner_user,
         stripe_account_id="acct_onboard_123",
-        payouts_enabled=False,
-        charges_enabled=False,
     )
 
+    monkeypatch.setattr("payments.stripe_api._get_stripe_api_key", lambda: "sk_test_embed")
     monkeypatch.setattr(
-        payments_api,
-        "create_connect_onboarding_link",
-        lambda user: "https://connect.test/onboard",
+        "payments.stripe_api.ensure_connect_account",
+        lambda user, business_type=None: payout_account,
     )
-    monkeypatch.setattr(payments_api, "ensure_connect_account", lambda user: payout_account)
+    monkeypatch.setattr(
+        "payments.stripe_api.sync_connect_account_personal_info",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        stripe_api.stripe.AccountSession,
+        "create",
+        staticmethod(
+            lambda **kwargs: {"client_secret": "sess_secret_123", "expires_at": 1_700_000_000}
+        ),
+    )
+    monkeypatch.setattr(
+        "payments.stripe_api.create_connect_onboarding_link",
+        lambda *args, **kwargs: "https://connect.test/onboard",
+    )
 
     client = _auth_client(owner_user)
     resp = client.post("/api/owner/payouts/start-onboarding/")
 
     assert resp.status_code == 200, resp.data
+    assert resp.data["client_secret"] == "sess_secret_123"
+    assert resp.data["stripe_account_id"] == payout_account.stripe_account_id
     assert resp.data["onboarding_url"] == "https://connect.test/onboard"
-    assert resp.data["stripe_account_id"] == "acct_onboard_123"
+    assert resp.data["mode"] == "embedded"
+    assert isinstance(resp.data["expires_at"], str)
+    assert resp.data["expires_at"].endswith("Z")
+
+
+def test_owner_payouts_start_onboarding_session_failure_falls_back(owner_user, monkeypatch):
+    OwnerPayoutAccount.objects.filter(user=owner_user).delete()
+    payout_account = OwnerPayoutAccount.objects.create(
+        user=owner_user,
+        stripe_account_id="acct_onboard_fallback",
+    )
+
+    monkeypatch.setattr("payments.stripe_api._get_stripe_api_key", lambda: "sk_test_fallback")
+    monkeypatch.setattr(
+        "payments.stripe_api.ensure_connect_account",
+        lambda user, business_type=None: payout_account,
+    )
+    monkeypatch.setattr(
+        "payments.stripe_api.sync_connect_account_personal_info",
+        lambda *args, **kwargs: None,
+    )
+
+    def raise_session(**kwargs):
+        raise stripe.error.APIConnectionError("session unavailable", param=None)
+
+    monkeypatch.setattr(
+        stripe_api.stripe.AccountSession,
+        "create",
+        staticmethod(raise_session),
+    )
+    monkeypatch.setattr(
+        "payments.stripe_api.create_connect_onboarding_link",
+        lambda *args, **kwargs: "https://connect.test/onboard-fallback",
+    )
+
+    client = _auth_client(owner_user)
+    resp = client.post("/api/owner/payouts/start-onboarding/")
+
+    assert resp.status_code == 200, resp.data
+    assert resp.data["client_secret"] is None
+    assert resp.data["onboarding_url"] == "https://connect.test/onboard-fallback"
+    assert resp.data["mode"] == "hosted_fallback"
+    assert resp.data["stripe_account_id"] == payout_account.stripe_account_id
+
+
+def test_owner_payouts_start_onboarding_prefill_permission_denied_is_nonfatal(
+    owner_user, monkeypatch
+):
+    OwnerPayoutAccount.objects.filter(user=owner_user).delete()
+    payout_account = OwnerPayoutAccount.objects.create(
+        user=owner_user,
+        stripe_account_id="acct_prefill_perm",
+    )
+
+    monkeypatch.setattr("payments.stripe_api._get_stripe_api_key", lambda: "sk_test_perm")
+    monkeypatch.setattr(
+        "payments.stripe_api.ensure_connect_account",
+        lambda user, business_type=None: payout_account,
+    )
+
+    def permission_error(*args, **kwargs):
+        raise stripe.error.PermissionError(
+            "denied",
+            param=None,
+            code="permission_denied",
+            http_status=403,
+            request_id="req_denied",
+        )
+
+    monkeypatch.setattr(stripe_api.stripe.Account, "modify", staticmethod(permission_error))
+    monkeypatch.setattr(
+        stripe_api.stripe.AccountSession,
+        "create",
+        staticmethod(
+            lambda **kwargs: {"client_secret": "sess_secret_perm", "expires_at": 1_800_000_000}
+        ),
+    )
+    monkeypatch.setattr(
+        "payments.stripe_api.create_connect_onboarding_link",
+        lambda *args, **kwargs: "https://connect.test/onboard-perm",
+    )
+
+    client = _auth_client(owner_user)
+    resp = client.post("/api/owner/payouts/start-onboarding/")
+
+    assert resp.status_code == 200, resp.data
+    assert resp.data["client_secret"] == "sess_secret_perm"
+    assert resp.data["mode"] == "embedded"
+    assert resp.data["onboarding_url"] == "https://connect.test/onboard-perm"
+
+
+def test_owner_payouts_start_onboarding_passes_business_type(owner_user, monkeypatch):
+    captured: dict[str, str | None] = {}
+    payload = {
+        "client_secret": "sess_secret_company",
+        "stripe_account_id": "acct_company_123",
+        "expires_at": "2023-11-14T22:13:20Z",
+        "onboarding_url": "https://connect.test/onboard-company",
+        "mode": "embedded",
+    }
+
+    def fake_session(user, business_type=None):
+        captured["business_type"] = business_type
+        return payload
+
+    monkeypatch.setattr(payments_api, "create_connect_onboarding_session", fake_session)
+
+    client = _auth_client(owner_user)
+    resp = client.post(
+        "/api/owner/payouts/start-onboarding/",
+        {"business_type": "company"},
+        format="json",
+    )
+
+    assert resp.status_code == 200, resp.data
+    assert captured["business_type"] == "company"
+    assert resp.data["stripe_account_id"] == payload["stripe_account_id"]
+    assert resp.data["mode"] == "embedded"
+
+
+def test_owner_payouts_start_onboarding_rejects_invalid_business_type(owner_user):
+    client = _auth_client(owner_user)
+    resp = client.post(
+        "/api/owner/payouts/start-onboarding/",
+        {"business_type": "not-a-valid-choice"},
+        format="json",
+    )
+
+    assert resp.status_code == 400
+    assert "business_type" in resp.data
 
 
 def test_owner_payouts_start_onboarding_handles_errors(owner_user, monkeypatch):
     OwnerPayoutAccount.objects.filter(user=owner_user).delete()
-    payout_account = OwnerPayoutAccount.objects.create(
-        user=owner_user,
-        stripe_account_id="acct_onboard_err",
-        payouts_enabled=False,
-        charges_enabled=False,
-    )
-    monkeypatch.setattr(payments_api, "ensure_connect_account", lambda user: payout_account)
 
     def _raise(_user):
         raise StripeTransientError("stripe down")
 
-    monkeypatch.setattr(payments_api, "create_connect_onboarding_link", _raise)
+    monkeypatch.setattr(payments_api, "create_connect_onboarding_session", _raise)
 
     client = _auth_client(owner_user)
     resp = client.post("/api/owner/payouts/start-onboarding/")

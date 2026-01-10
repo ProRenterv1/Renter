@@ -3,7 +3,7 @@ import stripe
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
-from identity.models import is_user_identity_verified
+from identity.models import IdentityVerification, is_user_identity_verified
 from payments import stripe_api
 from payments.models import OwnerPayoutAccount
 
@@ -258,6 +258,9 @@ def test_account_updated_syncs_profile_and_bank_details():
     assert payout_account.transit_number == "12345"
     assert payout_account.account_number == "6789"
     assert payout_account.last_synced_at is not None
+    verification = IdentityVerification.objects.filter(user=user, session_id="acct_sync").first()
+    assert verification is not None
+    assert verification.status == IdentityVerification.Status.VERIFIED
 
 
 def test_account_updated_fetches_expanded_account(monkeypatch):
