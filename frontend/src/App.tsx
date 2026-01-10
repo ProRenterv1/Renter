@@ -14,6 +14,9 @@ const UserProfile = lazy(() => import("@/pages/UserProfile"));
 const Messages = lazy(() => import("@/pages/Messages"));
 const AllCategoriesPage = lazy(() => import("@/pages/AllCategories"));
 const PublicProfile = lazy(() => import("@/pages/PublicProfile"));
+const AboutPage = lazy(() => import("@/pages/About"));
+const PricingPage = lazy(() => import("@/pages/Pricing"));
+const SafetyPage = lazy(() => import("@/pages/Safety"));
 
 const isOpsBuildEnv = import.meta.env.VITE_OPS_BUILD === "1";
 const OperatorApp = isOpsBuildEnv ? lazy(() => import("@/operator/OperatorApp")) : null;
@@ -210,6 +213,9 @@ export default function App({ opsBuild }: AppProps) {
           <Route path="/" element={<LandingPage />} />
           <Route path="/feed" element={<FeedPage />} />
           <Route path="/categories" element={<AllCategoriesPage />} />
+          <Route path="/about" element={<AboutPage />} />
+          <Route path="/pricing" element={<PricingPage />} />
+          <Route path="/safety" element={<SafetyPage />} />
           <Route
             path="/profile"
             element={
