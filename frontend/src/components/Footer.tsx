@@ -1,15 +1,43 @@
-const columns = [
+import { Link } from "react-router-dom";
+
+type FooterLink = {
+  label: string;
+  to?: string;
+  href?: string;
+};
+
+type FooterColumn = {
+  title: string;
+  links: FooterLink[];
+};
+
+const supportEmail = "support@renter.com";
+
+const columns: FooterColumn[] = [
   {
     title: "Company",
-    links: ["About", "Careers", "Press", "Contact"],
+    links: [
+      { label: "About", to: "/about" },
+      { label: "Pricing", to: "/pricing" },
+      { label: `Contact: ${supportEmail}`, href: `mailto:${supportEmail}` },
+    ],
   },
   {
     title: "Renters",
-    links: ["Browse tools", "Insurance", "Community", "Support"],
+    links: [
+      { label: "Browse tools", to: "/feed" },
+      { label: "Safety tips", to: "/safety" },
+      { label: "Support", href: `mailto:${supportEmail}` },
+    ],
   },
   {
     title: "Owners",
-    links: ["List a tool", "Safety tips", "Pricing", "Owner portal"],
+    links: [
+      { label: "List a tool", to: "/profile?tab=add-listing" },
+      { label: "Owner portal", to: "/profile?tab=listings" },
+      { label: "Safety tips", to: "/safety" },
+      { label: "Pricing", to: "/pricing" },
+    ],
   },
 ];
 
@@ -32,13 +60,30 @@ export function Footer() {
                 {column.title}
               </h4>
               <ul className="mt-4 space-y-2 text-sm">
-                {column.links.map((link) => (
-                  <li key={link}>
-                    <a href="#" className="text-muted-foreground transition hover:text-foreground">
-                      {link}
-                    </a>
-                  </li>
-                ))}
+                {column.links.map((link) => {
+                  if (link.to) {
+                    return (
+                      <li key={link.label}>
+                        <Link
+                          to={link.to}
+                          className="text-muted-foreground transition hover:text-foreground"
+                        >
+                          {link.label}
+                        </Link>
+                      </li>
+                    );
+                  }
+                  return (
+                    <li key={link.label}>
+                      <a
+                        href={link.href}
+                        className="text-muted-foreground transition hover:text-foreground"
+                      >
+                        {link.label}
+                      </a>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           ))}

@@ -322,7 +322,9 @@ export default function Feed({ onOpenBooking }: FeedPageProps) {
 
       if (cachedPage && !replace && !prefetch) {
         setListings((prev) => mergeListings(prev, cachedPage, resetList));
-        setHasNextPage(cachedEntry?.hasNext ?? hasNextPage);
+        setHasNextPage((prev) =>
+          typeof cachedEntry?.hasNext === "boolean" ? cachedEntry.hasNext : prev,
+        );
         if (typeof cachedEntry?.totalCount === "number") {
           setTotalCount(cachedEntry.totalCount);
         }
@@ -389,6 +391,10 @@ export default function Feed({ onOpenBooking }: FeedPageProps) {
             }
 
             if (!prefetch) {
+              if (status === 404 && !resetList) {
+                setHasNextPage(false);
+                break;
+              }
               console.error("Failed to load listings", err);
               setError("Unable to load listings. Please try again.");
               if (resetList) {
@@ -413,21 +419,29 @@ export default function Feed({ onOpenBooking }: FeedPageProps) {
             ? responseData.has_next
             : Boolean(responseData.next);
         const total = typeof responseData.count === "number" ? responseData.count : null;
+        const pageSize =
+          typeof responseData.page_size === "number" && responseData.page_size > 0
+            ? responseData.page_size
+            : FEED_PAGE_SIZE;
+        const hasMoreFromCount =
+          total !== null ? pageNumber * pageSize < total : null;
+        const finalHasNext =
+          typeof hasMoreFromCount === "boolean" ? hasMoreFromCount : resolvedHasNext;
 
         const cacheEntry: FeedCacheEntry =
           cachedEntry ??
           {
             pages: new Map<number, ListingFeedItem[]>(),
-            hasNext: resolvedHasNext,
+            hasNext: finalHasNext,
             totalCount: total,
           };
         cacheEntry.pages.set(pageNumber, items);
-        cacheEntry.hasNext = resolvedHasNext;
+        cacheEntry.hasNext = finalHasNext;
         cacheEntry.totalCount = total ?? cacheEntry.totalCount ?? null;
         feedCacheRef.current.set(filterKey, cacheEntry);
 
         setListings((prev) => mergeListings(prev, items, resetList));
-        setHasNextPage(resolvedHasNext);
+        setHasNextPage(finalHasNext);
         setPage(pageNumber);
         if (total !== null) {
           setTotalCount(total);
@@ -443,7 +457,7 @@ export default function Feed({ onOpenBooking }: FeedPageProps) {
         }
       }
     },
-    [buildParams, filterKey, hasNextPage, mergeListings],
+    [buildParams, filterKey, mergeListings],
   );
 
   const clearFilters = () => {
@@ -483,6 +497,8 @@ export default function Feed({ onOpenBooking }: FeedPageProps) {
     fetchPage(1, { replace: true });
   }, [fetchPage, filterKey]);
 
+  const hasLoadedAll = totalCount !== null && listings.length >= totalCount;
+
   useEffect(() => {
     const sentinel = sentinelRef.current;
     if (!sentinel) return;
@@ -490,7 +506,13 @@ export default function Feed({ onOpenBooking }: FeedPageProps) {
     const observer = new IntersectionObserver(
       (entries) => {
         const entry = entries[0];
-        if (entry.isIntersecting && hasNextPage && !loading && !loadingMore) {
+        if (
+          entry.isIntersecting &&
+          hasNextPage &&
+          !loading &&
+          !loadingMore &&
+          !hasLoadedAll
+        ) {
           fetchPage(page + 1);
         }
       },
@@ -501,7 +523,7 @@ export default function Feed({ onOpenBooking }: FeedPageProps) {
     return () => {
       observer.disconnect();
     };
-  }, [fetchPage, hasNextPage, loading, loadingMore, page]);
+  }, [fetchPage, hasNextPage, hasLoadedAll, loading, loadingMore, page]);
 
   const isEmptyState = !loading && !loadingMore && listings.length === 0;
 

@@ -65,6 +65,16 @@ export type MaintenanceBanner = {
 
 export type TokenResponse = AuthTokens | TwoFactorLoginStartResponse;
 
+export type PlatformPricing = {
+  currency: string;
+  renter_fee_bps: number;
+  renter_fee_rate: number;
+  owner_fee_bps: number;
+  owner_fee_rate: number;
+  instant_payout_fee_bps: number;
+  instant_payout_fee_rate: number;
+};
+
 export interface SignupPayload {
   username?: string;
   email?: string;
@@ -978,6 +988,12 @@ export const authAPI = {
 export const maintenanceAPI = {
   banner() {
     return jsonFetch<MaintenanceBanner>("/maintenance/", { method: "GET" });
+  },
+};
+
+export const platformAPI = {
+  pricing() {
+    return jsonFetch<PlatformPricing>("/platform/pricing/", { method: "GET" });
   },
 };
 
