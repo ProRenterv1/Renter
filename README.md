@@ -138,6 +138,8 @@ npm run dev           # Vite dev server on http://localhost:5173
 ```
 
 - Environment variables are managed via `.env` files understood by Vite (see `frontend/.env.example` if present).
+- Stripe Connect embedded onboarding requires `VITE_STRIPE_PUBLISHABLE_KEY` to be set and the Connect JS dependencies installed (`@stripe/connect-js`, `@stripe/react-connect-js`).
+- If you enable a CSP, allow `https://connect-js.stripe.com` and `https://js.stripe.com` in both `script-src` and `frame-src` so the embedded overlay can load.
 - For production builds: `npm run build` then `npm run preview` to smoke-test the output.
 
 ## Git & Branching Conventions

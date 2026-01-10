@@ -107,6 +107,12 @@ def test_onboarding_prefills_personal_info(monkeypatch, settings):
         password="Secret123!",
         first_name="Prefill",
         last_name="Owner",
+        phone="+12223334444",
+        street_address="456 Test St",
+        city="Vancouver",
+        province="BC",
+        postal_code="v5k0a1",
+        birth_date="1990-02-03",
         can_list=True,
     )
     payout = OwnerPayoutAccount.objects.create(
@@ -129,6 +135,7 @@ def test_onboarding_prefills_personal_info(monkeypatch, settings):
     }
 
     calls: list[Call] = []
+    session_calls: list[Call] = []
 
     monkeypatch.setattr(stripe_api, "_get_stripe_api_key", lambda: "sk_test_key")
     monkeypatch.setattr(
@@ -153,8 +160,38 @@ def test_onboarding_prefills_personal_info(monkeypatch, settings):
         staticmethod(fake_account_link_create),
     )
 
-    url = stripe_api.create_connect_onboarding_link(user)
-    assert url == "https://stripe.test/onboarding"
+    def fake_account_session_create(**kwargs):
+        session_calls.append(kwargs)
+        return {"client_secret": "sess_secret_123", "expires_at": 1_700_000_000}
+
+    modify_calls: list[dict] = []
+
+    def fake_modify(account_id, **kwargs):
+        modify_calls.append({"account_id": account_id, "kwargs": kwargs})
+        return account_payload
+
+    monkeypatch.setattr(
+        stripe_api.stripe.AccountSession, "create", staticmethod(fake_account_session_create)
+    )
+    monkeypatch.setattr(stripe_api.stripe.Account, "modify", staticmethod(fake_modify))
+
+    payload = stripe_api.create_connect_onboarding_session(user, business_type="company")
+    assert payload["client_secret"] == "sess_secret_123"
+    assert payload["stripe_account_id"] == payout.stripe_account_id
+    assert session_calls and session_calls[0]["account"] == payout.stripe_account_id
+
+    assert modify_calls, "Should push individual prefill data before session"
+    individual_payload = modify_calls[-1]["kwargs"]["individual"]
+    assert individual_payload["phone"] == user.phone
+    assert individual_payload["dob"] == {"day": 3, "month": 2, "year": 1990}
+    assert individual_payload["address"]["line1"] == user.street_address
+    assert individual_payload["address"]["city"] == user.city
+    assert individual_payload["address"]["state"] == user.province
+    assert individual_payload["address"]["postal_code"] == user.postal_code
+    assert individual_payload["address"]["country"] == "CA"
+
+    link_calls = [c for c in calls if c["kind"] == "link"]
+    assert link_calls, "Should create onboarding link"
 
     link_calls = [c for c in calls if c["kind"] == "link"]
     assert link_calls, "Should create onboarding link"

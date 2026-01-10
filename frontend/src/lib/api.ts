@@ -408,6 +408,7 @@ export interface OwnerPayoutConnect {
   payouts_enabled: boolean;
   charges_enabled: boolean;
   is_fully_onboarded: boolean;
+  business_type?: "individual" | "company";
   lifetime_instant_payouts: string;
   requirements_due: {
     currently_due: string[];
@@ -420,6 +421,16 @@ export interface OwnerPayoutConnect {
     institution_number: string;
     account_last4: string;
   } | null;
+}
+
+export type OwnerPayoutOnboardingMode = "embedded" | "hosted_fallback";
+
+export interface OwnerPayoutOnboardingResponse {
+  client_secret: string | null;
+  onboarding_url: string | null;
+  mode: OwnerPayoutOnboardingMode;
+  stripe_account_id: string | null;
+  expires_at?: string | null;
 }
 
 export interface OwnerPayoutSummary {
@@ -1377,11 +1388,11 @@ export const paymentsAPI = {
       body: { confirm: true },
     });
   },
-  ownerPayoutsStartOnboarding() {
-    return jsonFetch<{ onboarding_url: string; stripe_account_id: string | null }>(
-      "/owner/payouts/start-onboarding/",
-      { method: "POST" },
-    );
+  ownerPayoutsStartOnboarding(payload?: { business_type?: "individual" | "company" }) {
+    return jsonFetch<OwnerPayoutOnboardingResponse>("/owner/payouts/start-onboarding/", {
+      method: "POST",
+      body: payload ?? {},
+    });
   },
 };
 

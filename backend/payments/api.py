@@ -21,7 +21,7 @@ from .ledger import (
 )
 from .models import OwnerPayoutAccount, Transaction
 from .stripe_api import (
-    create_connect_onboarding_link,
+    create_connect_onboarding_session,
     create_instant_payout,
     ensure_connect_account,
     get_connect_available_balance,
@@ -82,6 +82,7 @@ def _connect_payload(payout_account: OwnerPayoutAccount | None) -> dict:
             "requirements_due": _default_requirements(),
             "bank_details": None,
             "lifetime_instant_payouts": "0.00",
+            "business_type": "individual",
         }
     requirements = _normalize_requirements(payout_account.requirements_due or {})
     acct_last4 = (payout_account.account_number or "")[-4:]
@@ -91,6 +92,7 @@ def _connect_payload(payout_account: OwnerPayoutAccount | None) -> dict:
         "payouts_enabled": payout_account.payouts_enabled,
         "charges_enabled": payout_account.charges_enabled,
         "is_fully_onboarded": payout_account.is_fully_onboarded,
+        "business_type": getattr(payout_account, "business_type", "individual") or "individual",
         "requirements_due": requirements,
         "lifetime_instant_payouts": _format_money(
             getattr(payout_account, "lifetime_instant_payouts", Decimal("0.00")) or Decimal("0.00")
@@ -267,10 +269,19 @@ def owner_payouts_history(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def owner_payouts_start_onboarding(request):
-    """Return a Stripe Connect onboarding link for the owner."""
+    """Return Stripe Connect onboarding session details (with legacy link fallback)."""
     user = request.user
+    data = request.data or {}
+    business_type = (data.get("business_type") or "").strip().lower()
+    if business_type and business_type not in {"individual", "company"}:
+        return Response(
+            {"business_type": ["Must be 'individual' or 'company'."]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    business_type_value = business_type or None
     try:
-        onboarding_url = create_connect_onboarding_link(user)
+        session_payload = create_connect_onboarding_session(user, business_type=business_type_value)
     except Exception as exc:
         if _is_stripe_api_error(exc):
             logger.warning("payments: onboarding link failure for user %s: %s", user.id, exc)
@@ -279,25 +290,7 @@ def owner_payouts_start_onboarding(request):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         raise
-
-    try:
-        payout_account = user.payout_account
-    except OwnerPayoutAccount.DoesNotExist:
-        try:
-            payout_account = ensure_connect_account(user)
-        except Exception as exc:
-            if _is_stripe_api_error(exc):
-                payout_account = None
-            else:
-                raise
-
-    stripe_account_id = payout_account.stripe_account_id if payout_account else None
-    return Response(
-        {
-            "onboarding_url": onboarding_url,
-            "stripe_account_id": stripe_account_id,
-        }
-    )
+    return Response(session_payload)
 
 
 @api_view(["POST"])
