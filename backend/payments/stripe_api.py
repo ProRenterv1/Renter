@@ -686,6 +686,10 @@ def sync_connect_account_personal_info(
             payout_account.stripe_account_id,
             individual=individual,
         )
+    except TypeError as exc:
+        # Defensive: some older stripe-mock exceptions may raise TypeError on bad kwargs.
+        _log_prefill_failure(exc)
+        return
     except stripe.error.PermissionError as exc:
         _log_prefill_failure(exc)
         return
