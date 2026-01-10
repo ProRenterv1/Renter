@@ -71,6 +71,63 @@ def _normalize_requirements(data: dict | None) -> dict:
     return payload
 
 
+def collect_due(requirements: dict | None) -> set[str]:
+    due_fields: set[str] = set()
+    if not requirements:
+        return due_fields
+    for key in ("currently_due", "past_due"):
+        for field in requirements.get(key) or []:
+            if field:
+                due_fields.add(str(field))
+    return due_fields
+
+
+def is_id_requirement(field: str | None) -> bool:
+    if not field:
+        return False
+    prefixes = (
+        "individual.verification.",
+        "company.verification.",
+        "person.verification.",
+    )
+    if any(field.startswith(prefix) for prefix in prefixes):
+        return True
+    return ".verification.document" in field or ".verification.additional_document" in field
+
+
+def is_personal_requirement(field: str | None) -> bool:
+    if not field or is_id_requirement(field):
+        return False
+    personal_prefixes = (
+        "individual.",
+        "company.",
+        "business_profile.",
+        "external_account",
+        "tos_acceptance",
+    )
+    return any(field.startswith(prefix) for prefix in personal_prefixes)
+
+
+def compute_kyc_steps(requirements: dict | None, is_fully_onboarded: bool) -> dict:
+    due = collect_due(requirements)
+    id_due = sorted([field for field in due if is_id_requirement(field)])
+    personal_due = sorted([field for field in due if is_personal_requirement(field)])
+
+    personal_complete = len(personal_due) == 0
+    id_required = len(id_due) > 0
+    id_submitted_pending = personal_complete and (not id_required) and (not is_fully_onboarded)
+    kyc_locked = id_submitted_pending
+
+    return {
+        "personal_complete": personal_complete,
+        "id_required": id_required,
+        "id_submitted_pending": id_submitted_pending,
+        "kyc_locked": kyc_locked,
+        "personal_due": personal_due,
+        "id_due": id_due,
+    }
+
+
 def _connect_payload(payout_account: OwnerPayoutAccount | None) -> dict:
     if payout_account is None:
         return {
@@ -83,8 +140,17 @@ def _connect_payload(payout_account: OwnerPayoutAccount | None) -> dict:
             "bank_details": None,
             "lifetime_instant_payouts": "0.00",
             "business_type": "individual",
+            "kyc_steps": {
+                "personal_complete": False,
+                "id_required": False,
+                "id_submitted_pending": False,
+                "kyc_locked": False,
+                "personal_due": [],
+                "id_due": [],
+            },
         }
     requirements = _normalize_requirements(payout_account.requirements_due or {})
+    kyc_steps = compute_kyc_steps(requirements, payout_account.is_fully_onboarded)
     acct_last4 = (payout_account.account_number or "")[-4:]
     return {
         "has_account": True,
@@ -94,6 +160,7 @@ def _connect_payload(payout_account: OwnerPayoutAccount | None) -> dict:
         "is_fully_onboarded": payout_account.is_fully_onboarded,
         "business_type": getattr(payout_account, "business_type", "individual") or "individual",
         "requirements_due": requirements,
+        "kyc_steps": kyc_steps,
         "lifetime_instant_payouts": _format_money(
             getattr(payout_account, "lifetime_instant_payouts", Decimal("0.00")) or Decimal("0.00")
         ),

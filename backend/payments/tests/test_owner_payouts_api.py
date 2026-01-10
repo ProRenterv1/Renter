@@ -105,6 +105,13 @@ def test_owner_payouts_summary_returns_balances(owner_user, booking_factory, mon
     assert connect["bank_details"]["account_last4"] == "6789"
     assert connect["bank_details"]["transit_number"] == "12345"
     assert connect["bank_details"]["institution_number"] == "678"
+    kyc_steps = connect["kyc_steps"]
+    assert kyc_steps["personal_complete"] is True
+    assert kyc_steps["id_required"] is False
+    assert kyc_steps["id_submitted_pending"] is False
+    assert kyc_steps["kyc_locked"] is False
+    assert kyc_steps["personal_due"] == []
+    assert kyc_steps["id_due"] == []
 
     balances = resp.data["balances"]
     # OWNER_EARNING 120 + REFUND -20 + DEPOSIT_CAPTURE 50 == 150 net
@@ -128,7 +135,112 @@ def test_owner_payouts_summary_handles_stripe_errors(owner_user, monkeypatch):
     assert resp.data["connect"]["has_account"] is False
     assert resp.data["connect"]["stripe_account_id"] is None
     assert resp.data["connect"]["bank_details"] is None
+    assert resp.data["connect"]["kyc_steps"]["personal_complete"] is False
+    assert resp.data["connect"]["kyc_steps"]["id_required"] is False
+    assert resp.data["connect"]["kyc_steps"]["id_submitted_pending"] is False
+    assert resp.data["connect"]["kyc_steps"]["kyc_locked"] is False
+    assert resp.data["connect"]["kyc_steps"]["personal_due"] == []
+    assert resp.data["connect"]["kyc_steps"]["id_due"] == []
     assert resp.data["balances"]["net_earnings"] == "0.00"
+
+
+@pytest.mark.parametrize(
+    ("requirements_due", "is_fully_onboarded", "expected"),
+    [
+        (
+            {
+                "currently_due": ["individual.first_name", "external_account"],
+                "eventually_due": [],
+                "past_due": [],
+                "disabled_reason": "",
+            },
+            False,
+            {
+                "personal_complete": False,
+                "id_required": False,
+                "id_submitted_pending": False,
+                "kyc_locked": False,
+                "personal_due": ["external_account", "individual.first_name"],
+                "id_due": [],
+            },
+        ),
+        (
+            {
+                "currently_due": [],
+                "eventually_due": [],
+                "past_due": ["individual.verification.additional_document"],
+                "disabled_reason": "",
+            },
+            False,
+            {
+                "personal_complete": True,
+                "id_required": True,
+                "id_submitted_pending": False,
+                "kyc_locked": False,
+                "personal_due": [],
+                "id_due": ["individual.verification.additional_document"],
+            },
+        ),
+        (
+            {
+                "currently_due": [],
+                "eventually_due": [],
+                "past_due": [],
+                "disabled_reason": None,
+            },
+            False,
+            {
+                "personal_complete": True,
+                "id_required": False,
+                "id_submitted_pending": True,
+                "kyc_locked": True,
+                "personal_due": [],
+                "id_due": [],
+            },
+        ),
+        (
+            {
+                "currently_due": [],
+                "eventually_due": [],
+                "past_due": [],
+                "disabled_reason": None,
+            },
+            True,
+            {
+                "personal_complete": True,
+                "id_required": False,
+                "id_submitted_pending": False,
+                "kyc_locked": False,
+                "personal_due": [],
+                "id_due": [],
+            },
+        ),
+    ],
+)
+def test_owner_payouts_summary_includes_kyc_steps(
+    owner_user, monkeypatch, requirements_due, is_fully_onboarded, expected
+):
+    OwnerPayoutAccount.objects.filter(user=owner_user).delete()
+    payout_account = OwnerPayoutAccount.objects.create(
+        user=owner_user,
+        stripe_account_id="acct_steps_123",
+        requirements_due=requirements_due,
+        is_fully_onboarded=is_fully_onboarded,
+    )
+    monkeypatch.setattr(payments_api, "ensure_connect_account", lambda user: payout_account)
+    monkeypatch.setattr(payments_api, "get_connect_available_balance", lambda account: None)
+
+    client = _auth_client(owner_user)
+    resp = client.get("/api/owner/payouts/summary/")
+
+    assert resp.status_code == 200, resp.data
+    steps = resp.data["connect"]["kyc_steps"]
+    assert steps["personal_complete"] is expected["personal_complete"]
+    assert steps["id_required"] is expected["id_required"]
+    assert steps["id_submitted_pending"] is expected["id_submitted_pending"]
+    assert steps["kyc_locked"] is expected["kyc_locked"]
+    assert steps.get("personal_due") == expected["personal_due"]
+    assert steps.get("id_due") == expected["id_due"]
 
 
 def test_owner_payouts_history_returns_paginated_results(owner_user, booking_factory):

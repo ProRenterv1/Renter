@@ -416,6 +416,14 @@ export interface OwnerPayoutConnect {
     past_due: string[];
     disabled_reason: string | null;
   };
+  kyc_steps: {
+    personal_complete: boolean;
+    id_required: boolean;
+    id_submitted_pending: boolean;
+    kyc_locked: boolean;
+    personal_due?: string[];
+    id_due?: string[];
+  };
   bank_details: {
     transit_number: string;
     institution_number: string;

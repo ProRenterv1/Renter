@@ -1,7 +1,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { loadConnectAndInitialize } from "@stripe/connect-js";
 import { ConnectAccountOnboarding, ConnectComponentsProvider } from "@stripe/react-connect-js";
-import { AlertCircle, CheckCircle2, Eye, EyeOff, Loader2, IdCard } from "lucide-react";
+import { AlertCircle, ArrowLeft, CheckCircle2, Eye, EyeOff, Loader2, IdCard } from "lucide-react";
 import { toast } from "sonner";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -385,6 +385,12 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
   const teardownEmbedded = useCallback(() => {
     setConnectInstance(null);
   }, []);
+
+  const handleExitKycFlow = useCallback(() => {
+    setShowKycFlow(false);
+    setEmbeddedOpen(false);
+    teardownEmbedded();
+  }, [teardownEmbedded]);
 
   useEffect(() => {
     if (onboardingResumeChecked) return;
@@ -1126,23 +1132,64 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
         : null;
 
     const hasAccount = connectSummary?.has_account ?? false;
-    const idVerified = connectSummary?.is_fully_onboarded ?? identityStatus === "verified";
-    const personalVerified = hasAccount;
+    const steps = connectSummary?.kyc_steps;
+    const personalComplete = steps?.personal_complete ?? false;
+    const idRequired = steps?.id_required ?? false;
+    const kycLocked = steps?.kyc_locked ?? false;
+    const idSubmittedPending = steps?.id_submitted_pending ?? false;
+    const personalVerified = personalComplete || hasAccount;
+    const idVerified =
+      (connectSummary?.is_fully_onboarded ?? false) || identityStatus === "verified";
     const requirements = connectSummary?.requirements_due;
     const outstanding =
       (requirements?.currently_due?.length ?? 0) + (requirements?.past_due?.length ?? 0) > 0;
+    const effectiveIdRequired = idRequired || outstanding;
+    const waitingDecision = idSubmittedPending || identityStatus === "pending";
+    const locked = kycLocked || identityStatus === "pending";
+
+    const personalBadgeText = personalVerified ? "Completed" : "Required";
+    const idBadgeText = idVerified
+      ? "Verified"
+      : locked
+        ? "Pending review"
+        : effectiveIdRequired
+          ? "Required"
+          : "Pending";
+    const step1ButtonDisabled = locked || personalVerified || identityLoading || identityInitialLoading;
+    const step2ButtonDisabled =
+      locked || !personalVerified || identityLoading || identityInitialLoading;
+    const step1ButtonLabel = personalVerified ? "Completed" : "Verify";
+    const step2ButtonLabel = idVerified
+      ? "Completed"
+      : locked
+        ? "Pending"
+        : effectiveIdRequired
+          ? "Verify"
+          : "Continue";
 
     const handleStartPersonal = () => {
+      if (step1ButtonDisabled) return;
       void handleStartConnectKyc();
     };
 
     const handleStartId = () => {
+      if (step2ButtonDisabled) return;
       void handleStartConnectKyc();
     };
 
     return (
       <Card>
         <CardHeader className="flex flex-col gap-2 space-y-0 md:flex-row md:items-center md:justify-between">
+          <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 px-2 text-muted-foreground"
+                    onClick={handleExitKycFlow}
+                  >
+                    <ArrowLeft className="mr-1 h-4 w-4" />
+                    Back
+                  </Button>
           <div>
             <CardTitle>Identity Verification (KYC)</CardTitle>
             <CardDescription>
@@ -1161,7 +1208,10 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
           <div className="space-y-4">
             <div className="flex items-center justify-between rounded-lg border bg-muted/40 p-4">
               <div>
-                <p className="font-medium">1. Personal info & consent</p>
+                <div className="flex items-center gap-2">
+                  
+                  <p className="font-medium">1. Personal info & consent</p>
+                </div>
                 <p className="text-sm text-muted-foreground">
                   Confirm name, contact, address, bank, and agree to Stripe terms.
                 </p>
@@ -1173,16 +1223,16 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
               </div>
               <div className="flex items-center gap-2">
                 <Badge variant={personalVerified ? "default" : "secondary"}>
-                  {personalVerified ? "Verified" : "Pending"}
+                  {personalBadgeText}
                 </Badge>
                 <Button
                   size="sm"
                   className="bg-[var(--primary)] hover:bg-[var(--primary-hover)]"
                   style={{ color: "var(--primary-foreground)" }}
                   onClick={handleStartPersonal}
-                  disabled={identityLoading || identityInitialLoading}
+                  disabled={step1ButtonDisabled}
                 >
-                  {identityLoading ? "Opening..." : personalVerified ? "Reopen" : "Verify"}
+                  {identityLoading ? "Opening..." : step1ButtonLabel}
                 </Button>
               </div>
             </div>
@@ -1196,19 +1246,24 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
               </div>
               <div className="flex items-center gap-2">
                 <Badge variant={idVerified ? "default" : "secondary"}>
-                  {idVerified ? "Verified" : outstanding ? "Required" : "Pending"}
+                  {idBadgeText}
                 </Badge>
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={handleStartId}
-                  disabled={identityLoading || identityInitialLoading || !personalVerified}
+                  disabled={step2ButtonDisabled}
                 >
-                  {identityLoading ? "Opening..." : idVerified ? "Reopen" : "Verify"}
+                  {identityLoading ? "Opening..." : step2ButtonLabel}
                 </Button>
               </div>
             </div>
 
+            {(locked || waitingDecision) && (
+              <p className="text-xs text-muted-foreground">
+                Stripe is reviewing your verification. Refresh status to check for updates.
+              </p>
+            )}
             <p className="text-xs text-muted-foreground">
               Stripe may still ask you to re-confirm details based on their requirements.
             </p>
@@ -1280,7 +1335,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
           }
         }}
       >
-        <DialogContent className="sm:max-w-4xl">
+        <DialogContent className="sm:max-w-4xl max-h-[calc(100vh-6rem)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Complete identity verification</DialogTitle>
             <DialogDescription>
