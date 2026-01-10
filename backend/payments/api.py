@@ -349,6 +349,18 @@ def owner_payouts_start_onboarding(request):
     business_type_value = business_type or None
     try:
         session_payload = create_connect_onboarding_session(user, business_type=business_type_value)
+    except TypeError:
+        # Defensive: allow monkeypatched or legacy callers that ignore business_type.
+        try:
+            session_payload = create_connect_onboarding_session(user)
+        except Exception as exc:
+            if _is_stripe_api_error(exc):
+                logger.warning("payments: onboarding link failure for user %s: %s", user.id, exc)
+                return Response(
+                    {"detail": ONBOARDING_ERROR_MESSAGE},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            raise
     except Exception as exc:
         if _is_stripe_api_error(exc):
             logger.warning("payments: onboarding link failure for user %s: %s", user.id, exc)

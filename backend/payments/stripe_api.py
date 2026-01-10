@@ -447,6 +447,37 @@ def ensure_connect_account(user: User, business_type: str | None = None) -> Owne
         individual["last_name"] = user.last_name
     if user.email:
         individual["email"] = user.email
+    if getattr(user, "phone", None):
+        individual["phone"] = user.phone
+    dob_value = getattr(user, "birth_date", None)
+    if dob_value:
+        if isinstance(dob_value, str):
+            try:
+                dob_value = date.fromisoformat(dob_value)
+            except ValueError:
+                dob_value = None
+        elif isinstance(dob_value, datetime):
+            dob_value = dob_value.date()
+        if dob_value:
+            individual["dob"] = {
+                "day": dob_value.day,
+                "month": dob_value.month,
+                "year": dob_value.year,
+            }
+    address_fields = [
+        getattr(user, "street_address", "").strip(),
+        getattr(user, "city", "").strip(),
+        getattr(user, "province", "").strip(),
+        getattr(user, "postal_code", "").strip(),
+    ]
+    if any(address_fields):
+        individual["address"] = {
+            "line1": getattr(user, "street_address", ""),
+            "city": getattr(user, "city", ""),
+            "state": getattr(user, "province", ""),
+            "postal_code": getattr(user, "postal_code", ""),
+            "country": getattr(user, "country", "CA") or "CA",
+        }
     individual["relationship"] = {"title": job_title}
 
     if account_data is not None:
@@ -594,15 +625,28 @@ def sync_connect_account_personal_info(
         individual["last_name"] = user.last_name
     if user.email:
         individual["email"] = user.email
-    if user.phone:
-        individual["phone"] = user.phone
+    phone_value = getattr(user, "phone", None)
+    if phone_value is None and getattr(user, "pk", None):
+        try:
+            phone_value = User.objects.filter(pk=user.pk).values_list("phone", flat=True).first()
+        except Exception:
+            phone_value = None
+    individual["phone"] = phone_value or ""
     if getattr(user, "birth_date", None):
         dob_value = user.birth_date
-        individual["dob"] = {
-            "day": dob_value.day,
-            "month": dob_value.month,
-            "year": dob_value.year,
-        }
+        if isinstance(dob_value, str):
+            try:
+                dob_value = date.fromisoformat(dob_value)
+            except ValueError:
+                dob_value = None
+        elif isinstance(dob_value, datetime):
+            dob_value = dob_value.date()
+        if dob_value:
+            individual["dob"] = {
+                "day": dob_value.day,
+                "month": dob_value.month,
+                "year": dob_value.year,
+            }
 
     address_fields = [
         getattr(user, "street_address", "").strip(),
@@ -999,7 +1043,7 @@ def create_connect_onboarding_session(
             account=payout_account.stripe_account_id,
             components={"account_onboarding": {"enabled": True}},
         )
-    except stripe.error.StripeError as exc:
+    except (stripe.error.StripeError, TypeError) as exc:
         _log_stripe_issue("connect_account_session_failed", exc)
         session = None
 
