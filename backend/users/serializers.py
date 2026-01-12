@@ -96,6 +96,8 @@ class ProfileSerializer(serializers.ModelSerializer):
     avatar_url = serializers.SerializerMethodField()
     avatar_uploaded = serializers.SerializerMethodField()
     identity_verified = serializers.SerializerMethodField()
+    fee_expires_at = serializers.SerializerMethodField()
+    fee_expires_at = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -117,6 +119,9 @@ class ProfileSerializer(serializers.ModelSerializer):
             "phone_verified",
             "two_factor_email_enabled",
             "two_factor_sms_enabled",
+            "owner_fee_exempt",
+            "renter_fee_exempt",
+            "fee_expires_at",
             "avatar_url",
             "avatar_uploaded",
             "avatar",
@@ -130,6 +135,9 @@ class ProfileSerializer(serializers.ModelSerializer):
             "phone_verified",
             "two_factor_email_enabled",
             "two_factor_sms_enabled",
+            "owner_fee_exempt",
+            "renter_fee_exempt",
+            "fee_expires_at",
             "avatar_url",
             "avatar_uploaded",
             "date_joined",
@@ -194,6 +202,13 @@ class ProfileSerializer(serializers.ModelSerializer):
 
     def get_identity_verified(self, obj: User) -> bool:
         return is_user_identity_verified(obj)
+
+    def get_fee_expires_at(self, obj: User):
+        try:
+            overrides = obj.active_fee_overrides()
+            return overrides.get("expires_at")
+        except Exception:
+            return None
 
     def update(self, instance: User, validated_data: dict):
         avatar = validated_data.pop("avatar", serializers.empty)

@@ -71,3 +71,20 @@ def test_compute_booking_totals_uses_overridden_fee_rates():
     assert totals["owner_fee"] == "42.00"
     # Owner payout: base - owner fee
     assert totals["owner_payout"] == "558.00"
+
+
+def test_compute_booking_totals_all_fee_overrides_to_zero():
+    listing = make_listing(daily_price="120.00")
+    totals = compute_booking_totals(
+        listing=listing,
+        start_date=date(2024, 7, 1),
+        end_date=date(2024, 7, 3),
+        renter_fee_bps_override=0,
+        owner_fee_bps_override=0,
+    )
+
+    assert totals["rental_subtotal"] == "240.00"
+    assert totals["renter_fee"] == "0.00"
+    assert totals["owner_fee"] == "0.00"
+    assert totals["platform_fee_total"] == "0.00"
+    assert totals["owner_payout"] == "240.00"

@@ -1,6 +1,6 @@
 {% if user %}Hi {{ user.get_full_name|default:user.username }},{% else %}Hi,{% endif %}
 
-A new login to your Renter account just occurred.
+A new login to your Kitoro account just occurred.
 
 IP address: {{ ip }}
 Device / browser: {{ ua|default:"Unknown" }}

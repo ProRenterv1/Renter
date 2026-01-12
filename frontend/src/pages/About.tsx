@@ -22,7 +22,7 @@ const pillars = [
     icon: Users,
     title: "Community powered",
     description:
-      "Renter is powered by the people who list their tools and the neighbours who keep them in use, not by warehouses.",
+      "Kitoro is powered by the people who list their tools and the neighbours who keep them in use, not by warehouses.",
   },
   {
     icon: CheckCircle2,
@@ -46,12 +46,12 @@ export default function AboutPage() {
       <main className="bg-background">
         <section className="mx-auto max-w-5xl px-4 py-12 sm:px-6 lg:px-8">
           <SectionHeading
-            title="About Renter"
+            title="About Kitoro"
             description="We connect neighbours in Edmonton so the right tool is always nearby, protected, and easy to book."
           />
           <div className="mt-6 space-y-4 text-muted-foreground">
             <p>
-              Renting the right tool should be simple. Renter was created to make sure anyone can find
+              Renting the right tool should be simple. Kitoro was created to make sure anyone can find
               reliable equipment minutes from home, while owners earn more from the tools they already
               trust. Every feature we ship is built to keep both sides safe, informed, and supported.
             </p>
@@ -106,9 +106,9 @@ export default function AboutPage() {
                 Questions or feedback? Reach us anytime at{" "}
                 <a
                   className="text-foreground underline underline-offset-4"
-                  href="mailto:support@renter.com"
+                  href="mailto:support@kitoro.com"
                 >
-                  support@renter.com
+                  support@kitoro.com
                 </a>
                 .
               </p>

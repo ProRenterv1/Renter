@@ -13,6 +13,14 @@ from django.utils import timezone
 class User(AbstractUser):
     """Primary user object augmented with security metadata."""
 
+    owner_fee_exempt = models.BooleanField(
+        default=False,
+        help_text="When true, waive owner-side platform fees for this user.",
+    )
+    renter_fee_exempt = models.BooleanField(
+        default=False,
+        help_text="When true, waive renter-side platform fees for this user.",
+    )
     phone = models.CharField(
         max_length=32,
         unique=True,
@@ -115,6 +123,35 @@ class User(AbstractUser):
     @property
     def avatar_uploaded(self) -> bool:
         return bool(self.avatar)
+
+    def active_fee_overrides(self, *, now=None) -> dict[str, object]:
+        """
+        Return effective fee waiver flags and their expiry.
+
+        Prefers a related UserFeeOverride (with a valid expiry) and falls back
+        to legacy boolean fields on the user when no override record exists.
+        """
+        current_time = now or timezone.now()
+        override = getattr(self, "fee_override", None)
+        if isinstance(override, UserFeeOverride):
+            expires_at = override.expires_at
+            if expires_at and expires_at <= current_time:
+                return {
+                    "owner_fee_exempt": False,
+                    "renter_fee_exempt": False,
+                    "expires_at": expires_at,
+                }
+            return {
+                "owner_fee_exempt": bool(override.owner_fee_exempt),
+                "renter_fee_exempt": bool(override.renter_fee_exempt),
+                "expires_at": expires_at,
+            }
+
+        return {
+            "owner_fee_exempt": bool(self.owner_fee_exempt),
+            "renter_fee_exempt": bool(self.renter_fee_exempt),
+            "expires_at": None,
+        }
 
 
 class SocialIdentity(models.Model):
@@ -413,3 +450,24 @@ class ContactVerificationChallenge(models.Model):
         if matches:
             self.consumed = True
         return matches
+
+
+class UserFeeOverride(models.Model):
+    """Optional per-user fee waivers with optional expiry."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        related_name="fee_override",
+        on_delete=models.CASCADE,
+    )
+    renter_fee_exempt = models.BooleanField(default=False)
+    owner_fee_exempt = models.BooleanField(default=False)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-updated_at",)
+
+    def __str__(self) -> str:
+        return f"Fee override for user {self.user_id}"

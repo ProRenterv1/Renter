@@ -13,7 +13,7 @@ export function AccessDeniedPage() {
         
         <h1 className="mb-3">Access Denied</h1>
         <p className="text-muted-foreground mb-8">
-          You don't have permission to access the Renter Ops console. This area is restricted to authorized staff members only.
+          You don't have permission to access the Kitoro Ops console. This area is restricted to authorized staff members only.
         </p>
         
         <div className="space-y-3">
@@ -35,8 +35,8 @@ export function AccessDeniedPage() {
         <div className="mt-8 p-4 bg-muted rounded-lg">
           <p className="text-sm text-muted-foreground m-0">
             Need access? Contact your system administrator or email{' '}
-            <a href="mailto:support@renter.com" className="text-[var(--alt-action)] hover:underline">
-              support@renter.com
+            <a href="mailto:support@kitoro.com" className="text-[var(--alt-action)] hover:underline">
+              support@kitoro.com
             </a>
           </p>
         </div>

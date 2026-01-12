@@ -48,7 +48,7 @@ const ownerTips = [
 ];
 
 const reminders = [
-  "Keep all messaging inside Renter so our team can step in if needed.",
+  "Keep all messaging inside Kitoro so our team can step in if needed.",
   "Meet in a well-lit, public location when possible.",
   "Require ID if you do not recognize the renter picking up the tool.",
   "Stop using equipment immediately if it becomes unsafe and let the owner know.",
@@ -138,9 +138,9 @@ export default function SafetyPage() {
                 Need help during a rental? Email{" "}
                 <a
                   className="text-foreground underline underline-offset-4"
-                  href="mailto:support@renter.com"
+                  href="mailto:support@kitoro.com"
                 >
-                  support@renter.com
+                  support@kitoro.com
                 </a>{" "}
                 and include your booking ID so we can prioritize your request.
               </p>

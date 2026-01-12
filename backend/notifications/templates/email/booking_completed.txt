@@ -10,4 +10,4 @@ We'd love to hear how it went. You can leave a quick review from your rentals da
 {{ cta_url }}
 
 Thanks,
-The Renter Team
+The Kitoro Team

@@ -9,7 +9,7 @@ Call = dict
 
 
 def test_connect_account_created_on_signup(api_client, monkeypatch, settings):
-    settings.CONNECT_BUSINESS_NAME = "Renter QA"
+    settings.CONNECT_BUSINESS_NAME = "Kitoro QA"
     settings.CONNECT_BUSINESS_URL = "https://platform.test"
     settings.CONNECT_BUSINESS_PRODUCT_DESCRIPTION = "Test rentals"
     settings.CONNECT_BUSINESS_MCC = "7399"
@@ -72,9 +72,9 @@ def test_connect_account_created_on_signup(api_client, monkeypatch, settings):
     assert individual["first_name"] == payload["first_name"]
     assert individual["last_name"] == payload["last_name"]
     assert individual["email"] == payload["email"]
-    assert individual["relationship"]["title"] == "Renter"
+    assert individual["relationship"]["title"] == "Kitoro"
     assert create_kwargs["metadata"]["user_id"] == str(user.id)
-    assert create_kwargs["metadata"]["job_title"] == "Renter"
+    assert create_kwargs["metadata"]["job_title"] == "Kitoro"
 
 
 def test_signup_succeeds_when_connect_fails(api_client, monkeypatch):

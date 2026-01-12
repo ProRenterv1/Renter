@@ -146,7 +146,7 @@ def notify_dispute_resolved(dispute_id: int) -> bool:
 
 def _build_email_context(extra: Optional[dict]) -> dict:
     frontend_origin = (getattr(settings, "FRONTEND_ORIGIN", "") or "").rstrip("/")
-    site_name = getattr(settings, "SITE_NAME", "Renter")
+    site_name = getattr(settings, "SITE_NAME", "Kitoro")
     site_tagline = getattr(
         settings,
         "SITE_TAGLINE",

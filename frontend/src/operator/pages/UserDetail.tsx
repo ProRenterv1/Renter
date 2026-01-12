@@ -5,7 +5,9 @@ import { format, formatDistanceToNow } from "date-fns";
 import {
   ArrowLeft,
   BadgeAlert,
+  Clock,
   Calendar,
+  Calendar as CalendarIcon,
   CalendarCheck,
   ClipboardList,
   FileText,
@@ -41,6 +43,8 @@ import {
 } from "../../components/ui/dialog";
 import { Label } from "../../components/ui/label";
 import { Input } from "../../components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { Textarea } from "../../components/ui/textarea";
 import { Switch } from "../../components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../components/ui/table";
@@ -125,6 +129,19 @@ export function UserDetail() {
     phone: false,
   });
   const [passwordResetReason, setPasswordResetReason] = useState("");
+  const [feeOverrideForm, setFeeOverrideForm] = useState<{
+    owner_fee_exempt: boolean;
+    renter_fee_exempt: boolean;
+    fee_expires_at: Date | null;
+    fee_expires_time: string;
+  }>({
+    owner_fee_exempt: false,
+    renter_fee_exempt: false,
+    fee_expires_at: null,
+    fee_expires_time: "",
+  });
+  const [feeOverrideReason, setFeeOverrideReason] = useState("");
+  const [feeOverrideSaving, setFeeOverrideSaving] = useState(false);
 
   const [actionLoading, setActionLoading] = useState(false);
 
@@ -162,6 +179,16 @@ export function UserDetail() {
       cancelled = true;
     };
   }, [isValidUserId, numericUserId]);
+
+  useEffect(() => {
+    if (!user) return;
+    setFeeOverrideForm({
+      owner_fee_exempt: Boolean(user.owner_fee_exempt),
+      renter_fee_exempt: Boolean(user.renter_fee_exempt),
+      fee_expires_at: user.fee_expires_at ? new Date(user.fee_expires_at) : null,
+      fee_expires_time: user.fee_expires_at ? formatTimeInput(user.fee_expires_at) : "",
+    });
+  }, [user?.owner_fee_exempt, user?.renter_fee_exempt, user?.fee_expires_at]);
 
   useEffect(() => {
     let cancelled = false;
@@ -279,6 +306,17 @@ export function UserDetail() {
     return parts.length ? parts.join(", ") : "—";
   }, [user]);
 
+  const feeExpiryLabel = useMemo(() => {
+    if (!user?.fee_expires_at) return "None";
+    const parsed = new Date(user.fee_expires_at);
+    if (Number.isNaN(parsed.getTime())) return "Invalid date";
+    try {
+      return format(parsed, "PPpp");
+    } catch {
+      return parsed.toLocaleString();
+    }
+  }, [user?.fee_expires_at]);
+
   const financeSummary = useMemo(() => {
     const spendableKinds = new Set(["OWNER_EARNING", "REFUND", "OWNER_PAYOUT"]);
     let balance = 0;
@@ -327,6 +365,13 @@ export function UserDetail() {
     setResendReason("");
     setResendChannels({ email: Boolean(hasEmail), phone: false });
     setPasswordResetReason("");
+    setFeeOverrideReason("");
+    setFeeOverrideForm({
+      owner_fee_exempt: Boolean(user?.owner_fee_exempt),
+      renter_fee_exempt: Boolean(user?.renter_fee_exempt),
+      fee_expires_at: user?.fee_expires_at ? new Date(user.fee_expires_at) : null,
+      fee_expires_time: user?.fee_expires_at ? formatTimeInput(user.fee_expires_at) : "",
+    });
   };
 
   const openRestrictions = (bookingOnly = false) => {
@@ -411,6 +456,73 @@ export function UserDetail() {
       toast.error(extractErrorMessage(err, "Unable to update permissions."));
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const handleSaveFeeOverrides = async () => {
+    if (!user) return;
+    if (!feeOverrideReason.trim()) {
+      toast.error("A reason is required.");
+      return;
+    }
+    let expiresAtIso: string | null = null;
+    if (feeOverrideForm.fee_expires_at) {
+      const parsed = new Date(feeOverrideForm.fee_expires_at);
+      if (Number.isNaN(parsed.getTime())) {
+        toast.error("Expiry date is invalid.");
+        return;
+      }
+      const timeParts = (feeOverrideForm.fee_expires_time || "00:00").split(":").map((v) => Number(v));
+      if (timeParts.length >= 2 && timeParts.every((n) => Number.isFinite(n))) {
+        parsed.setHours(timeParts[0] ?? 0, timeParts[1] ?? 0, 0, 0);
+      }
+      expiresAtIso = parsed.toISOString();
+    }
+
+    setFeeOverrideSaving(true);
+    try {
+      const payload = {
+        owner_fee_exempt: feeOverrideForm.owner_fee_exempt,
+        renter_fee_exempt: feeOverrideForm.renter_fee_exempt,
+        fee_expires_at: expiresAtIso,
+        reason: feeOverrideReason.trim(),
+      };
+      const response = await operatorAPI.setUserRestrictions(user.id, payload);
+      setUser((prev) =>
+        prev
+          ? {
+              ...prev,
+              owner_fee_exempt:
+                response.owner_fee_exempt ?? payload.owner_fee_exempt ?? prev.owner_fee_exempt,
+              renter_fee_exempt:
+                response.renter_fee_exempt ?? payload.renter_fee_exempt ?? prev.renter_fee_exempt,
+              fee_expires_at:
+                response.fee_expires_at ?? payload.fee_expires_at ?? prev.fee_expires_at ?? null,
+            }
+          : prev,
+      );
+      setFeeOverrideForm({
+        owner_fee_exempt:
+          response.owner_fee_exempt ?? payload.owner_fee_exempt ?? feeOverrideForm.owner_fee_exempt,
+        renter_fee_exempt:
+          response.renter_fee_exempt ??
+          payload.renter_fee_exempt ??
+          feeOverrideForm.renter_fee_exempt,
+        fee_expires_at: response.fee_expires_at
+          ? new Date(response.fee_expires_at)
+          : payload.fee_expires_at
+            ? new Date(payload.fee_expires_at)
+            : feeOverrideForm.fee_expires_at,
+        fee_expires_time: formatTimeInput(
+          response.fee_expires_at ?? payload.fee_expires_at ?? feeOverrideForm.fee_expires_at,
+        ),
+      });
+      setFeeOverrideReason("");
+      toast.success("Fee exemptions updated");
+    } catch (err) {
+      toast.error(extractErrorMessage(err, "Unable to update fee exemptions."));
+    } finally {
+      setFeeOverrideSaving(false);
     }
   };
 
@@ -985,6 +1097,75 @@ export function UserDetail() {
                 }}
                 disabled={!hasEmail && !hasPhone}
               />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Fee exemptions</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Waive platform fees for this user. Expiry is optional and applies to both toggles.
+              </p>
+              <ToggleRow
+                label="Owner fee"
+                description="Waive platform fees charged to the owner for new bookings."
+                checked={feeOverrideForm.owner_fee_exempt}
+                onChange={(value) =>
+                  setFeeOverrideForm((prev) => ({ ...prev, owner_fee_exempt: value }))
+                }
+              />
+              <ToggleRow
+                label="Renter fee"
+                description="Waive renter-facing platform fees for new bookings."
+                checked={feeOverrideForm.renter_fee_exempt}
+                onChange={(value) =>
+                  setFeeOverrideForm((prev) => ({ ...prev, renter_fee_exempt: value }))
+                }
+              />
+              <div className="space-y-2">
+                <Label>Expires at (optional)</Label>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1.4fr_1fr]">
+                  <DatePickerButton
+                    date={feeOverrideForm.fee_expires_at}
+                    onSelectDate={(date) =>
+                      setFeeOverrideForm((prev) => ({ ...prev, fee_expires_at: date }))
+                    }
+                    placeholder="Pick a date"
+                  />
+                  <TimePickerButton
+                    value={feeOverrideForm.fee_expires_time}
+                    onChange={(val) =>
+                      setFeeOverrideForm((prev) => ({
+                        ...prev,
+                        fee_expires_time: val,
+                      }))
+                    }
+                    disabled={!feeOverrideForm.fee_expires_at}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Current expiry: {feeExpiryLabel}. Leave blank for no expiry.
+                </p>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="fee-reason">Reason (required)</Label>
+                <Textarea
+                  id="fee-reason"
+                  placeholder="Explain why fees are waived"
+                  value={feeOverrideReason}
+                  onChange={(e) => setFeeOverrideReason(e.target.value)}
+                />
+              </div>
+              <div className="flex justify-end">
+                <Button
+                  onClick={handleSaveFeeOverrides}
+                  disabled={feeOverrideSaving || !feeOverrideReason.trim()}
+                >
+                  {feeOverrideSaving ? "Saving..." : "Save fee overrides"}
+                </Button>
+              </div>
             </CardContent>
           </Card>
 
@@ -1582,4 +1763,116 @@ function extractErrorMessage(err: any, fallback: string) {
   if (Array.isArray(detail)) return detail.join(" ");
   if (detail) return String(detail);
   return fallback;
+}
+
+function toDatetimeLocalInput(value: string | null | undefined) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (num: number) => String(num).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatTimeInput(value: string | null | undefined) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (num: number) => String(num).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function DatePickerButton({
+  date,
+  onSelectDate,
+  placeholder,
+}: {
+  date: Date | null;
+  onSelectDate: (date: Date | null) => void;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="w-full justify-start text-left font-normal inline-flex items-center gap-2 rounded-md border border-input bg-white px-3 py-2.5 text-sm text-foreground shadow-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          aria-expanded={open}
+        >
+          <CalendarIcon className="mr-1.5 h-4 w-4 text-muted-foreground" />
+          <span className="truncate">
+            {date && !Number.isNaN(date.getTime()) ? format(date, "PPP") : placeholder || "Pick date"}
+          </span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="z-[9999] w-auto p-0" align="start" sideOffset={4}>
+        <CalendarComponent
+          mode="single"
+          selected={date ?? undefined}
+          onSelect={(nextDate) => {
+            onSelectDate(nextDate ?? null);
+            setOpen(false);
+          }}
+          initialFocus
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function TimePickerButton({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (val: string) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const pad = (num: number) => String(num).padStart(2, "0");
+  const options = useMemo(
+    () =>
+      Array.from({ length: 48 }, (_, idx) => {
+        const hours = Math.floor(idx / 2);
+        const minutes = idx % 2 === 0 ? 0 : 30;
+        return `${pad(hours)}:${pad(minutes)}`;
+      }),
+    [],
+  );
+
+  const label = value ? value : "Pick time";
+
+  return (
+    <Popover open={open && !disabled} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          className={`w-full justify-start text-left font-normal inline-flex items-center gap-2 rounded-md border border-input bg-white px-3 py-2.5 text-sm text-foreground shadow-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${disabled ? "opacity-60 cursor-not-allowed" : ""}`}
+          aria-expanded={open}
+        >
+          <Clock className="mr-1.5 h-4 w-4 text-muted-foreground" />
+          <span className="truncate">{label}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="z-[9999] w-40 p-0" align="start" sideOffset={4}>
+        <div className="max-h-64 overflow-y-auto py-2">
+          {options.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              className={`w-full text-left px-3 py-2 text-sm hover:bg-muted ${opt === value ? "bg-muted/80 font-medium" : ""}`}
+              onClick={() => {
+                onChange(opt);
+                setOpen(false);
+              }}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
 }

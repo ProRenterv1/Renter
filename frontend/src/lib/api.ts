@@ -1305,6 +1305,13 @@ export const reviewsAPI = {
     const path = `/reviews/${query ? `?${query}` : ""}`;
     return jsonFetch<Review[]>(path, { method: "GET" });
   },
+  publicList(params: { listing?: number; role?: string } = {}) {
+    const search = new URLSearchParams();
+    if (params.listing !== undefined) search.set("listing", String(params.listing));
+    if (params.role) search.set("role", params.role);
+    const query = search.toString();
+    return jsonFetch<any>(`/reviews/public/${query ? `?${query}` : ""}`, { method: "GET" });
+  },
 };
 
 export const promotionsAPI = {

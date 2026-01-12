@@ -38,12 +38,16 @@ def compute_booking_totals(
     listing: Listing,
     start_date: date,
     end_date: date,
+    renter_fee_bps_override: int | None = None,
+    owner_fee_bps_override: int | None = None,
 ) -> dict[str, str]:
     """
     Compute pricing totals for a booking:
     - Base price: days * listing.daily_price_cad
     - Renter fee: settings.BOOKING_RENTER_FEE_RATE * base
     - Owner fee: settings.BOOKING_OWNER_FEE_RATE * base
+    - Optional renter/owner fee overrides (bps) can force a specific rate;
+      negative values are ignored.
     - Total charge: base + renter_fee + damage_deposit
     - Owner payout: base - owner_fee
 
@@ -75,12 +79,22 @@ def compute_booking_totals(
             rounding=ROUND_HALF_UP
         )
     )
-    platform_fee_bps = get_int("BOOKING_PLATFORM_FEE_BPS", default_platform_fee_bps)
-    owner_fee_bps = get_int("BOOKING_OWNER_FEE_BPS", default_owner_fee_bps)
-    if platform_fee_bps < 0:
-        platform_fee_bps = default_platform_fee_bps
-    if owner_fee_bps < 0:
-        owner_fee_bps = default_owner_fee_bps
+
+    def _resolve_bps(override: int | None, setting_key: str, default_value: int) -> int:
+        if override is not None:
+            try:
+                return max(int(override), 0)
+            except (TypeError, ValueError):
+                return max(default_value, 0)
+        candidate = get_int(setting_key, default_value)
+        return candidate if candidate >= 0 else default_value
+
+    platform_fee_bps = _resolve_bps(
+        renter_fee_bps_override, "BOOKING_PLATFORM_FEE_BPS", default_platform_fee_bps
+    )
+    owner_fee_bps = _resolve_bps(
+        owner_fee_bps_override, "BOOKING_OWNER_FEE_BPS", default_owner_fee_bps
+    )
 
     renter_fee_rate = Decimal(platform_fee_bps) / Decimal("10000")
     owner_fee_rate = Decimal(owner_fee_bps) / Decimal("10000")

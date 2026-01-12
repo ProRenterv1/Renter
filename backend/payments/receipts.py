@@ -20,6 +20,10 @@ from storage import s3 as storage_s3
 
 _TWO_PLACES = Decimal("0.01")
 _ZERO = Decimal("0.00")
+_BRAND_COLOR = (79 / 255, 134 / 255, 182 / 255)  # Kitoro blue
+_BRAND_MUTED_BG = (243 / 255, 248 / 255, 252 / 255)
+_TEXT_PRIMARY = (31 / 255, 42 / 255, 61 / 255)
+_TEXT_MUTED = (80 / 255, 90 / 255, 105 / 255)
 
 
 @dataclass(frozen=True)
@@ -87,36 +91,50 @@ def render_booking_receipt_pdf(booking: Booking) -> bytes:
 
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=letter)
-    pdf.setTitle("Rental Payment Receipt")
+    pdf.setTitle("Kitoro Rental Receipt")
 
     width, height = letter
     margin = 0.9 * inch
     y = height - margin
 
-    business_name = "Renter"
+    business_name = "Kitoro"
     business_email = "asterokamax@gmail.com"
+
+    # Background and header
+    pdf.saveState()
+    pdf.setFillColorRGB(*_BRAND_MUTED_BG)
+    pdf.rect(0, 0, width, height, stroke=0, fill=1)
+    header_height = 1.0 * inch
+    pdf.setFillColorRGB(*_BRAND_COLOR)
+    pdf.rect(0, height - header_height, width, header_height, stroke=0, fill=1)
+    pdf.setFillColorRGB(1, 1, 1)
+    pdf.setFont("Helvetica-Bold", 22)
+    pdf.drawString(margin, height - 0.65 * inch, business_name)
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(margin, height - 0.82 * inch, business_email)
+    pdf.restoreState()
+    y = height - header_height - 0.3 * inch
 
     def new_section(title: str, *, spacing: float = 0.22) -> None:
         nonlocal y
-        pdf.setFont("Helvetica-Bold", 13)
+        pdf.setFont("Helvetica-Bold", 12)
+        pdf.setFillColorRGB(*_BRAND_COLOR)
         pdf.drawString(margin, y, title)
+        pdf.setFillColorRGB(*_TEXT_PRIMARY)
         y -= spacing * inch
 
     def draw_row(label: str, value: str, *, label_width: float = 2.0) -> None:
         nonlocal y
         pdf.setFont("Helvetica-Bold", 10)
+        pdf.setFillColorRGB(*_TEXT_PRIMARY)
         pdf.drawString(margin, y, label)
         pdf.setFont("Helvetica", 10)
+        pdf.setFillColorRGB(*_TEXT_MUTED)
         pdf.drawString(margin + label_width * inch, y, value)
         y -= 0.18 * inch
 
     pdf.setStrokeColorRGB(0.85, 0.85, 0.85)
-    pdf.setFillColorRGB(0, 0, 0)
-
-    pdf.setFont("Helvetica-Bold", 22)
-    pdf.drawString(margin, y, business_name)
-    pdf.setFont("Helvetica", 10)
-    pdf.drawString(margin, y - 0.2 * inch, business_email)
+    pdf.setFillColorRGB(*_TEXT_PRIMARY)
 
     header_x = width - margin - 2.6 * inch
     pdf.setFont("Helvetica-Bold", 10)
@@ -207,37 +225,51 @@ def render_promotion_receipt_pdf(slot: PromotedSlot) -> bytes:
 
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=letter)
-    pdf.setTitle("Promotion Payment Receipt")
+    pdf.setTitle("Kitoro Promotion Receipt")
 
     width, height = letter
     margin = 0.9 * inch
     y = height - margin
 
-    business_name = "Renter"
+    business_name = "Kitoro"
     business_email = "asterokamax@gmail.com"
     receipt_id = getattr(slot, "id", None) or getattr(slot, "pk", None) or "N/A"
 
+    # Background and header
+    pdf.saveState()
+    pdf.setFillColorRGB(*_BRAND_MUTED_BG)
+    pdf.rect(0, 0, width, height, stroke=0, fill=1)
+    header_height = 1.0 * inch
+    pdf.setFillColorRGB(*_BRAND_COLOR)
+    pdf.rect(0, height - header_height, width, header_height, stroke=0, fill=1)
+    pdf.setFillColorRGB(1, 1, 1)
+    pdf.setFont("Helvetica-Bold", 22)
+    pdf.drawString(margin, height - 0.65 * inch, business_name)
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(margin, height - 0.82 * inch, business_email)
+    pdf.restoreState()
+    y = height - header_height - 0.3 * inch
+
     def new_section(title: str, *, spacing: float = 0.22) -> None:
         nonlocal y
-        pdf.setFont("Helvetica-Bold", 13)
+        pdf.setFont("Helvetica-Bold", 12)
+        pdf.setFillColorRGB(*_BRAND_COLOR)
         pdf.drawString(margin, y, title)
+        pdf.setFillColorRGB(*_TEXT_PRIMARY)
         y -= spacing * inch
 
     def draw_row(label: str, value: str, *, label_width: float = 2.0) -> None:
         nonlocal y
         pdf.setFont("Helvetica-Bold", 10)
+        pdf.setFillColorRGB(*_TEXT_PRIMARY)
         pdf.drawString(margin, y, label)
         pdf.setFont("Helvetica", 10)
+        pdf.setFillColorRGB(*_TEXT_MUTED)
         pdf.drawString(margin + label_width * inch, y, value)
         y -= 0.18 * inch
 
     pdf.setStrokeColorRGB(0.85, 0.85, 0.85)
-    pdf.setFillColorRGB(0, 0, 0)
-
-    pdf.setFont("Helvetica-Bold", 22)
-    pdf.drawString(margin, y, business_name)
-    pdf.setFont("Helvetica", 10)
-    pdf.drawString(margin, y - 0.2 * inch, business_email)
+    pdf.setFillColorRGB(*_TEXT_PRIMARY)
 
     header_x = width - margin - 2.6 * inch
     pdf.setFont("Helvetica-Bold", 10)

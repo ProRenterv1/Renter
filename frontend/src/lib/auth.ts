@@ -26,6 +26,9 @@ export type UserProfile = {
   two_factor_email_enabled: boolean;
   two_factor_sms_enabled: boolean;
   identity_verified?: boolean;
+  owner_fee_exempt?: boolean;
+  renter_fee_exempt?: boolean;
+  fee_expires_at?: string | null;
   avatar_url?: string | null;
   avatar_uploaded?: boolean;
   date_joined?: string;

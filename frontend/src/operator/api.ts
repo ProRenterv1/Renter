@@ -429,6 +429,9 @@ export type OperatorUserListItem = {
   city: string | null;
   can_rent: boolean;
   can_list: boolean;
+  owner_fee_exempt: boolean;
+  renter_fee_exempt: boolean;
+  fee_expires_at: string | null;
   is_active: boolean;
   date_joined: string;
   listings_count: number;
@@ -586,7 +589,13 @@ export type OperatorJobRun = {
 
 type ReasonPayload = { reason: string };
 type SuspiciousPayload = ReasonPayload & { level: string; category: string; note?: string | null };
-type RestrictionsPayload = ReasonPayload & { can_rent?: boolean; can_list?: boolean };
+type RestrictionsPayload = ReasonPayload & {
+  can_rent?: boolean;
+  can_list?: boolean;
+  owner_fee_exempt?: boolean;
+  renter_fee_exempt?: boolean;
+  fee_expires_at?: string | null;
+};
 
 export type OperatorUserListParams = Partial<{
   id: number;
@@ -1100,7 +1109,15 @@ export const operatorAPI = {
     );
   },
   setUserRestrictions(userId: number, payload: RestrictionsPayload) {
-    return jsonFetch<{ ok: boolean; user_id: number; can_rent: boolean; can_list: boolean }>(
+    return jsonFetch<{
+      ok: boolean;
+      user_id: number;
+      can_rent: boolean;
+      can_list: boolean;
+      owner_fee_exempt?: boolean;
+      renter_fee_exempt?: boolean;
+      fee_expires_at?: string | null;
+    }>(
       `/operator/users/${userId}/set-restrictions/`,
       { method: "POST", body: payload },
     );
