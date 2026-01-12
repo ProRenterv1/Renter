@@ -13,6 +13,7 @@ from django.db.models import (
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics, status
 from rest_framework.pagination import PageNumberPagination
@@ -28,7 +29,7 @@ from operator_users.filters import OperatorUserFilter
 from operator_users.models import UserRiskFlag
 from operator_users.serializers import OperatorUserDetailSerializer, OperatorUserListSerializer
 from users.api import _safe_notify
-from users.models import ContactVerificationChallenge, PasswordResetChallenge
+from users.models import ContactVerificationChallenge, PasswordResetChallenge, UserFeeOverride
 
 User = get_user_model()
 
@@ -51,6 +52,7 @@ class OperatorUserPagination(PageNumberPagination):
 def _annotated_staff_queryset():
     return (
         User.objects.all()
+        .select_related("fee_override")
         .annotate(
             listings_count=Count("listings", distinct=True),
             bookings_as_renter_count=Count("bookings_as_renter", distinct=True),
@@ -237,14 +239,44 @@ class OperatorUserSetRestrictionsView(OperatorUserActionBase):
 
         can_rent = payload.get("can_rent", None)
         can_list = payload.get("can_list", None)
-        if can_rent is None and can_list is None:
+        owner_fee_exempt = payload.get("owner_fee_exempt", None)
+        renter_fee_exempt = payload.get("renter_fee_exempt", None)
+        fee_expires_at_raw = payload.get("fee_expires_at", None)
+        if (
+            can_rent is None
+            and can_list is None
+            and owner_fee_exempt is None
+            and renter_fee_exempt is None
+            and fee_expires_at_raw is None
+        ):
             return Response(
-                {"detail": "can_rent or can_list is required"},
+                {
+                    "detail": (
+                        "one of can_rent, can_list, owner_fee_exempt, "
+                        "renter_fee_exempt, or fee_expires_at is required"
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         updates = {}
-        before = {"can_rent": user.can_rent, "can_list": user.can_list}
+        current_override = getattr(user, "fee_override", None)
+
+        def _dt(val):
+            if not val:
+                return None
+            try:
+                return val.isoformat()
+            except Exception:
+                return str(val)
+
+        before = {
+            "can_rent": user.can_rent,
+            "can_list": user.can_list,
+            "owner_fee_exempt": user.owner_fee_exempt,
+            "renter_fee_exempt": user.renter_fee_exempt,
+            "fee_expires_at": _dt(getattr(current_override, "expires_at", None)),
+        }
 
         def _normalize_bool(value):
             if isinstance(value, bool):
@@ -272,12 +304,71 @@ class OperatorUserSetRestrictionsView(OperatorUserActionBase):
                 )
             updates["can_list"] = parsed
 
+        override_updates = {}
+        if owner_fee_exempt is not None:
+            parsed = _normalize_bool(owner_fee_exempt)
+            if parsed is None:
+                return Response(
+                    {"detail": "owner_fee_exempt must be boolean"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            override_updates["owner_fee_exempt"] = parsed
+            updates.setdefault("owner_fee_exempt", parsed)
+        if renter_fee_exempt is not None:
+            parsed = _normalize_bool(renter_fee_exempt)
+            if parsed is None:
+                return Response(
+                    {"detail": "renter_fee_exempt must be boolean"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            override_updates["renter_fee_exempt"] = parsed
+            updates.setdefault("renter_fee_exempt", parsed)
+
+        expires_at_provided = fee_expires_at_raw is not None
+        if expires_at_provided:
+            normalized_raw = fee_expires_at_raw
+            if isinstance(normalized_raw, str) and not normalized_raw.strip():
+                normalized_raw = None
+            expires_at = None
+            if normalized_raw is not None:
+                parsed_dt = parse_datetime(str(normalized_raw))
+                if parsed_dt is None:
+                    return Response(
+                        {"detail": "fee_expires_at must be an ISO 8601 datetime"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if timezone.is_naive(parsed_dt):
+                    parsed_dt = timezone.make_aware(parsed_dt, timezone.get_current_timezone())
+                expires_at = parsed_dt
+            override_updates["expires_at"] = expires_at
+
         if updates:
             for field, value in updates.items():
                 setattr(user, field, value)
-            user.save(update_fields=list(updates.keys()))
+            update_fields = list(updates.keys())
+            user.save(update_fields=update_fields)
 
-        after = {"can_rent": user.can_rent, "can_list": user.can_list}
+        if override_updates:
+            if current_override is None:
+                override = UserFeeOverride.objects.create(user=user, **override_updates)
+            else:
+                for field, value in override_updates.items():
+                    setattr(current_override, field, value)
+                update_fields = list(override_updates.keys())
+                if "updated_at" not in update_fields:
+                    update_fields.append("updated_at")
+                current_override.save(update_fields=update_fields)
+                override = current_override
+            user.fee_override = override
+
+        after_override = getattr(user, "fee_override", None)
+        after = {
+            "can_rent": user.can_rent,
+            "can_list": user.can_list,
+            "owner_fee_exempt": getattr(user, "owner_fee_exempt", False),
+            "renter_fee_exempt": getattr(user, "renter_fee_exempt", False),
+            "fee_expires_at": _dt(getattr(after_override, "expires_at", None)),
+        }
         self._audit_user(
             request,
             user,

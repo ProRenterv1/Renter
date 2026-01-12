@@ -274,11 +274,17 @@ class BookingSerializer(serializers.ModelSerializer):
         end_date = validated_data["end_date"]
         payment_method_id = validated_data.pop("stripe_payment_method_id", "") or ""
         customer_id = validated_data.pop("stripe_customer_id", "") or ""
+        renter_override = user.active_fee_overrides()
+        owner_override = (
+            listing.owner.active_fee_overrides() if listing and listing.owner_id else None
+        )
 
         totals = compute_booking_totals(
             listing=listing,
             start_date=start_date,
             end_date=end_date,
+            renter_fee_bps_override=0 if renter_override.get("renter_fee_exempt") else None,
+            owner_fee_bps_override=0 if (owner_override or {}).get("owner_fee_exempt") else None,
         )
 
         with transaction.atomic():

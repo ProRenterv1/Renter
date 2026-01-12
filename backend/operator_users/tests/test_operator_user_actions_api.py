@@ -1,9 +1,11 @@
 import importlib
+from datetime import timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.urls import clear_url_caches
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 import renter.urls as renter_urls
@@ -121,6 +123,38 @@ def test_set_restrictions(operator_user, target_user):
     assert event.reason == "limit account"
     assert event.after_json["can_rent"] is False
     assert event.after_json["can_list"] is False
+
+
+def test_set_restrictions_updates_fee_overrides(operator_user, target_user):
+    client = _authed_client(operator_user)
+    expires_at = (timezone.now() + timedelta(days=2)).isoformat()
+
+    resp = client.post(
+        f"/api/operator/users/{target_user.id}/set-restrictions/",
+        {
+            "owner_fee_exempt": True,
+            "renter_fee_exempt": True,
+            "fee_expires_at": expires_at,
+            "reason": "fee waiver",
+        },
+        format="json",
+    )
+
+    assert resp.status_code == 200, resp.data
+    target_user.refresh_from_db()
+    assert target_user.owner_fee_exempt is True
+    assert target_user.renter_fee_exempt is True
+    override = getattr(target_user, "fee_override", None)
+    assert override is not None
+    assert override.owner_fee_exempt is True
+    assert override.renter_fee_exempt is True
+    assert override.expires_at is not None
+    event = OperatorAuditEvent.objects.filter(action="operator.user.set_restrictions").latest(
+        "created_at"
+    )
+    assert event.after_json["owner_fee_exempt"] is True
+    assert event.after_json["renter_fee_exempt"] is True
+    assert event.after_json["fee_expires_at"] is not None
 
 
 def test_mark_suspicious_creates_risk_flag_and_audit(operator_user, target_user):

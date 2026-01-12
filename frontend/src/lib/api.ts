@@ -997,6 +997,24 @@ export const platformAPI = {
   },
 };
 
+export const reviewsAPI = {
+  list(params: { subject?: number; role?: string; booking?: number } = {}) {
+    const search = new URLSearchParams();
+    if (params.subject !== undefined) search.set("subject", String(params.subject));
+    if (params.role) search.set("role", params.role);
+    if (params.booking !== undefined) search.set("booking", String(params.booking));
+    const query = search.toString();
+    return jsonFetch<any>(`/reviews/${query ? `?${query}` : ""}`, { method: "GET" });
+  },
+  publicList(params: { listing?: number; role?: string } = {}) {
+    const search = new URLSearchParams();
+    if (params.listing !== undefined) search.set("listing", String(params.listing));
+    if (params.role) search.set("role", params.role);
+    const query = search.toString();
+    return jsonFetch<any>(`/reviews/public/${query ? `?${query}` : ""}`, { method: "GET" });
+  },
+};
+
 export const usersAPI = {
   publicProfile(userId: number) {
     return jsonFetch<PublicProfile>(`/users/public/${userId}/`, {

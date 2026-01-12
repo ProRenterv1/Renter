@@ -65,7 +65,7 @@ export function TopBar({
       <div className="flex items-center gap-6 flex-1">
         {/* Breadcrumb */}
         <div className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">Renter Ops</span>
+          <span className="text-muted-foreground">Kitoro Ops</span>
           <ChevronRight className="w-4 h-4 text-muted-foreground" />
           <span className="text-foreground">{viewLabels[currentView]}</span>
         </div>

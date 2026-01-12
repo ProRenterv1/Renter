@@ -190,9 +190,9 @@ export default function PricingPage() {
             Questions about fees or payouts? Reach the team at{" "}
             <a
               className="text-foreground underline underline-offset-4"
-              href="mailto:support@renter.com"
+              href="mailto:support@kitoro.com"
             >
-              support@renter.com
+              support@kitoro.com
             </a>
             .
           </p>

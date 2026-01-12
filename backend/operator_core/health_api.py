@@ -233,7 +233,7 @@ class OperatorHealthTestEmailView(APIView):
         if not to_email:
             return Response({"detail": "to is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        subject = "[Renter] Operator health test email"
+        subject = "[Kitoro] Operator health test email"
         body = (
             "This is a test email sent from /api/operator/health/test-email/ "
             "to verify email configuration."

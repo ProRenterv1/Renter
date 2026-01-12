@@ -1,14 +1,33 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 
-from .models import LoginEvent, PasswordResetChallenge, User
+from .models import LoginEvent, PasswordResetChallenge, User, UserFeeOverride
+
+
+class UserFeeOverrideInline(admin.StackedInline):
+    model = UserFeeOverride
+    extra = 0
+    max_num = 1
+    fields = ("owner_fee_exempt", "renter_fee_exempt", "expires_at")
+    classes = ("collapse",)
 
 
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
-    list_display = ("username", "email", "phone", "can_rent", "can_list", "is_staff", "is_active")
+    list_display = (
+        "username",
+        "email",
+        "phone",
+        "can_rent",
+        "can_list",
+        "owner_fee_exempt",
+        "renter_fee_exempt",
+        "is_staff",
+        "is_active",
+    )
     fieldsets = BaseUserAdmin.fieldsets + (
         ("Capabilities", {"fields": ("can_rent", "can_list")}),
+        ("Fee overrides", {"fields": ("owner_fee_exempt", "renter_fee_exempt")}),
         (
             "Address",
             {
@@ -36,6 +55,7 @@ class UserAdmin(BaseUserAdmin):
     )
     add_fieldsets = BaseUserAdmin.add_fieldsets + (
         ("Capabilities", {"fields": ("can_rent", "can_list")}),
+        ("Fee overrides", {"fields": ("owner_fee_exempt", "renter_fee_exempt")}),
         (
             "Address",
             {
@@ -60,6 +80,7 @@ class UserAdmin(BaseUserAdmin):
         ),
     )
     readonly_fields = BaseUserAdmin.readonly_fields + ("last_login_ip", "last_login_ua")
+    inlines = (UserFeeOverrideInline,)
 
 
 @admin.register(LoginEvent)

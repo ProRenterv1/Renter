@@ -80,11 +80,19 @@ def _decimal_from_value(value: object, default: str | Decimal = "0") -> Decimal:
 
 def _ensure_booking_totals(booking: Booking) -> dict[str, str]:
     totals = booking.totals or {}
-    if "rental_subtotal" not in totals:
+    if "rental_subtotal" not in totals or "total_charge" not in totals:
+        renter_override = (
+            booking.renter.active_fee_overrides() if getattr(booking, "renter", None) else {}
+        )
+        owner_override = (
+            booking.owner.active_fee_overrides() if getattr(booking, "owner", None) else {}
+        )
         totals = compute_booking_totals(
             listing=booking.listing,
             start_date=booking.start_date,
             end_date=booking.end_date,
+            renter_fee_bps_override=0 if renter_override.get("renter_fee_exempt") else None,
+            owner_fee_bps_override=0 if owner_override.get("owner_fee_exempt") else None,
         )
         booking.totals = totals
         booking.save(update_fields=["totals", "updated_at"])
@@ -192,7 +200,15 @@ class BookingViewSet(viewsets.ModelViewSet):
         if not user.is_authenticated:
             return Booking.objects.none()
         return (
-            Booking.objects.select_related("listing", "listing__owner", "owner", "renter")
+            Booking.objects.select_related(
+                "listing",
+                "listing__owner",
+                "listing__owner__fee_override",
+                "owner",
+                "owner__fee_override",
+                "renter",
+                "renter__fee_override",
+            )
             .prefetch_related("listing__photos")
             .filter(Q(owner=user) | Q(renter=user))
             .order_by("-created_at")
@@ -202,7 +218,13 @@ class BookingViewSet(viewsets.ModelViewSet):
         """Fetch a single booking and enforce participant permissions."""
         obj = get_object_or_404(
             Booking.objects.select_related(
-                "listing", "listing__owner", "owner", "renter"
+                "listing",
+                "listing__owner",
+                "listing__owner__fee_override",
+                "owner",
+                "owner__fee_override",
+                "renter",
+                "renter__fee_override",
             ).prefetch_related("listing__photos"),
             pk=self.kwargs["pk"],
         )
@@ -335,11 +357,7 @@ class BookingViewSet(viewsets.ModelViewSet):
             return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
 
         if not booking.totals or "total_charge" not in booking.totals:
-            booking.totals = compute_booking_totals(
-                listing=booking.listing,
-                start_date=booking.start_date,
-                end_date=booking.end_date,
-            )
+            booking.totals = _ensure_booking_totals(booking)
 
         booking.status = Booking.Status.CONFIRMED
         booking.save(update_fields=["status", "totals", "updated_at"])

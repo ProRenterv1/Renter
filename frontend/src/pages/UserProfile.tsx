@@ -442,7 +442,7 @@ export default function UserProfile() {
 
       {/* Footer */}
       <footer className="border-t py-6 text-center text-sm" style={{ color: "var(--text-muted)" }}>
-        © 2025 Renter. All rights reserved.
+        © 2025 Kitoro. All rights reserved.
       </footer>
     </div>
   );

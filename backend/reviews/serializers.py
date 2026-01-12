@@ -103,3 +103,46 @@ class ReviewSerializer(serializers.ModelSerializer):
         review = Review.objects.create(**validated_data)
         update_user_review_stats(review.subject)
         return review
+
+
+class PublicReviewSerializer(serializers.ModelSerializer):
+    author_name = serializers.SerializerMethodField()
+    author_initials = serializers.SerializerMethodField()
+    author_avatar_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Review
+        fields = (
+            "id",
+            "role",
+            "rating",
+            "text",
+            "created_at",
+            "author_name",
+            "author_initials",
+            "author_avatar_url",
+        )
+        read_only_fields = fields
+
+    def get_author_name(self, obj: Review) -> str:
+        user = getattr(obj, "author", None)
+        if not user:
+            return "User"
+        full_name = (getattr(user, "get_full_name", lambda: "")() or "").strip()
+        if full_name:
+            return full_name
+        return getattr(user, "username", "") or "User"
+
+    def get_author_initials(self, obj: Review) -> str:
+        name = self.get_author_name(obj)
+        parts = name.split()
+        if parts:
+            return "".join(p[0].upper() for p in parts if p)[:2] or "U"
+        username = getattr(getattr(obj, "author", None), "username", "") or "U"
+        return username[:2].upper()
+
+    def get_author_avatar_url(self, obj: Review) -> str:
+        user = getattr(obj, "author", None)
+        if not user:
+            return ""
+        return getattr(user, "avatar_url", "") or ""

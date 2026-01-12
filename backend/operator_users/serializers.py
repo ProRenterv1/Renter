@@ -23,6 +23,9 @@ class OperatorUserListSerializer(serializers.ModelSerializer):
     disputes_count = serializers.IntegerField(read_only=True)
     identity_verified = serializers.SerializerMethodField()
     active_risk_flag = serializers.SerializerMethodField()
+    owner_fee_exempt = serializers.SerializerMethodField()
+    renter_fee_exempt = serializers.SerializerMethodField()
+    fee_expires_at = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -42,6 +45,9 @@ class OperatorUserListSerializer(serializers.ModelSerializer):
             "is_active",
             "date_joined",
             "identity_verified",
+            "owner_fee_exempt",
+            "renter_fee_exempt",
+            "fee_expires_at",
             *BASE_COUNT_FIELDS,
         ]
         read_only_fields = fields
@@ -91,6 +97,24 @@ class OperatorUserListSerializer(serializers.ModelSerializer):
             "created_by_label": creator_label,
         }
 
+    def _fee_overrides(self, obj: User) -> dict[str, object]:
+        try:
+            return obj.active_fee_overrides()
+        except Exception:
+            return {"owner_fee_exempt": False, "renter_fee_exempt": False, "expires_at": None}
+
+    def get_owner_fee_exempt(self, obj: User) -> bool:
+        overrides = self._fee_overrides(obj)
+        return bool(overrides.get("owner_fee_exempt"))
+
+    def get_renter_fee_exempt(self, obj: User) -> bool:
+        overrides = self._fee_overrides(obj)
+        return bool(overrides.get("renter_fee_exempt"))
+
+    def get_fee_expires_at(self, obj: User):
+        overrides = self._fee_overrides(obj)
+        return overrides.get("expires_at")
+
 
 class OperatorUserDetailSerializer(OperatorUserListSerializer):
     last_login_ip = serializers.SerializerMethodField()
@@ -121,6 +145,9 @@ class OperatorUserDetailSerializer(OperatorUserListSerializer):
             "last_login_ip",
             "last_login_ua",
             "bookings",
+            "owner_fee_exempt",
+            "renter_fee_exempt",
+            "fee_expires_at",
             *BASE_COUNT_FIELDS,
         ]
         read_only_fields = fields

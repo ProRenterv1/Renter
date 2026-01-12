@@ -397,7 +397,11 @@ export function UsersList() {
                   onRowClick={handleRowClick}
                   getRowId={(user) => user.id}
                   getRowClassName={(user) =>
-                    user.active_risk_flag ? 'bg-rose-50 hover:bg-rose-100/80' : undefined
+                    user.active_risk_flag
+                      ? 'bg-rose-50 hover:bg-rose-100/80'
+                      : user.owner_fee_exempt || user.renter_fee_exempt
+                        ? 'bg-sky-50 hover:bg-sky-100/80'
+                        : undefined
                   }
                   page={page}
                   pageSize={pageSize}

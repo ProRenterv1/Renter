@@ -21,7 +21,13 @@ import { LoginModal } from "../components/LoginModal";
 import { Header } from "../components/Header";
 import { addDays, format } from "date-fns";
 import { useNavigate } from "react-router-dom";
-import { bookingsAPI, usersAPI, type Listing as ApiListing, type PublicProfile } from "@/lib/api";
+import {
+  bookingsAPI,
+  usersAPI,
+  reviewsAPI,
+  type Listing as ApiListing,
+  type PublicProfile,
+} from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
 import { startConversationForListing } from "@/lib/chat";
 import { cn, formatCurrency, parseMoney } from "@/lib/utils";
@@ -38,11 +44,14 @@ const SERVICE_FEE_RATE = 0.1;
 
 interface Review {
   id: number;
-  userName: string;
-  userAvatar: string;
+  authorId: number;
+  subjectId: number;
   rating: number;
   date: string;
   comment: string;
+  role: "owner_to_renter" | "renter_to_owner";
+  userName: string;
+  userAvatar: string;
   userVerified?: boolean;
 }
 
@@ -92,6 +101,8 @@ export default function Booking({
     "login",
   );
   const [ownerProfile, setOwnerProfile] = useState<PublicProfile | null>(null);
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [reviewsLoading, setReviewsLoading] = useState(false);
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
   const [currentUser, setCurrentUser] = useState(() => AuthStore.getCurrentUser());
 
@@ -125,6 +136,42 @@ export default function Booking({
       isMounted = false;
     };
   }, [listing?.owner]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadReviews = async () => {
+      if (!listing?.id) {
+        setReviews([]);
+        return;
+      }
+      setReviewsLoading(true);
+      try {
+        const resp = await reviewsAPI.publicList({ listing: listing.id, role: "renter_to_owner" });
+        const rawReviews = Array.isArray(resp) ? resp : Array.isArray(resp?.results) ? resp.results : [];
+        const mapped: Review[] = rawReviews.map((item: any) => ({
+          id: item.id,
+          authorId: item.author,
+          subjectId: item.subject,
+          rating: item.rating || 0,
+          date: item.created_at,
+          comment: item.text || "",
+          role: item.role,
+          userName: item.author_name || `Renter #${item.author ?? ""}`.trim(),
+          userAvatar: item.author_avatar_url || "",
+          userVerified: true,
+        }));
+        if (!cancelled) setReviews(mapped);
+      } catch (err) {
+        if (!cancelled) setReviews([]);
+      } finally {
+        if (!cancelled) setReviewsLoading(false);
+      }
+    };
+    void loadReviews();
+    return () => {
+      cancelled = true;
+    };
+  }, [listing?.id]);
 
   useEffect(() => {
     setIsDescriptionExpanded(false);
@@ -225,7 +272,6 @@ export default function Booking({
   const categoryName = listing.category_name || "Other";
   const tags = categoryName ? [categoryName] : [];
 
-  const reviews: Review[] = [];
   const averageRating = reviews.length
     ? reviews.reduce((sum, review) => sum + review.rating, 0) / reviews.length
     : 0;
@@ -323,7 +369,9 @@ export default function Booking({
   const safeRentalDays = numberOfDays > 0 ? numberOfDays : 0;
   const rentalSubtotal = roundToCents(safeRentalDays * pricePerDay);
   const serviceFee = roundToCents(rentalSubtotal * SERVICE_FEE_RATE);
-  const chargeToday = roundToCents(rentalSubtotal + serviceFee);
+  const renterFeeWaived = Boolean(currentUser?.renter_fee_exempt);
+  const displayedServiceFee = renterFeeWaived ? 0 : serviceFee;
+  const chargeToday = roundToCents(rentalSubtotal + displayedServiceFee);
   const damageDepositHold = roundToCents(damageDepositAmount);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -773,8 +821,22 @@ export default function Booking({
                           <span className="text-muted-foreground">
                             Service fee
                           </span>
-                          <span>{formatCurrency(serviceFee)}</span>
+                          {renterFeeWaived ? (
+                            <div className="flex items-center gap-2">
+                              <span className="text-muted-foreground line-through">
+                                {formatCurrency(serviceFee)}
+                              </span>
+                              <span className="font-semibold">{formatCurrency(0)}</span>
+                            </div>
+                          ) : (
+                            <span>{formatCurrency(displayedServiceFee)}</span>
+                          )}
                         </div>
+                        {renterFeeWaived ? (
+                          <p className="text-xs text-emerald-700">
+                            Renter fee waived for your account.
+                          </p>
+                        ) : null}
                         <Separator />
                         <div className="flex items-center justify-between text-[18px]">
                           <span style={{ fontFamily: "Manrope" }}>Charge today</span>
@@ -927,50 +989,56 @@ export default function Booking({
               </div>
 
               <div className="space-y-6">
-                {reviews.map((review) => (
-                  <div key={review.id}>
-                    <div className="flex items-start gap-4">
-                      <VerifiedAvatar
-                        isVerified={Boolean(review.userVerified)}
-                        className="w-12 h-12"
-                      >
-                        <AvatarImage src={review.userAvatar} />
-                        <AvatarFallback>
-                          {review.userName
-                            .split(" ")
-                            .map((n) => n[0])
-                            .join("")}
-                        </AvatarFallback>
-                      </VerifiedAvatar>
-                      <div className="flex-1">
-                        <div className="flex items-center justify-between mb-1">
-                          <p style={{ fontFamily: "Manrope" }}>
-                            {review.userName}
+                {reviewsLoading ? (
+                  <p className="text-muted-foreground text-sm">Loading reviews…</p>
+                ) : reviews.length ? (
+                  reviews.map((review, idx) => (
+                    <div key={review.id}>
+                      <div className="flex items-start gap-4">
+                        <VerifiedAvatar
+                          isVerified={Boolean(review.userVerified)}
+                          className="w-12 h-12"
+                        >
+                          <AvatarImage src={review.userAvatar} />
+                          <AvatarFallback>
+                            {review.userName
+                              .split(" ")
+                              .map((n) => n[0])
+                              .join("")}
+                          </AvatarFallback>
+                        </VerifiedAvatar>
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between mb-1">
+                            <p style={{ fontFamily: "Manrope" }}>
+                              {review.userName}
+                            </p>
+                            <span className="text-muted-foreground">
+                              {format(new Date(review.date), "PP")}
+                            </span>
+                          </div>
+                          <div className="flex gap-1 mb-2">
+                            {Array.from({ length: 5 }).map((_, i) => (
+                              <Star
+                                key={i}
+                                className={`w-4 h-4 ${
+                                  i < review.rating
+                                    ? "fill-yellow-400 text-yellow-400"
+                                    : "text-gray-300"
+                                }`}
+                              />
+                            ))}
+                          </div>
+                          <p className="text-muted-foreground">
+                            {review.comment || "No comment left."}
                           </p>
-                          <span className="text-muted-foreground">
-                            {review.date}
-                          </span>
                         </div>
-                        <div className="flex gap-1 mb-2">
-                          {Array.from({ length: 5 }).map((_, i) => (
-                            <Star
-                              key={i}
-                              className={`w-4 h-4 ${
-                                i < review.rating
-                                  ? "fill-yellow-400 text-yellow-400"
-                                  : "text-gray-300"
-                              }`}
-                            />
-                          ))}
-                        </div>
-                        <p className="text-muted-foreground">{review.comment}</p>
                       </div>
+                      {idx !== reviews.length - 1 && <Separator className="mt-6" />}
                     </div>
-                    {review.id !== reviews[reviews.length - 1].id && (
-                      <Separator className="mt-6" />
-                    )}
-                  </div>
-                ))}
+                  ))
+                ) : (
+                  <p className="text-muted-foreground text-sm">No reviews yet for this owner.</p>
+                )}
               </div>
             </div>
           </div>

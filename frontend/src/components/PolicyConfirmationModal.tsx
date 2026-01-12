@@ -65,7 +65,7 @@ export function PolicyConfirmationModal({
         <h2 className="text-lg font-semibold">{title}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Before continuing, please review how cancellations, late returns, and damage deposits are
-          handled on Renter.
+          handled on Kitoro.
         </p>
 
         <div className="mt-4 max-h-72 overflow-y-auto rounded-2xl border border-[#F3D2A8] bg-[#FFF3E3] p-4 text-sm leading-relaxed text-slate-800">

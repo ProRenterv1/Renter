@@ -1,6 +1,6 @@
-# Security Policy – Renter Platform
+# Security Policy – Kitoro Platform
 
-This document describes the current security posture of the Renter codebase
+This document describes the current security posture of the Kitoro codebase
 (Django + DRF backend, React frontend, Stripe, S3, Redis, Celery) and the
 expected practices for contributors.
 
