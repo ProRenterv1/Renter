@@ -430,9 +430,16 @@ class BookingViewSet(viewsets.ModelViewSet):
                     {"detail": "Temporary payment issue while refunding; please retry."},
                     status=status.HTTP_503_SERVICE_UNAVAILABLE,
                 )
-            except StripePaymentError as exc:
-                message = str(exc) or "Unable to process refund for this cancellation."
-                return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+            except StripePaymentError:
+                logger.warning(
+                    "Stripe payment error while canceling booking %s",
+                    booking.id,
+                    exc_info=True,
+                )
+                return Response(
+                    {"detail": "Unable to process refund for this cancellation."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             except StripeConfigurationError:
                 logger.exception(
                     "Stripe configuration error while canceling booking %s", booking.id
@@ -519,9 +526,16 @@ class BookingViewSet(viewsets.ModelViewSet):
                 {"detail": "Payment processor not configured; please try again later."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        except StripePaymentError as exc:
-            message = str(exc) or "Unable to process late fee."
-            return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+        except StripePaymentError:
+            logger.warning(
+                "Stripe payment error while charging late fee for booking %s",
+                booking.id,
+                exc_info=True,
+            )
+            return Response(
+                {"detail": "Unable to process late fee."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         owner_extra = _quantize_money(pricing["owner_payout_per_day"] * multiplier)
         if owner_extra > Decimal("0"):
@@ -627,9 +641,16 @@ class BookingViewSet(viewsets.ModelViewSet):
                 {"detail": "Payment processor not configured; please try again later."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        except StripePaymentError as exc:
-            message = str(exc) or "Unable to capture deposit hold."
-            return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+        except StripePaymentError:
+            logger.warning(
+                "Stripe payment error while capturing deposit for booking %s",
+                booking.id,
+                exc_info=True,
+            )
+            return Response(
+                {"detail": "Unable to capture deposit hold."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         logger.info(
             "chat: Booking %s marked as not returned, deposit captured (%s).",
@@ -1222,9 +1243,16 @@ class BookingViewSet(viewsets.ModelViewSet):
                 {"detail": "Temporary payment issue, please retry."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        except StripePaymentError as exc:
-            message = str(exc) or "Payment could not be completed."
-            return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+        except StripePaymentError:
+            logger.warning(
+                "Stripe payment error while ensuring customer for booking %s",
+                booking.id,
+                exc_info=True,
+            )
+            return Response(
+                {"detail": "Payment could not be completed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             charge_id = call_stripe_callable(
@@ -1248,9 +1276,16 @@ class BookingViewSet(viewsets.ModelViewSet):
                 {"detail": "Temporary payment issue, please retry."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        except StripePaymentError as exc:
-            message = str(exc) or "Payment could not be completed."
-            return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+        except StripePaymentError:
+            logger.warning(
+                "Stripe payment error while creating charge intent for booking %s",
+                booking.id,
+                exc_info=True,
+            )
+            return Response(
+                {"detail": "Payment could not be completed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         booking.charge_payment_intent_id = charge_id or ""
         booking.renter_stripe_customer_id = customer_id or ""

@@ -1,5 +1,6 @@
 import csv
 import io
+import logging
 from datetime import datetime, time
 from decimal import Decimal, InvalidOperation
 
@@ -27,6 +28,8 @@ from operator_finance.serializers import (
 )
 from payments.models import Transaction
 from payments.stripe_api import StripePaymentError
+
+logger = logging.getLogger(__name__)
 
 FINANCE_ROLES = ("operator_finance", "operator_admin")
 
@@ -144,8 +147,13 @@ class OperatorBookingRefundView(APIView):
         if amount_raw not in (None, ""):
             try:
                 amount_cents = _parse_amount_to_cents(amount_raw)
-            except ValueError as exc:
-                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            except ValueError:
+                logger.warning(
+                    "Invalid refund amount provided by operator",
+                    extra={"booking_id": booking.id, "operator_id": request.user.id},
+                    exc_info=True,
+                )
+                return Response({"detail": "Invalid amount."}, status=status.HTTP_400_BAD_REQUEST)
 
         before = {
             "charge_payment_intent_id": booking.charge_payment_intent_id,
@@ -155,8 +163,16 @@ class OperatorBookingRefundView(APIView):
             refund_id, refunded_cents = settlement.refund_booking_charge(
                 booking, amount_cents, dispute_id=None
             )
-        except StripePaymentError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except StripePaymentError:
+            logger.warning(
+                "Stripe payment error while operator refunding booking",
+                extra={"booking_id": booking.id, "operator_id": request.user.id},
+                exc_info=True,
+            )
+            return Response(
+                {"detail": "Unable to process refund for this booking."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         after = {
             "refund_id": refund_id,
@@ -220,16 +236,29 @@ class OperatorBookingDepositCaptureView(APIView):
             return Response({"detail": "amount is required"}, status=status.HTTP_400_BAD_REQUEST)
         try:
             amount_cents = _parse_amount_to_cents(amount_raw)
-        except ValueError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except ValueError:
+            logger.warning(
+                "Invalid deposit capture amount provided by operator",
+                extra={"booking_id": booking.id, "operator_id": request.user.id},
+                exc_info=True,
+            )
+            return Response({"detail": "Invalid amount."}, status=status.HTTP_400_BAD_REQUEST)
 
         before = {"deposit_hold_id": booking.deposit_hold_id, "amount_cents": amount_cents}
         try:
             intent_id, captured_cents = settlement.capture_deposit_amount(
                 booking, amount_cents, dispute_id=None
             )
-        except StripePaymentError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except StripePaymentError:
+            logger.warning(
+                "Stripe payment error while operator capturing deposit",
+                extra={"booking_id": booking.id, "operator_id": request.user.id},
+                exc_info=True,
+            )
+            return Response(
+                {"detail": "Unable to capture deposit for this booking."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         after = {"deposit_hold_id": intent_id, "captured_cents": captured_cents}
 
@@ -287,8 +316,16 @@ class OperatorBookingDepositReleaseView(APIView):
         before = {"deposit_hold_id": booking.deposit_hold_id}
         try:
             settlement.release_deposit_hold(booking, dispute_id=None)
-        except StripePaymentError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except StripePaymentError:
+            logger.warning(
+                "Stripe payment error while operator releasing deposit hold",
+                extra={"booking_id": booking.id, "operator_id": request.user.id},
+                exc_info=True,
+            )
+            return Response(
+                {"detail": "Unable to release deposit for this booking."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         after = {"deposit_hold_id": booking.deposit_hold_id}
 

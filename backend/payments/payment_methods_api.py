@@ -193,8 +193,16 @@ class PaymentMethodViewSet(viewsets.ModelViewSet):
                 {"detail": "Stripe is not configured; please try again later."},
                 status=503,
             )
-        except StripePaymentError as exc:
-            return Response({"detail": str(exc)}, status=400)
+        except StripePaymentError:
+            logger.warning(
+                "Stripe payment error while creating setup intent",
+                extra={"user_id": getattr(request.user, "id", None), "intent_type": intent_type},
+                exc_info=True,
+            )
+            return Response(
+                {"detail": "Unable to create card setup session."},
+                status=400,
+            )
 
         return Response(
             {

@@ -222,8 +222,16 @@ def pay_for_promotion(request):
         end_date = _parse_iso_date(data.get("promotion_end"), "promotion_end")
         base_price_cents = _parse_int(data.get("base_price_cents"), "base_price_cents")
         gst_cents_payload = _parse_int(data.get("gst_cents"), "gst_cents")
-    except ValueError as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except ValueError:
+        logger.warning(
+            "Invalid promotion payment parameters",
+            extra={"user_id": getattr(request.user, "id", None)},
+            exc_info=True,
+        )
+        return Response(
+            {"detail": "Invalid promotion parameters."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     if end_date < start_date:
         return Response(
@@ -360,9 +368,16 @@ def _pay_for_promotion_with_card(
             {"detail": "Temporary payment issue, please retry."},
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
-    except StripePaymentError as exc:
-        message = str(exc) or "Payment could not be completed."
-        return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+    except StripePaymentError:
+        logger.warning(
+            "Stripe payment error while creating promotion customer",
+            extra={"user_id": request.user.id, "listing_id": listing.id},
+            exc_info=True,
+        )
+        return Response(
+            {"detail": "Payment could not be completed."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     except StripeConfigurationError:
         logger.exception(
             "Stripe configuration error creating promotion customer",
@@ -396,9 +411,16 @@ def _pay_for_promotion_with_card(
             {"detail": "Temporary payment issue, please retry."},
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
-    except StripePaymentError as exc:
-        message = str(exc) or "Payment could not be completed."
-        return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+    except StripePaymentError:
+        logger.warning(
+            "Stripe payment error while charging promotion",
+            extra={"user_id": request.user.id, "listing_id": listing.id},
+            exc_info=True,
+        )
+        return Response(
+            {"detail": "Payment could not be completed."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     except StripeConfigurationError:
         logger.exception(
             "Stripe configuration error charging promotion",
@@ -535,9 +557,14 @@ def _pay_for_promotion_with_earnings(
             {"detail": "Temporary Stripe issue while moving earnings. Please retry."},
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
-    except StripePaymentError as exc:
+    except StripePaymentError:
+        logger.warning(
+            "Stripe payment error while transferring earnings for promotion",
+            extra={"user_id": request.user.id, "listing_id": listing.id},
+            exc_info=True,
+        )
         return Response(
-            {"detail": str(exc) or "Unable to use earnings for this promotion."},
+            {"detail": "Unable to use earnings for this promotion."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Dict
 
@@ -12,6 +13,8 @@ from rest_framework.views import APIView
 from core.redis import get_redis_client
 from operator_core.permissions import HasOperatorRole, IsOperator
 from storage import s3 as storage_s3
+
+logger = logging.getLogger(__name__)
 
 CELERY_HEARTBEAT_KEY = "ops:celery:last_seen"
 CELERY_STALE_SECONDS = 120
@@ -249,9 +252,14 @@ class OperatorHealthTestEmailView(APIView):
             from django.core.mail import send_mail
 
             sent = send_mail(subject, body, from_email, [to_email], fail_silently=False)
-        except Exception as exc:
+        except Exception:
+            logger.warning(
+                "Health email send failed",
+                extra={"to_email": to_email},
+                exc_info=True,
+            )
             return Response(
-                {"detail": "failed to send email", "error": _error_payload(exc)},
+                {"detail": "failed to send email"},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 

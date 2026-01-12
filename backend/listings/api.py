@@ -128,8 +128,10 @@ def _request_geocode(address: str, api_key: str):
     if status_value == "ZERO_RESULTS":
         raise GeocodeNotFoundError("No results for address")
     if status_value != "OK":
+        safe_address = address.replace("\n", " ").replace("\r", " ")
         logger.warning(
-            "Google Geocoding returned error", extra={"status": status_value, "address": address}
+            "Google Geocoding returned error",
+            extra={"status": status_value, "address": safe_address},
         )
         raise GeocodeServiceError(f"Geocoding service error: {status_value}")
 
