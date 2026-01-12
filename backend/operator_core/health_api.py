@@ -253,9 +253,10 @@ class OperatorHealthTestEmailView(APIView):
 
             sent = send_mail(subject, body, from_email, [to_email], fail_silently=False)
         except Exception:
+            safe_to_email = (to_email or "").replace("\n", " ").replace("\r", " ")
             logger.warning(
                 "Health email send failed",
-                extra={"to_email": to_email},
+                extra={"to_email": safe_to_email},
                 exc_info=True,
             )
             return Response(
