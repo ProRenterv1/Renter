@@ -152,9 +152,16 @@ class OperatorBookingForceCancelView(OperatorBookingActionBase):
                 {"detail": "Temporary payment issue while refunding; please retry."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        except StripePaymentError as exc:
-            message = str(exc) or "Unable to process refund for this cancellation."
-            return Response({"detail": message}, status=status.HTTP_400_BAD_REQUEST)
+        except StripePaymentError:
+            logger.warning(
+                "Stripe payment error while operator canceling booking %s",
+                booking.id,
+                exc_info=True,
+            )
+            return Response(
+                {"detail": "Unable to process refund for this cancellation."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except StripeConfigurationError:
             logger.exception(
                 "Stripe configuration error while operator canceling booking %s", booking.id
@@ -166,7 +173,10 @@ class OperatorBookingForceCancelView(OperatorBookingActionBase):
         except ValidationError as exc:
             return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
-            detail = getattr(exc, "detail", None) or str(exc) or "Unable to cancel booking."
+            logger.exception(
+                "Unexpected error while operator canceling booking %s", booking.id, exc_info=True
+            )
+            detail = getattr(exc, "detail", None) or "Unable to cancel booking."
             return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
 
         after = {
@@ -207,7 +217,10 @@ class OperatorBookingForceCompleteView(OperatorBookingActionBase):
         except ValidationError as exc:
             return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
-            detail = getattr(exc, "detail", None) or str(exc) or "Unable to complete booking."
+            logger.exception(
+                "Unexpected error while operator completing booking %s", booking.id, exc_info=True
+            )
+            detail = getattr(exc, "detail", None) or "Unable to complete booking."
             return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
 
         after = {

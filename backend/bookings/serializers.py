@@ -323,7 +323,10 @@ class BookingSerializer(serializers.ModelSerializer):
                         message,
                         extra={"booking_id": booking.id},
                     )
-                    raise serializers.ValidationError({"non_field_errors": [message]})
+                    response_message = (
+                        message if "card" in message.lower() else "Payment could not be completed."
+                    )
+                    raise serializers.ValidationError({"non_field_errors": [response_message]})
 
                 booking.charge_payment_intent_id = charge_id or ""
                 booking.renter_stripe_customer_id = customer_id or ""

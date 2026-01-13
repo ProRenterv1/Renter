@@ -658,16 +658,32 @@ class OperatorDisputeResolveView(OperatorDisputeActionBase):
         try:
             if refund_amount_cents > 0:
                 refund_id = settlement.refund_booking_charge(booking, refund_amount_cents)
-        except StripePaymentError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except StripePaymentError:
+            logger.warning(
+                "Stripe payment error while refunding booking for dispute",
+                extra={"booking_id": booking.id, "dispute_id": dispute.id},
+                exc_info=True,
+            )
+            return Response(
+                {"detail": "Unable to process refund for this dispute."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             if deposit_capture_amount_cents > 0:
                 capture_id = settlement.capture_deposit_amount_cents(
                     booking, deposit_capture_amount_cents
                 )
-        except StripePaymentError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except StripePaymentError:
+            logger.warning(
+                "Stripe payment error while capturing deposit for dispute",
+                extra={"booking_id": booking.id, "dispute_id": dispute.id},
+                exc_info=True,
+            )
+            return Response(
+                {"detail": "Unable to capture deposit for this dispute."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if deposit_hold_id:
             try:

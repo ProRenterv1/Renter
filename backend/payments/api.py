@@ -262,8 +262,13 @@ def owner_payouts_history(request):
     is_owner = bool(getattr(user, "can_list", False))
     try:
         scope = _parse_history_scope(request.query_params.get("scope"))
-    except ValueError as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except ValueError:
+        logger.warning(
+            "Invalid scope param for owner payouts history",
+            extra={"user_id": getattr(user, "id", None)},
+            exc_info=True,
+        )
+        return Response({"detail": "Invalid scope parameter."}, status=status.HTTP_400_BAD_REQUEST)
 
     if scope == "all":
         qs = Transaction.objects.filter(user=user).exclude(
@@ -286,8 +291,15 @@ def owner_payouts_history(request):
     try:
         limit = _parse_limit(request.query_params.get("limit"))
         offset = _parse_offset(request.query_params.get("offset"))
-    except ValueError as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except ValueError:
+        logger.warning(
+            "Invalid pagination params for owner payouts history",
+            extra={"user_id": getattr(user, "id", None)},
+            exc_info=True,
+        )
+        return Response(
+            {"detail": "Invalid pagination parameters."}, status=status.HTTP_400_BAD_REQUEST
+        )
 
     total_count = qs.count()
     sliced = qs[offset : offset + limit]

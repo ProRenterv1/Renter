@@ -515,8 +515,13 @@ class OperatorRunJobView(APIView):
             job_run.output_json = {"ok": False, "error": _safe_json_value({"message": str(exc)})}
             job_run.finished_at = now
             job_run.save(update_fields=["status", "output_json", "finished_at"])
+            logger.warning(
+                "Failed to enqueue operator job",
+                extra={"job_run_id": job_run.id, "name": name},
+                exc_info=True,
+            )
             return Response(
-                {"detail": "Failed to enqueue job", "error": str(exc)},
+                {"detail": "Failed to enqueue job"},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 

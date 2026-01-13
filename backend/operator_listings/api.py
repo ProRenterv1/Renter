@@ -1,3 +1,5 @@
+import logging
+
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db.models import CharField, Exists, OuterRef, Prefetch
@@ -17,6 +19,8 @@ from operator_listings.serializers import (
     OperatorListingDetailSerializer,
     OperatorListingListSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_OPERATOR_ROLES = (
     "operator_support",
@@ -241,10 +245,14 @@ class OperatorListingEmergencyEditView(OperatorListingActionBase):
         try:
             listing.save(update_fields=list(after.keys()))
         except ValidationError as exc:
-            return Response(
-                exc.message_dict if hasattr(exc, "message_dict") else {"detail": str(exc)},
-                status=status.HTTP_400_BAD_REQUEST,
+            if hasattr(exc, "message_dict"):
+                return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
+            logger.warning(
+                "Validation error during operator listing edit",
+                extra={"listing_id": listing.id, "operator_id": request.user.id},
+                exc_info=True,
             )
+            return Response({"detail": "Invalid listing data."}, status=status.HTTP_400_BAD_REQUEST)
 
         self._audit_listing(
             request,
