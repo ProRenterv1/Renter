@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -12,7 +13,7 @@ from rest_framework.test import APIClient
 from bookings.models import Booking
 from listings.models import Listing
 from listings.services import compute_booking_totals
-from payments.models import OwnerPayoutAccount, Transaction
+from payments.models import Transaction
 
 User = get_user_model()
 
@@ -51,6 +52,7 @@ def booking_with_totals(settings, owner_user, renter_user, listing):
     settings.BOOKING_OWNER_FEE_RATE = Decimal("0.05")
     settings.STRIPE_SECRET_KEY = "sk_test_key"
     settings.STRIPE_WEBHOOK_SECRET = "whsec_test"
+    settings.STRIPE_BOOKINGS_DESTINATION_CHARGES = True
 
     start = date(2025, 1, 1)
     end = start + timedelta(days=3)
@@ -88,9 +90,7 @@ def _webhook_payload(booking: Booking) -> dict:
 
 @pytest.mark.django_db
 @patch("payments.stripe_api.stripe.Transfer.create")
-@patch("payments.stripe_api.ensure_connect_account")
 def test_owner_transfer_created_on_webhook(
-    mock_ensure_connect_account,
     mock_transfer_create,
     booking_with_totals,
     owner_user,
@@ -98,19 +98,28 @@ def test_owner_transfer_created_on_webhook(
     monkeypatch,
 ):
     booking, owner_payout = booking_with_totals
-    payout_account = OwnerPayoutAccount(
-        user=owner_user,
-        stripe_account_id="acct_test_owner",
-        payouts_enabled=True,
-        charges_enabled=True,
+    platform_user = User.objects.create_user(
+        username="platform-ledger",
+        email="platform@example.com",
+        password="pass123",
     )
-    mock_ensure_connect_account.return_value = payout_account
+    settings.PLATFORM_LEDGER_USER_ID = platform_user.id
     mock_transfer_create.return_value = {"id": "tr_test_123"}
 
     event_payload = _webhook_payload(booking)
     monkeypatch.setattr(
         "payments.stripe_api.stripe.Webhook.construct_event",
         lambda payload, sig_header, secret: event_payload,
+    )
+    monkeypatch.setattr(
+        "payments.stripe_api._get_stripe_api_key",
+        lambda: "sk_test_key",
+    )
+    monkeypatch.setattr(
+        "payments.stripe_api.stripe.PaymentIntent.retrieve",
+        lambda _intent_id, **_kwargs: SimpleNamespace(
+            charges=SimpleNamespace(data=[SimpleNamespace(transfer="tr_transfer_123")])
+        ),
     )
 
     client = APIClient()
@@ -126,40 +135,57 @@ def test_owner_transfer_created_on_webhook(
     assert booking.status == Booking.Status.PAID
     assert booking.charge_payment_intent_id == "pi_test_123"
 
-    assert not Transaction.objects.filter(
+    owner_txn = Transaction.objects.get(
         user=booking.listing.owner,
         booking=booking,
         kind=Transaction.Kind.OWNER_EARNING,
-    ).exists()
+    )
+    assert owner_txn.amount == owner_payout
+    assert owner_txn.stripe_id == "tr_transfer_123"
+
+    platform_txn = Transaction.objects.get(
+        user=platform_user,
+        booking=booking,
+        kind=Transaction.Kind.PLATFORM_FEE,
+    )
+    platform_fee_total = Decimal(booking.totals["platform_fee_total"])
+    assert platform_txn.amount == platform_fee_total
 
     mock_transfer_create.assert_not_called()
 
 
 @pytest.mark.django_db
 @patch("payments.stripe_api.stripe.Transfer.create")
-@patch("payments.stripe_api.ensure_connect_account")
 def test_owner_transfer_webhook_idempotent(
-    mock_ensure_connect_account,
     mock_transfer_create,
     booking_with_totals,
     owner_user,
     settings,
     monkeypatch,
 ):
-    booking, owner_payout = booking_with_totals
-    payout_account = OwnerPayoutAccount(
-        user=owner_user,
-        stripe_account_id="acct_test_owner",
-        payouts_enabled=True,
-        charges_enabled=True,
+    booking, _owner_payout = booking_with_totals
+    platform_user = User.objects.create_user(
+        username="platform-ledger-2",
+        email="platform2@example.com",
+        password="pass123",
     )
-    mock_ensure_connect_account.return_value = payout_account
+    settings.PLATFORM_LEDGER_USER_ID = platform_user.id
     mock_transfer_create.return_value = {"id": "tr_test_123"}
 
     event_payload = _webhook_payload(booking)
     monkeypatch.setattr(
         "payments.stripe_api.stripe.Webhook.construct_event",
         lambda payload, sig_header, secret: event_payload,
+    )
+    monkeypatch.setattr(
+        "payments.stripe_api._get_stripe_api_key",
+        lambda: "sk_test_key",
+    )
+    monkeypatch.setattr(
+        "payments.stripe_api.stripe.PaymentIntent.retrieve",
+        lambda _intent_id, **_kwargs: SimpleNamespace(
+            charges=SimpleNamespace(data=[SimpleNamespace(transfer="tr_transfer_123")])
+        ),
     )
 
     client = APIClient()
@@ -177,6 +203,13 @@ def test_owner_transfer_webhook_idempotent(
         booking=booking,
         kind=Transaction.Kind.OWNER_EARNING,
     )
-    assert txs.count() == 0
+    assert txs.count() == 1
+
+    platform_txs = Transaction.objects.filter(
+        user=platform_user,
+        booking=booking,
+        kind=Transaction.Kind.PLATFORM_FEE,
+    )
+    assert platform_txs.count() == 1
 
     mock_transfer_create.assert_not_called()

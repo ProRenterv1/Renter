@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -45,6 +46,9 @@ def create_booking(listing, owner, renter):
         totals={
             "rental_subtotal": "80.00",
             "service_fee": "20.00",
+            "owner_fee": "4.00",
+            "platform_fee_total": "24.00",
+            "owner_payout": "76.00",
             "damage_deposit": "15.00",
             "total_charge": "115.00",
         },
@@ -76,8 +80,14 @@ def test_create_booking_payment_intents_logs_transactions(monkeypatch, settings)
     def fake_create(**kwargs):
         created_calls.append(kwargs)
         key_parts = kwargs["idempotency_key"].split(":")
-        assert key_parts[-2] in {"charge", "deposit"}
-        assert key_parts[-1].isdigit()
+        if kwargs["metadata"]["kind"] == "booking_charge":
+            assert key_parts[-4] == "charge_dest_v1"
+            assert key_parts[-3].isdigit()
+            assert key_parts[-2].isdigit()
+            assert key_parts[-1] == "acct_test_owner"
+        else:
+            assert key_parts[-2] == "deposit"
+            assert key_parts[-1].isdigit()
         create_calls["count"] += 1
         kind = kwargs["metadata"]["kind"]
         intent_id = f"pi_{kind}_{create_calls['count']}"
@@ -89,6 +99,16 @@ def test_create_booking_payment_intents_logs_transactions(monkeypatch, settings)
     payment_intent_mock = type("MockPI", (), {"create": staticmethod(fake_create)})
     monkeypatch.setattr(stripe_api.stripe, "PaymentIntent", payment_intent_mock)
     monkeypatch.setattr(stripe_api, "_ensure_payment_method_for_customer", lambda *a, **k: None)
+    monkeypatch.setattr(
+        stripe_api,
+        "ensure_connect_account",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            stripe_account_id="acct_test_owner",
+            payouts_enabled=True,
+            charges_enabled=True,
+            is_fully_onboarded=True,
+        ),
+    )
 
     charge_id = stripe_api.create_booking_charge_intent(
         booking=booking,
@@ -142,3 +162,37 @@ def test_create_booking_payment_intents_logs_transactions(monkeypatch, settings)
     assert charge_call["automatic_payment_methods"]["allow_redirects"] == "never"
     assert deposit_call["automatic_payment_methods"]["enabled"] is True
     assert deposit_call["automatic_payment_methods"]["allow_redirects"] == "never"
+    assert charge_call["application_fee_amount"] == 2400
+    assert charge_call["transfer_data"]["destination"] == "acct_test_owner"
+    assert charge_call["transfer_data"]["amount"] == 7600
+    assert charge_call["transfer_group"] == f"booking:{booking.id}"
+    assert charge_call["on_behalf_of"] == "acct_test_owner"
+
+
+def test_create_booking_charge_requires_onboarded_owner(monkeypatch, settings):
+    settings.STRIPE_SECRET_KEY = "sk_test"
+    settings.STRIPE_BOOKINGS_DESTINATION_CHARGES = True
+
+    owner = User.objects.create_user(username="owner-onboard", password="x")
+    renter = User.objects.create_user(username="renter-onboard", password="x")
+    listing = create_listing(owner)
+    booking = create_booking(listing, owner, renter)
+
+    monkeypatch.setattr(stripe_api, "_ensure_payment_method_for_customer", lambda *a, **k: None)
+    monkeypatch.setattr(
+        stripe_api,
+        "ensure_connect_account",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            stripe_account_id="acct_test_owner",
+            payouts_enabled=False,
+            charges_enabled=False,
+            is_fully_onboarded=False,
+        ),
+    )
+
+    with pytest.raises(stripe_api.StripePaymentError):
+        stripe_api.create_booking_charge_intent(
+            booking=booking,
+            customer_id="cus_mock",
+            payment_method_id="pm_mock",
+        )

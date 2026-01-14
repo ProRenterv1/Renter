@@ -1276,14 +1276,15 @@ class BookingViewSet(viewsets.ModelViewSet):
                 {"detail": "Temporary payment issue, please retry."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        except StripePaymentError:
+        except StripePaymentError as exc:
             logger.warning(
                 "Stripe payment error while creating charge intent for booking %s",
                 booking.id,
                 exc_info=True,
             )
+            message = str(exc) or "Payment could not be completed."
             return Response(
-                {"detail": "Payment could not be completed."},
+                {"detail": message},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1300,29 +1301,30 @@ class BookingViewSet(viewsets.ModelViewSet):
                 "updated_at",
             ]
         )
-        try:
-            create_owner_transfer_for_booking(
-                booking=booking,
-                payment_intent_id=booking.charge_payment_intent_id or "",
-            )
-        except StripeTransientError:
-            logger.warning(
-                "Stripe transient error while transferring owner payout for booking %s",
-                booking.id,
-                exc_info=True,
-            )
-        except StripeConfigurationError:
-            logger.warning(
-                "Stripe configuration error while transferring owner payout for booking %s",
-                booking.id,
-                exc_info=True,
-            )
-        except StripePaymentError:
-            logger.warning(
-                "Stripe payment error while transferring owner payout for booking %s",
-                booking.id,
-                exc_info=True,
-            )
+        if not getattr(settings, "STRIPE_BOOKINGS_DESTINATION_CHARGES", True):
+            try:
+                create_owner_transfer_for_booking(
+                    booking=booking,
+                    payment_intent_id=booking.charge_payment_intent_id or "",
+                )
+            except StripeTransientError:
+                logger.warning(
+                    "Stripe transient error while transferring owner payout for booking %s",
+                    booking.id,
+                    exc_info=True,
+                )
+            except StripeConfigurationError:
+                logger.warning(
+                    "Stripe configuration error while transferring owner payout for booking %s",
+                    booking.id,
+                    exc_info=True,
+                )
+            except StripePaymentError:
+                logger.warning(
+                    "Stripe payment error while transferring owner payout for booking %s",
+                    booking.id,
+                    exc_info=True,
+                )
 
         _schedule_deposit_authorization(booking)
         try:

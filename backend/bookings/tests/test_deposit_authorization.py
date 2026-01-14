@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -109,18 +110,9 @@ def test_deposit_authorizes_on_start_day(monkeypatch, booking_factory):
         booking.save(update_fields=["deposit_hold_id"])
         return "pi_deposit_success"
 
-    owner_transfers: list[tuple[int, str]] = []
-
-    def fake_owner_transfer(*, booking, payment_intent_id):
-        owner_transfers.append((booking.id, payment_intent_id))
-
     monkeypatch.setattr(
         "bookings.tasks.create_booking_deposit_hold_intent",
         fake_create_deposit_hold,
-    )
-    monkeypatch.setattr(
-        "bookings.tasks.create_owner_transfer_for_booking",
-        fake_owner_transfer,
     )
     monkeypatch.setattr("bookings.tasks.timezone.localdate", lambda: today)
     monkeypatch.setattr(
@@ -135,7 +127,6 @@ def test_deposit_authorizes_on_start_day(monkeypatch, booking_factory):
     assert booking.deposit_hold_id == "pi_deposit_success"
     assert booking.deposit_authorized_at is not None
     assert booking.deposit_attempt_count == 1
-    assert owner_transfers == [(booking.id, booking.charge_payment_intent_id or "")]
 
 
 def test_deposit_retry_then_cancel(monkeypatch, booking_factory, owner_user, renter_user, settings):
@@ -147,6 +138,9 @@ def test_deposit_retry_then_cancel(monkeypatch, booking_factory, owner_user, ren
         totals={
             "rental_subtotal": "120.00",
             "service_fee": "0.00",
+            "owner_fee": "6.00",
+            "platform_fee_total": "6.00",
+            "owner_payout": "114.00",
             "damage_deposit": "75.00",
         },
     )
@@ -179,6 +173,7 @@ def test_deposit_retry_then_cancel(monkeypatch, booking_factory, owner_user, ren
         raise_insufficient,
     )
     settings.STRIPE_SECRET_KEY = "sk_test"
+    settings.STRIPE_PLATFORM_ACCOUNT_ID = "acct_platform_test"
 
     refund_calls: list[dict] = []
     transfer_calls: list[dict] = []
@@ -224,10 +219,14 @@ def test_deposit_retry_then_cancel(monkeypatch, booking_factory, owner_user, ren
     refund_kwargs = refund_calls[0]
     assert refund_kwargs["payment_intent"] == "pi_charge_retry"
     assert refund_kwargs["amount"] == 6000  # 50% of 120.00
+    assert refund_kwargs["reverse_transfer"] is True
+    assert refund_kwargs["refund_application_fee"] is False
 
-    assert transfer_calls, "owner transfer should be issued"
+    assert transfer_calls, "platform share transfer should be issued"
     transfer_kwargs = transfer_calls[0]
-    assert transfer_kwargs["amount"] == 3600  # 30% of 120.00
+    assert transfer_kwargs["amount"] == 1800  # 20% of 120.00 - owner_fee 6.00
+    assert transfer_kwargs["destination"] == "acct_platform_test"
+    assert transfer_kwargs["stripe_account"] == "acct_test_owner"
 
     txn_kinds = set(Transaction.objects.filter(booking=booking).values_list("kind", flat=True))
     assert {
@@ -236,8 +235,22 @@ def test_deposit_retry_then_cancel(monkeypatch, booking_factory, owner_user, ren
         Transaction.Kind.PLATFORM_FEE,
     }.issubset(txn_kinds)
 
+    owner_adjustment = Transaction.objects.filter(
+        booking=booking,
+        kind=Transaction.Kind.OWNER_EARNING,
+    ).first()
+    assert owner_adjustment is not None
+    assert owner_adjustment.amount == Decimal("-78.00")
 
-def test_owner_payout_not_sent_on_charge_webhook(monkeypatch, booking_factory):
+    platform_txn = Transaction.objects.filter(
+        booking=booking,
+        kind=Transaction.Kind.PLATFORM_FEE,
+    ).first()
+    assert platform_txn is not None
+    assert platform_txn.amount == Decimal("18.00")
+
+
+def test_owner_payout_not_sent_on_charge_webhook(monkeypatch, booking_factory, settings):
     today = date.today()
     booking = booking_factory(
         start_date=today,
@@ -252,6 +265,13 @@ def test_owner_payout_not_sent_on_charge_webhook(monkeypatch, booking_factory):
         },
     )
     booking.save()
+    platform_user = get_user_model().objects.create_user(
+        username="platform-webhook",
+        password="testpass",
+        can_list=False,
+        can_rent=False,
+    )
+    settings.PLATFORM_LEDGER_USER_ID = platform_user.id
 
     event_payload = {
         "type": "payment_intent.succeeded",
@@ -273,12 +293,22 @@ def test_owner_payout_not_sent_on_charge_webhook(monkeypatch, booking_factory):
             AssertionError("owner transfer should not run")
         ),
     )
+    monkeypatch.setattr("payments.stripe_api._get_stripe_api_key", lambda: "sk_test")
+    monkeypatch.setattr(
+        "payments.stripe_api.stripe.PaymentIntent.retrieve",
+        lambda _intent_id, **_kwargs: SimpleNamespace(
+            charges=SimpleNamespace(data=[SimpleNamespace(transfer="tr_transfer_123")])
+        ),
+    )
 
     factory = APIRequestFactory()
     request = factory.post("/api/payments/stripe/webhook/", data={}, format="json")
     response = stripe_webhook(request)
     assert response.status_code == 200
 
-    assert not Transaction.objects.filter(
-        kind=Transaction.Kind.OWNER_EARNING, booking=booking
-    ).exists()
+    owner_txn = Transaction.objects.get(kind=Transaction.Kind.OWNER_EARNING, booking=booking)
+    assert owner_txn.amount == Decimal("80.00")
+    assert owner_txn.stripe_id == "tr_transfer_123"
+
+    platform_txn = Transaction.objects.get(kind=Transaction.Kind.PLATFORM_FEE, booking=booking)
+    assert platform_txn.amount == Decimal("10.00")

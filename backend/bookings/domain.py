@@ -8,6 +8,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal, Optional
 
 import stripe
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -21,6 +22,7 @@ from payments.stripe_api import (
     _handle_stripe_error,
     _to_cents,
     ensure_connect_account,
+    transfer_earnings_to_platform,
 )
 
 from .models import Booking, BookingPhoto
@@ -249,56 +251,107 @@ def settle_and_cancel_for_deposit_failure(booking: Booking) -> None:
     rental_subtotal = _money(_safe_decimal(totals.get("rental_subtotal", "0")))
     service_fee_value = totals.get("service_fee", totals.get("renter_fee", "0"))
     service_fee = _money(_safe_decimal(service_fee_value))
+    owner_fee = _money(_safe_decimal(totals.get("owner_fee", "0")))
+    owner_payout_value = totals.get("owner_payout")
+    if owner_payout_value is None:
+        owner_payout_value = rental_subtotal - owner_fee
+    owner_payout = _money(_safe_decimal(owner_payout_value))
     refundable_amount = rental_subtotal
 
     reason = "Insufficient funds for damage deposit"
+    charge_intent_id = (booking.charge_payment_intent_id or "").strip()
     refund_amount = _money(refundable_amount * Decimal("0.5"))
     owner_amount = _money(refundable_amount * Decimal("0.3"))
     platform_amount = _money(refundable_amount - refund_amount - owner_amount + service_fee)
 
-    charge_intent_id = (booking.charge_payment_intent_id or "").strip()
+    use_destination_charges = getattr(settings, "STRIPE_BOOKINGS_DESTINATION_CHARGES", True)
 
     stripe.api_key = _get_stripe_api_key()
 
     refund_id: str | None = None
-    if charge_intent_id and refund_amount > Decimal("0"):
-        try:
-            refund = stripe.Refund.create(
-                payment_intent=charge_intent_id,
-                amount=_to_cents(refund_amount),
-                idempotency_key=(
-                    f"booking:{booking.id}:deposit_fail:refund:{_to_cents(refund_amount)}"
-                ),
-            )
-            refund_id = getattr(refund, "id", None)
-        except stripe.error.StripeError as exc:
-            _handle_stripe_error(exc)
+    platform_transfer_id: str | None = None
 
-    owner_transfer_id: str | None = None
-    if owner_amount > Decimal("0"):
-        owner = getattr(booking, "owner", None)
-        if owner:
-            payout_account = ensure_connect_account(owner)
-            if payout_account.stripe_account_id and payout_account.payouts_enabled:
-                try:
-                    transfer = stripe.Transfer.create(
-                        amount=_to_cents(owner_amount),
-                        currency="cad",
-                        destination=payout_account.stripe_account_id,
-                        description=f"Deposit failure payout for booking #{booking.id}",
+    if use_destination_charges:
+        if charge_intent_id and refund_amount > Decimal("0"):
+            try:
+                refund = stripe.Refund.create(
+                    payment_intent=charge_intent_id,
+                    amount=_to_cents(refund_amount),
+                    reverse_transfer=True,
+                    refund_application_fee=False,
+                    idempotency_key=(
+                        f"booking:{booking.id}:deposit_fail:refund:{_to_cents(refund_amount)}"
+                    ),
+                )
+                refund_id = getattr(refund, "id", None)
+            except stripe.error.StripeError as exc:
+                _handle_stripe_error(exc)
+
+        extra_platform = _money((refundable_amount * Decimal("0.2")) - owner_fee)
+        if extra_platform < Decimal("0"):
+            extra_platform = Decimal("0.00")
+        if extra_platform > Decimal("0"):
+            owner = getattr(booking, "owner", None)
+            if owner:
+                payout_account = ensure_connect_account(owner)
+                if payout_account.stripe_account_id and payout_account.payouts_enabled:
+                    platform_transfer_id = transfer_earnings_to_platform(
+                        payout_account=payout_account,
+                        amount_cents=_to_cents(extra_platform),
                         metadata={
-                            "kind": "owner_payout_deposit_failure",
+                            "kind": "deposit_failure_platform_share",
                             "booking_id": str(booking.id),
                             "listing_id": str(booking.listing_id),
                         },
-                        transfer_group=f"booking:{booking.id}:deposit_failure",
-                        idempotency_key=(
-                            f"booking:{booking.id}:deposit_fail:owner:{_to_cents(owner_amount)}"
-                        ),
                     )
-                    owner_transfer_id = getattr(transfer, "id", None)
-                except stripe.error.StripeError as exc:
-                    _handle_stripe_error(exc)
+                else:
+                    logger.warning(
+                        "Platform share transfer skipped; missing Stripe account or "
+                        "payouts disabled.",
+                        extra={
+                            "booking_id": booking.id,
+                            "owner_id": getattr(owner, "id", None),
+                        },
+                    )
+    else:
+        if charge_intent_id and refund_amount > Decimal("0"):
+            try:
+                refund = stripe.Refund.create(
+                    payment_intent=charge_intent_id,
+                    amount=_to_cents(refund_amount),
+                    idempotency_key=(
+                        f"booking:{booking.id}:deposit_fail:refund:{_to_cents(refund_amount)}"
+                    ),
+                )
+                refund_id = getattr(refund, "id", None)
+            except stripe.error.StripeError as exc:
+                _handle_stripe_error(exc)
+
+        owner_transfer_id: str | None = None
+        if owner_amount > Decimal("0"):
+            owner = getattr(booking, "owner", None)
+            if owner:
+                payout_account = ensure_connect_account(owner)
+                if payout_account.stripe_account_id and payout_account.payouts_enabled:
+                    try:
+                        transfer = stripe.Transfer.create(
+                            amount=_to_cents(owner_amount),
+                            currency="cad",
+                            destination=payout_account.stripe_account_id,
+                            description=f"Deposit failure payout for booking #{booking.id}",
+                            metadata={
+                                "kind": "owner_payout_deposit_failure",
+                                "booking_id": str(booking.id),
+                                "listing_id": str(booking.listing_id),
+                            },
+                            transfer_group=f"booking:{booking.id}:deposit_failure",
+                            idempotency_key=(
+                                f"booking:{booking.id}:deposit_fail:owner:{_to_cents(owner_amount)}"
+                            ),
+                        )
+                        owner_transfer_id = getattr(transfer, "id", None)
+                    except stripe.error.StripeError as exc:
+                        _handle_stripe_error(exc)
 
     with transaction.atomic():
         mark_canceled(booking, actor="system", auto=True, reason=reason)
@@ -321,27 +374,65 @@ def settle_and_cancel_for_deposit_failure(booking: Booking) -> None:
                 stripe_id=refund_id or charge_intent_id or None,
             )
 
-        if owner_amount > Decimal("0") and owner_transfer_id:
-            owner = booking.owner
-            log_transaction(
-                user=owner,
-                booking=booking,
-                kind=Transaction.Kind.OWNER_EARNING,
-                amount=owner_amount,
-                stripe_id=owner_transfer_id,
-            )
-
-        if platform_amount > Decimal("0"):
-            from payments_refunds import get_platform_ledger_user
-
-            platform_user = get_platform_ledger_user()
-            if platform_user:
-                log_transaction(
-                    user=platform_user,
+        if use_destination_charges:
+            owner_adjustment = _money(owner_amount - owner_payout)
+            if owner_adjustment != Decimal("0"):
+                existing_owner_adjustment = Transaction.objects.filter(
+                    user=booking.owner,
                     booking=booking,
-                    kind=Transaction.Kind.PLATFORM_FEE,
-                    amount=platform_amount,
+                    kind=Transaction.Kind.OWNER_EARNING,
+                    amount=owner_adjustment,
+                ).exists()
+                if not existing_owner_adjustment:
+                    log_transaction(
+                        user=booking.owner,
+                        booking=booking,
+                        kind=Transaction.Kind.OWNER_EARNING,
+                        amount=owner_adjustment,
+                        stripe_id=refund_id or charge_intent_id or None,
+                    )
+
+            if platform_transfer_id:
+                from payments_refunds import get_platform_ledger_user
+
+                platform_user = get_platform_ledger_user()
+                if platform_user:
+                    existing_platform_fee = Transaction.objects.filter(
+                        user=platform_user,
+                        booking=booking,
+                        kind=Transaction.Kind.PLATFORM_FEE,
+                        stripe_id=platform_transfer_id,
+                    ).exists()
+                    if not existing_platform_fee:
+                        log_transaction(
+                            user=platform_user,
+                            booking=booking,
+                            kind=Transaction.Kind.PLATFORM_FEE,
+                            amount=extra_platform,
+                            stripe_id=platform_transfer_id,
+                        )
+        else:
+            if owner_amount > Decimal("0") and owner_transfer_id:
+                owner = booking.owner
+                log_transaction(
+                    user=owner,
+                    booking=booking,
+                    kind=Transaction.Kind.OWNER_EARNING,
+                    amount=owner_amount,
+                    stripe_id=owner_transfer_id,
                 )
+
+            if platform_amount > Decimal("0"):
+                from payments_refunds import get_platform_ledger_user
+
+                platform_user = get_platform_ledger_user()
+                if platform_user:
+                    log_transaction(
+                        user=platform_user,
+                        booking=booking,
+                        kind=Transaction.Kind.PLATFORM_FEE,
+                        amount=platform_amount,
+                    )
 
     try:
         notification_tasks.send_deposit_failed_renter.delay(booking.id, f"{refund_amount:.2f}")
