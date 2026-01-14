@@ -34,6 +34,52 @@ import {
   type OwnerPayoutOnboardingResponse,
 } from "@/lib/api";
 
+type VerificationState = "unknown" | "verified" | "unverified";
+
+const VERIFICATION_STORAGE_PREFIX = "rentino.verification";
+
+const getVerificationStorageKey = (kind: "identity" | "connect", userId: number | null) =>
+  userId ? `${VERIFICATION_STORAGE_PREFIX}.${kind}.${userId}` : null;
+
+const readLocalStorage = (key: string) => {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+
+const writeLocalStorage = (key: string, value: string) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {}
+};
+
+const shouldToastOnVerification = (
+  key: string | null,
+  nowVerified: boolean,
+  fallbackRef: { current: VerificationState },
+) => {
+  if (key) {
+    const stored = readLocalStorage(key);
+    const known = stored !== null;
+    const wasVerified = stored === "1";
+    writeLocalStorage(key, nowVerified ? "1" : "0");
+    fallbackRef.current = nowVerified ? "verified" : "unverified";
+    return known && !wasVerified && nowVerified;
+  }
+  const known = fallbackRef.current !== "unknown";
+  const wasVerified = fallbackRef.current === "verified";
+  fallbackRef.current = nowVerified ? "verified" : "unverified";
+  return known && !wasVerified && nowVerified;
+};
+
 type SecurityProps = {
   onIdentityStatusChange?: (
     status: IdentityVerificationStatus | "none",
@@ -203,8 +249,8 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
   const [connectInstance, setConnectInstance] = useState<any>(null);
   const needsOnboardingBanner =
     connectSummary ? !connectSummary.is_fully_onboarded : identityStatus !== "verified";
-  const prevIdentityVerifiedRef = useRef<boolean>(false);
-  const prevConnectVerifiedRef = useRef<boolean>(false);
+  const prevIdentityVerifiedRef = useRef<VerificationState>("unknown");
+  const prevConnectVerifiedRef = useRef<VerificationState>("unknown");
   const phoneVerified = profile?.phone_verified ?? false;
   const emailVerified = profile?.email_verified ?? false;
   const switchesDisabled = twoFactorLoading || twoFactorSaving;
@@ -212,6 +258,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
     sms: "Verify your phone before enabling SMS 2FA.",
     email: "Verify your email before enabling email 2FA.",
   };
+  const userId = profile?.id ?? AuthStore.getCurrentUser()?.id ?? null;
 
   const debugLog = (...args: unknown[]) => {
     if (import.meta.env.DEV) {
@@ -324,7 +371,6 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
     setIdentityInitialLoading(true);
     setIdentityLoading(true);
     setIdentityError(null);
-    const wasVerified = prevIdentityVerifiedRef.current;
     try {
       const res = await identityAPI.status();
       const latest = res.latest ?? null;
@@ -334,8 +380,9 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
           ? (latest.status as IdentityVerificationStatus)
           : "none";
       updateIdentityState(nextStatus, latest);
-      prevIdentityVerifiedRef.current = nextStatus === "verified";
-      if (!wasVerified && nextStatus === "verified") {
+      const nowVerified = nextStatus === "verified";
+      const identityKey = getVerificationStorageKey("identity", userId);
+      if (shouldToastOnVerification(identityKey, nowVerified, prevIdentityVerifiedRef)) {
         toast.success("Identity verification completed.");
       }
     } catch (error) {
@@ -348,26 +395,25 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
       setIdentityInitialLoading(false);
       setIdentityLoading(false);
     }
-  }, [updateIdentityState]);
+  }, [updateIdentityState, userId]);
 
   useEffect(() => {
     void refreshIdentityStatus();
   }, [refreshIdentityStatus]);
 
   const refreshConnectSummary = useCallback(async () => {
-    const wasVerified = prevConnectVerifiedRef.current;
     try {
       const summary = await paymentsAPI.ownerPayoutsSummaryRaw();
       setConnectSummary(summary.connect);
       const nowVerified = summary.connect?.is_fully_onboarded ?? false;
-      prevConnectVerifiedRef.current = nowVerified;
-      if (!wasVerified && nowVerified) {
+      const connectKey = getVerificationStorageKey("connect", userId);
+      if (shouldToastOnVerification(connectKey, nowVerified, prevConnectVerifiedRef)) {
         toast.success("Payout onboarding completed.");
       }
     } catch (err) {
       console.error("Unable to load connect summary", err);
     }
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     void refreshConnectSummary();

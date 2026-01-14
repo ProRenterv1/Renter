@@ -1,6 +1,6 @@
-# Security Policy – Kitoro Platform
+# Security Policy – Rentino Platform
 
-This document describes the current security posture of the Kitoro codebase
+This document describes the current security posture of the Rentino codebase
 (Django + DRF backend, React frontend, Stripe, S3, Redis, Celery) and the
 expected practices for contributors.
 

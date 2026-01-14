@@ -55,7 +55,7 @@ export function Sidebar({
   return (
     <aside className="w-[260px] border-r border-border bg-card flex flex-col">
       <div className="p-6 border-b border-border">
-        <h1 className="text-xl m-0">Kitoro Ops</h1>
+        <h1 className="text-xl m-0">Rentino Ops</h1>
         <p className="text-sm text-muted-foreground m-0 mt-1">Operator Console</p>
       </div>
       

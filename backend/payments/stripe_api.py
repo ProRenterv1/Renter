@@ -389,7 +389,7 @@ def _sanitize_business_url(raw_url: str) -> str:
 def ensure_connect_account(user: User, business_type: str | None = None) -> OwnerPayoutAccount:
     """Ensure the owner has a Stripe Connect Express account and sync it locally."""
     stripe.api_key = _get_stripe_api_key()
-    job_title = getattr(settings, "CONNECT_JOB_TITLE", "") or "Kitoro"
+    job_title = getattr(settings, "CONNECT_JOB_TITLE", "") or "Rentino"
     allowed_business_types = {"individual"}
 
     def _normalize_business_type(value: str | None) -> str | None:
@@ -414,7 +414,7 @@ def ensure_connect_account(user: User, business_type: str | None = None) -> Owne
         settings, "FRONTEND_ORIGIN", ""
     )
     business_profile = {
-        "name": getattr(settings, "CONNECT_BUSINESS_NAME", "") or "Kitoro",
+        "name": getattr(settings, "CONNECT_BUSINESS_NAME", "") or "Rentino",
         "product_description": getattr(settings, "CONNECT_BUSINESS_PRODUCT_DESCRIPTION", "")
         or "Peer-to-peer rentals platform",
         "url": _sanitize_business_url(business_url),
@@ -1566,7 +1566,7 @@ def create_late_fee_payment_intent(
     stripe.api_key = _get_stripe_api_key()
     customer_id = (getattr(booking.renter, "stripe_customer_id", "") or "").strip()
     if not customer_id:
-        raise StripeConfigurationError("Kitoro is missing a Stripe customer id.")
+        raise StripeConfigurationError("Rentino is missing a Stripe customer id.")
 
     cents = _to_cents(amount)
     idempotency_key = f"booking:{booking.id}:{IDEMPOTENCY_VERSION}:late:{cents}"

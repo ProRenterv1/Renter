@@ -8,4 +8,4 @@ Total paid: CAD ${{ total_paid }}
 Your PDF receipt is attached for your records.
 
 Thanks,
-The Kitoro Team
+The Rentino Team
