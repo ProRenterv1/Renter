@@ -20,7 +20,7 @@ from storage import s3 as storage_s3
 
 _TWO_PLACES = Decimal("0.01")
 _ZERO = Decimal("0.00")
-_BRAND_COLOR = (79 / 255, 134 / 255, 182 / 255)  # Kitoro blue
+_BRAND_COLOR = (79 / 255, 134 / 255, 182 / 255)  # Rentino blue
 _BRAND_MUTED_BG = (243 / 255, 248 / 255, 252 / 255)
 _TEXT_PRIMARY = (31 / 255, 42 / 255, 61 / 255)
 _TEXT_MUTED = (80 / 255, 90 / 255, 105 / 255)
@@ -91,13 +91,13 @@ def render_booking_receipt_pdf(booking: Booking) -> bytes:
 
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=letter)
-    pdf.setTitle("Kitoro Rental Receipt")
+    pdf.setTitle("Rentino Rental Receipt")
 
     width, height = letter
     margin = 0.9 * inch
     y = height - margin
 
-    business_name = "Kitoro"
+    business_name = "Rentino"
     business_email = "asterokamax@gmail.com"
 
     # Background and header
@@ -225,13 +225,13 @@ def render_promotion_receipt_pdf(slot: PromotedSlot) -> bytes:
 
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=letter)
-    pdf.setTitle("Kitoro Promotion Receipt")
+    pdf.setTitle("Rentino Promotion Receipt")
 
     width, height = letter
     margin = 0.9 * inch
     y = height - margin
 
-    business_name = "Kitoro"
+    business_name = "Rentino"
     business_email = "asterokamax@gmail.com"
     receipt_id = getattr(slot, "id", None) or getattr(slot, "pk", None) or "N/A"
 

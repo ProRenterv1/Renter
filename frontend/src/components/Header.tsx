@@ -321,7 +321,7 @@ export function Header() {
             <Link to="/" className="flex items-center">
               <img
               src={logo}
-              alt="Kitoro"
+              alt="Rentino"
               className="h-9 w-auto dark:brightness-110 dark:invert"
               loading="lazy"
             />

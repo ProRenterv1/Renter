@@ -15,6 +15,7 @@ import {
   type JsonError,
   type OwnerPayoutOnboardingResponse,
 } from "@/lib/api";
+import { AuthStore } from "@/lib/auth";
 import { formatCurrency } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Button } from "../ui/button";
@@ -34,6 +35,52 @@ import { Label } from "../ui/label";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Skeleton } from "../ui/skeleton";
 import { Checkbox } from "../ui/checkbox";
+
+type VerificationState = "unknown" | "verified" | "unverified";
+
+const VERIFICATION_STORAGE_PREFIX = "rentino.verification";
+
+const getVerificationStorageKey = (kind: "connect", userId: number | null) =>
+  userId ? `${VERIFICATION_STORAGE_PREFIX}.${kind}.${userId}` : null;
+
+const readLocalStorage = (key: string) => {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+
+const writeLocalStorage = (key: string, value: string) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {}
+};
+
+const shouldToastOnVerification = (
+  key: string | null,
+  nowVerified: boolean,
+  fallbackRef: { current: VerificationState },
+) => {
+  if (key) {
+    const stored = readLocalStorage(key);
+    const known = stored !== null;
+    const wasVerified = stored === "1";
+    writeLocalStorage(key, nowVerified ? "1" : "0");
+    fallbackRef.current = nowVerified ? "verified" : "unverified";
+    return known && !wasVerified && nowVerified;
+  }
+  const known = fallbackRef.current !== "unknown";
+  const wasVerified = fallbackRef.current === "verified";
+  fallbackRef.current = nowVerified ? "verified" : "unverified";
+  return known && !wasVerified && nowVerified;
+};
 
 export function Payments() {
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
@@ -70,7 +117,8 @@ export function Payments() {
   const [embeddedError, setEmbeddedError] = useState<string | null>(null);
   const [embeddedFallbackUrl, setEmbeddedFallbackUrl] = useState<string | null>(null);
   const [connectInstance, setConnectInstance] = useState<any>(null);
-  const prevConnectVerifiedRef = useRef<boolean>(false);
+  const prevConnectVerifiedRef = useRef<VerificationState>("unknown");
+  const userId = AuthStore.getCurrentUser()?.id ?? null;
 
   const debugLog = (...args: unknown[]) => {
     if (import.meta.env.DEV) {
@@ -97,10 +145,9 @@ export function Payments() {
         if (cancelled) return;
         setPaymentMethods(methods);
         const nowVerified = summaryRes?.connect?.is_fully_onboarded ?? false;
-        const wasVerified = prevConnectVerifiedRef.current;
-        prevConnectVerifiedRef.current = nowVerified;
         setSummary(summaryRes);
-        if (!wasVerified && nowVerified) {
+        const connectKey = getVerificationStorageKey("connect", userId);
+        if (shouldToastOnVerification(connectKey, nowVerified, prevConnectVerifiedRef)) {
           toast.success("Payout onboarding completed.");
         }
         setHistory(historyRes.results ?? []);
@@ -129,7 +176,7 @@ export function Payments() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [userId]);
 
   const handleSetDefault = async (methodId: number) => {
     try {
@@ -337,16 +384,15 @@ export function Payments() {
         identityAPI.status().catch(() => null),
       ]);
       const nowVerified = summaryRes?.connect?.is_fully_onboarded ?? false;
-      const wasVerified = prevConnectVerifiedRef.current;
-      prevConnectVerifiedRef.current = nowVerified;
       setSummary(summaryRes);
-      if (!wasVerified && nowVerified) {
+      const connectKey = getVerificationStorageKey("connect", userId);
+      if (shouldToastOnVerification(connectKey, nowVerified, prevConnectVerifiedRef)) {
         toast.success("Payout onboarding completed.");
       }
     } catch (err) {
       console.error("Unable to refresh onboarding status", err);
     }
-  }, []);
+  }, [userId]);
 
   const handleStartOnboarding = async () => {
     setStartingOnboarding(true);

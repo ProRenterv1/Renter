@@ -11,7 +11,7 @@ type FooterColumn = {
   links: FooterLink[];
 };
 
-const supportEmail = "support@kitoro.com";
+const supportEmail = "support@rentino.org";
 
 const columns: FooterColumn[] = [
   {
@@ -48,7 +48,7 @@ export function Footer() {
       <div className="mx-auto max-w-7xl px-4 py-14 sm:px-6 lg:px-8">
         <div className="grid gap-10 sm:grid-cols-2 lg:grid-cols-4">
           <div>
-            <p className="text-2xl font-heading font-semibold">Kitoro.</p>
+            <p className="text-2xl font-heading font-semibold">Rentino.</p>
             <p className="mt-3 text-sm text-muted-foreground">
               Peer-to-peer rentals for Edmonton. Build projects faster with tools that live down the
               block.
@@ -89,7 +89,7 @@ export function Footer() {
           ))}
         </div>
         <p className="mt-10 text-xs text-muted-foreground">
-          © {year} Kitoro. Operated by RentForge Inc. All rights reserved.
+          © {year} Rentino. Operated by RentForge Inc. All rights reserved.
         </p>
       </div>
     </footer>

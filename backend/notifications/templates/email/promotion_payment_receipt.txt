@@ -11,4 +11,4 @@ Total paid: CAD ${{ total_paid }}
 Your PDF receipt is attached for your records{% if receipt_s3_key %}, and available in your account{% endif %}.
 
 Thanks,
-The Kitoro Team
+The Rentino Team

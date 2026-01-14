@@ -30,7 +30,7 @@ class AnyDict(dict):
 
 # Group A — Auto create Connect account on signup
 def test_signup_creates_connect_account(monkeypatch, settings):
-    settings.CONNECT_BUSINESS_NAME = "Kitoro QA"
+    settings.CONNECT_BUSINESS_NAME = "Rentino QA"
     settings.CONNECT_BUSINESS_URL = "https://example.test"
     settings.CONNECT_BUSINESS_PRODUCT_DESCRIPTION = "Test desc"
     settings.CONNECT_BUSINESS_MCC = "1234"

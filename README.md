@@ -1,4 +1,4 @@
-# Kitoro
+# Rentino
 
 Full-stack renter experience built with Django, Celery, Postgres, Redis, and a Vite/React frontend. This document captures the day-to-day workflow, how to operate the Dockerized stack, and the team's git conventions.
 
