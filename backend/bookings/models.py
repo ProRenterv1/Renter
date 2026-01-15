@@ -142,8 +142,19 @@ class Booking(models.Model):
         blank=True,
         help_text="End of the post-return dispute window.",
     )
+    owner_statement_s3_key = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="S3 key for the owner earnings statement PDF.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    paid_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the booking charge succeeded and the booking became paid.",
+    )
 
     class Meta:
         ordering = ["-created_at"]

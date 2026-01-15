@@ -15,6 +15,7 @@ from payments.stripe_api import StripePaymentError, _get_stripe_api_key, _handle
 from payments.stripe_api import capture_deposit_amount as _capture_deposit_amount
 from payments.stripe_api import ensure_connect_account
 from payments.stripe_api import release_deposit_hold as _release_deposit_hold
+from payments.tax import platform_gst_enabled, platform_gst_rate, split_tax_included
 from payments_refunds import get_platform_ledger_user
 
 logger = logging.getLogger(__name__)
@@ -273,19 +274,51 @@ def transfer_damage_award_to_owner(
 
     platform_user = get_platform_ledger_user()
     if platform_user is not None:
-        existing_platform_txn = Transaction.objects.filter(
-            user=platform_user,
-            booking=booking,
-            kind=Transaction.Kind.PLATFORM_FEE,
-            stripe_id=transfer_id,
-        ).first()
-        if existing_platform_txn is None:
-            log_transaction(
+        if platform_gst_enabled():
+            base, gst = split_tax_included(owner_amount, platform_gst_rate())
+            existing_platform_txn = Transaction.objects.filter(
                 user=platform_user,
                 booking=booking,
                 kind=Transaction.Kind.PLATFORM_FEE,
-                amount=owner_amount,
                 stripe_id=transfer_id,
-            )
+            ).first()
+            if existing_platform_txn is None:
+                log_transaction(
+                    user=platform_user,
+                    booking=booking,
+                    kind=Transaction.Kind.PLATFORM_FEE,
+                    amount=base,
+                    stripe_id=transfer_id,
+                )
+            if gst > Decimal("0.00"):
+                existing_gst_txn = Transaction.objects.filter(
+                    user=platform_user,
+                    booking=booking,
+                    kind=Transaction.Kind.GST_COLLECTED,
+                    stripe_id=transfer_id,
+                ).first()
+                if existing_gst_txn is None:
+                    log_transaction(
+                        user=platform_user,
+                        booking=booking,
+                        kind=Transaction.Kind.GST_COLLECTED,
+                        amount=gst,
+                        stripe_id=transfer_id,
+                    )
+        else:
+            existing_platform_txn = Transaction.objects.filter(
+                user=platform_user,
+                booking=booking,
+                kind=Transaction.Kind.PLATFORM_FEE,
+                stripe_id=transfer_id,
+            ).first()
+            if existing_platform_txn is None:
+                log_transaction(
+                    user=platform_user,
+                    booking=booking,
+                    kind=Transaction.Kind.PLATFORM_FEE,
+                    amount=owner_amount,
+                    stripe_id=transfer_id,
+                )
 
     return transfer_id

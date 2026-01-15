@@ -127,13 +127,19 @@ def test_booking_create_charges_and_defers_deposit_hold(renter_user, listing, mo
     assert booking.totals
     assert booking.renter_stripe_customer_id == "cus_123"
     assert booking.renter_stripe_payment_method_id == "pm_123"
+    assert booking.paid_at is not None
 
     assert len(created_calls) == 1
     (charge_call,) = created_calls
 
     rental_subtotal = Decimal(booking.totals["rental_subtotal"])
-    service_fee = Decimal(booking.totals.get("service_fee", booking.totals.get("renter_fee", "0")))
-    expected_charge_cents = int((rental_subtotal + service_fee) * Decimal("100"))
+    renter_fee_total = Decimal(
+        booking.totals.get(
+            "renter_fee_total",
+            booking.totals.get("service_fee", booking.totals.get("renter_fee", "0")),
+        )
+    )
+    expected_charge_cents = int((rental_subtotal + renter_fee_total) * Decimal("100"))
     platform_fee_total = Decimal(booking.totals["platform_fee_total"])
     expected_fee_cents = int(platform_fee_total * Decimal("100"))
     owner_payout = Decimal(booking.totals["owner_payout"])
@@ -194,8 +200,13 @@ def test_create_booking_payment_intents_uses_booking_totals(
     assert len(created_calls) == 2
 
     rental_subtotal = Decimal(booking.totals["rental_subtotal"])
-    service_fee = Decimal(booking.totals.get("service_fee", booking.totals.get("renter_fee", "0")))
-    expected_charge_cents = int((rental_subtotal + service_fee) * Decimal("100"))
+    renter_fee_total = Decimal(
+        booking.totals.get(
+            "renter_fee_total",
+            booking.totals.get("service_fee", booking.totals.get("renter_fee", "0")),
+        )
+    )
+    expected_charge_cents = int((rental_subtotal + renter_fee_total) * Decimal("100"))
     deposit = Decimal(booking.totals.get("damage_deposit", "0"))
     expected_deposit_cents = int(deposit * Decimal("100"))
     platform_fee_total = Decimal(booking.totals["platform_fee_total"])
@@ -337,8 +348,13 @@ def test_booking_create_transient_error_is_retry_safe(renter_user, listing, monk
     expected_base = f"booking:{booking.id}:{stripe_api.IDEMPOTENCY_VERSION}"
     totals = booking.totals or {}
     rental_subtotal = Decimal(totals["rental_subtotal"])
-    service_fee = Decimal(totals.get("service_fee", totals.get("renter_fee", "0")))
-    expected_charge_cents = int((rental_subtotal + service_fee) * Decimal("100"))
+    renter_fee_total = Decimal(
+        totals.get(
+            "renter_fee_total",
+            totals.get("service_fee", totals.get("renter_fee", "0")),
+        )
+    )
+    expected_charge_cents = int((rental_subtotal + renter_fee_total) * Decimal("100"))
     platform_fee_total = Decimal(totals["platform_fee_total"])
     expected_fee_cents = int(platform_fee_total * Decimal("100"))
     expected_key = (

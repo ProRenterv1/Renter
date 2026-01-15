@@ -1,0 +1,14 @@
+Hi {{ owner.first_name|default:owner.username|default:"there" }},
+
+Your earnings statement for {{ listing_title }} is ready.
+
+Booking period: {{ date_range_display }}
+Rental subtotal: ${{ rental_subtotal }}
+Owner fee: ${{ owner_fee_base }}
+GST on owner fee: ${{ owner_fee_gst }}
+Net credited to you: ${{ owner_payout }}
+
+We only apply GST to platform fees. Your rental income is not GST-taxed in this receipt.
+
+Thanks,
+Rentino

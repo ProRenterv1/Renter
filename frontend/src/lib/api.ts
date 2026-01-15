@@ -342,6 +342,16 @@ export interface PromotionPricingResponse {
   price_per_day_cents: number;
 }
 
+export interface PromotionQuoteResponse {
+  price_per_day_cents: number;
+  duration_days: number;
+  base_cents: number;
+  gst_cents: number;
+  total_cents: number;
+  gst_enabled: boolean;
+  gst_rate: string;
+}
+
 export interface PromotionAvailabilityRange {
   start_date: string;
   end_date: string;
@@ -352,7 +362,7 @@ export interface PromotionPaymentPayload {
   promotion_start: string;
   promotion_end: string;
   base_price_cents: number;
-  gst_cents: number;
+  gst_cents?: number;
   stripe_payment_method_id?: string;
   stripe_customer_id?: string;
   save_payment_method?: boolean;
@@ -475,10 +485,27 @@ export interface OwnerPayoutHistoryResponse {
   next_offset: number | null;
 }
 
+export interface OwnerFeeInvoice {
+  id: number;
+  invoice_number: string;
+  period_start: string;
+  period_end: string;
+  fee_subtotal: string;
+  gst: string;
+  total: string;
+  created_at: string;
+}
+
+export interface OwnerFeeInvoiceListResponse {
+  results: OwnerFeeInvoice[];
+}
+
 export interface InstantPayoutResponse {
   executed: boolean;
   currency: string;
   amount_before_fee: string;
+  fee_base?: string;
+  fee_gst?: string;
   amount_after_fee: string;
   ok?: boolean;
   stripe_payout_id?: string;
@@ -491,11 +518,17 @@ export interface BookingTotals {
   daily_price_cad?: string;
   rental_subtotal?: string;
   renter_fee?: string;
+  renter_fee_base?: string;
+  renter_fee_gst?: string;
+  renter_fee_total?: string;
   owner_fee?: string;
   platform_fee_total?: string;
   owner_payout?: string;
   damage_deposit?: string;
   total_charge?: string;
+  gst_enabled?: boolean;
+  gst_rate?: string;
+  gst_number?: string;
   service_fee?: string; // deprecated alias, keep for backwards compatibility
 }
 
@@ -571,15 +604,16 @@ export function getBookingChargeAmount(source: BookingTotalsSource): number {
   if (!totals) {
     return 0;
   }
+  const totalCharge = toAmount(totals.total_charge ?? 0);
+  if (totalCharge) {
+    return totalCharge;
+  }
   const rentalSubtotal = toAmount(totals.rental_subtotal ?? totals.daily_price_cad ?? 0);
-  const serviceFee = toAmount(totals.service_fee ?? totals.renter_fee ?? 0);
+  const serviceFee = toAmount(
+    totals.renter_fee_total ?? totals.renter_fee ?? totals.service_fee ?? 0,
+  );
   if (rentalSubtotal || serviceFee) {
     return rentalSubtotal + serviceFee;
-  }
-  const totalCharge = toAmount(totals.total_charge ?? 0);
-  const damageDeposit = toAmount(totals.damage_deposit ?? 0);
-  if (totalCharge) {
-    return Math.max(totalCharge - damageDeposit, 0);
   }
   return 0;
 }
@@ -1321,6 +1355,16 @@ export const promotionsAPI = {
       method: "GET",
     });
   },
+  quote(listingId: number, promotionStart: string, promotionEnd: string) {
+    const search = new URLSearchParams({
+      listing_id: String(listingId),
+      promotion_start: promotionStart,
+      promotion_end: promotionEnd,
+    }).toString();
+    return jsonFetch<PromotionQuoteResponse>(`/promotions/quote/?${search}`, {
+      method: "GET",
+    });
+  },
   availability(listingId: number) {
     const search = new URLSearchParams({ listing_id: String(listingId) }).toString();
     return jsonFetch<PromotionAvailabilityRange[]>(`/promotions/availability/?${search}`, {
@@ -1396,6 +1440,17 @@ export const paymentsAPI = {
     const query = search.toString();
     const path = `/owner/payouts/history/${query ? `?${query}` : ""}`;
     return jsonFetch<OwnerPayoutHistoryResponse>(path, { method: "GET" });
+  },
+  listOwnerFeeInvoices() {
+    return jsonFetch<OwnerFeeInvoiceListResponse>("/owner/payouts/fee-invoices/", {
+      method: "GET",
+    });
+  },
+  downloadOwnerFeeInvoice(invoiceId: number) {
+    return jsonFetch<{ url: string; headers?: Record<string, string> }>(
+      `/owner/payouts/fee-invoices/${invoiceId}/download/`,
+      { method: "GET" },
+    );
   },
   updateBankDetails(payload: {
     transit_number: string;

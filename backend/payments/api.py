@@ -13,13 +13,16 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from payments.tax import compute_gst, platform_gst_enabled, platform_gst_rate
+from storage.s3 import presign_get
+
 from .ledger import (
     compute_owner_available_balance,
     compute_owner_balances,
     get_owner_history_queryset,
     log_transaction,
 )
-from .models import OwnerPayoutAccount, Transaction
+from .models import OwnerFeeTaxInvoice, OwnerPayoutAccount, Transaction
 from .stripe_api import (
     create_connect_onboarding_session,
     create_instant_payout,
@@ -345,6 +348,42 @@ def owner_payouts_history(request):
     )
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def owner_fee_invoices_list(request):
+    invoices = OwnerFeeTaxInvoice.objects.filter(owner=request.user).order_by("-period_start")
+    data = [
+        {
+            "id": invoice.id,
+            "invoice_number": invoice.invoice_number,
+            "period_start": invoice.period_start.isoformat(),
+            "period_end": invoice.period_end.isoformat(),
+            "fee_subtotal": _format_money(invoice.fee_subtotal),
+            "gst": _format_money(invoice.gst),
+            "total": _format_money(invoice.total),
+            "created_at": invoice.created_at.isoformat(),
+        }
+        for invoice in invoices
+    ]
+    return Response({"results": data})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def owner_fee_invoice_download(request, invoice_id: int):
+    invoice = OwnerFeeTaxInvoice.objects.filter(owner=request.user, pk=invoice_id).first()
+    if invoice is None:
+        return Response({"detail": "Invoice not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not invoice.pdf_s3_key:
+        return Response(
+            {"detail": "Invoice PDF not available yet."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    presign = presign_get(invoice.pdf_s3_key, response_content_type="application/pdf")
+    return Response({"url": presign["url"], "headers": presign.get("headers", {})})
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def owner_payouts_start_onboarding(request):
@@ -529,8 +568,10 @@ def owner_payouts_instant_payout(request):
         )
 
     fee_rate = getattr(settings, "INSTANT_PAYOUT_FEE_RATE", Decimal("0.03"))
-    fee = (available * fee_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    net = available - fee
+    fee_base = (available * fee_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    fee_gst = compute_gst(fee_base)
+    total_fee = (fee_base + fee_gst).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    net = available - total_fee
     if net <= Decimal("0.00"):
         return Response(
             {"detail": "Instant payout amount is too small after fees."},
@@ -547,6 +588,8 @@ def owner_payouts_instant_payout(request):
                 "executed": False,
                 "currency": "cad",
                 "amount_before_fee": str(amount_before_fee),
+                "fee_base": str(fee_base),
+                "fee_gst": str(fee_gst),
                 "amount_after_fee": str(amount_after_fee),
             }
         )
@@ -564,7 +607,14 @@ def owner_payouts_instant_payout(request):
             user=user,
             payout_account=payout_account,
             amount_cents=amount_cents,
-            metadata={"amount_before_fee": str(amount_before_fee)},
+            metadata={
+                "amount_before_fee": str(amount_before_fee),
+                "fee_base": str(fee_base),
+                "fee_gst": str(fee_gst),
+                "fee_total": str(total_fee),
+                "gst_enabled": str(platform_gst_enabled()),
+                "gst_rate": str(platform_gst_rate()),
+            },
         )
     except Exception as exc:
         if _is_stripe_api_error(exc):
@@ -579,8 +629,8 @@ def owner_payouts_instant_payout(request):
         stripe_payout_id = payout.get("id")  # type: ignore[arg-type]
 
     fee_transfer_id: str | None = None
-    if fee > Decimal("0"):
-        fee_cents = int((fee * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    if total_fee > Decimal("0"):
+        fee_cents = int((total_fee * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
         try:
             fee_transfer_id = transfer_earnings_to_platform(
                 payout_account=payout_account,
@@ -590,6 +640,11 @@ def owner_payouts_instant_payout(request):
                     "payout_id": str(stripe_payout_id or ""),
                     "amount_before_fee": str(amount_before_fee),
                     "amount_after_fee": str(amount_after_fee),
+                    "fee_base": str(fee_base),
+                    "fee_gst": str(fee_gst),
+                    "fee_total": str(total_fee),
+                    "gst_enabled": str(platform_gst_enabled()),
+                    "gst_rate": str(platform_gst_rate()),
                 },
             )
         except Exception as exc:
@@ -626,10 +681,20 @@ def owner_payouts_instant_payout(request):
         booking=None,
         promotion_slot=None,
         kind=Transaction.Kind.PLATFORM_FEE,
-        amount=fee,
+        amount=fee_base,
         currency="cad",
         stripe_id=fee_transfer_id or stripe_payout_id,
     )
+    if fee_gst > Decimal("0"):
+        log_transaction(
+            user=user,
+            booking=None,
+            promotion_slot=None,
+            kind=Transaction.Kind.GST_COLLECTED,
+            amount=fee_gst,
+            currency="cad",
+            stripe_id=fee_transfer_id or stripe_payout_id,
+        )
 
     return Response(
         {
@@ -637,6 +702,8 @@ def owner_payouts_instant_payout(request):
             "executed": True,
             "currency": "cad",
             "amount_before_fee": str(amount_before_fee),
+            "fee_base": str(fee_base),
+            "fee_gst": str(fee_gst),
             "amount_after_fee": str(amount_after_fee),
             "stripe_payout_id": stripe_payout_id,
         },

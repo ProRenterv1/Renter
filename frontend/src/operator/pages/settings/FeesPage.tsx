@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { operatorAPI, type OperatorEffectiveSetting } from "@/operator/api";
 import { useIsOperatorAdmin } from "@/operator/session";
 import { EditPlatformSettingModal } from "@/operator/components/modals/EditPlatformSettingModal";
+import { GstRegistrationModal } from "@/operator/components/modals/GstRegistrationModal";
 import { formatCurrency } from "@/lib/utils";
 import { RefreshCw } from "lucide-react";
 
@@ -48,6 +50,9 @@ export function FeesPage() {
   const [error, setError] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [selectedRow, setSelectedRow] = useState<FeeRow | null>(null);
+  const [gstModalOpen, setGstModalOpen] = useState(false);
+  const [gstModalMode, setGstModalMode] = useState<"enable" | "disable">("enable");
+  const [gstSaving, setGstSaving] = useState(false);
 
   const settingsByKey = useMemo(() => {
     const map = new Map<string, OperatorEffectiveSetting>();
@@ -73,6 +78,10 @@ export function FeesPage() {
   }, []);
 
   const selectedSetting = selectedRow ? settingsByKey.get(selectedRow.key) ?? null : null;
+  const gstEnabled = settingsByKey.get("ORG_GST_REGISTERED")?.value_json === true;
+  const gstNumberSetting = settingsByKey.get("ORG_GST_NUMBER")?.value_json;
+  const gstNumber = typeof gstNumberSetting === "string" ? gstNumberSetting.trim() : "";
+  const gstMasked = maskGstNumber(gstNumber);
 
   return (
     <div className="space-y-6">
@@ -94,6 +103,59 @@ export function FeesPage() {
           <CardContent className="p-6 text-destructive">{error}</CardContent>
         </Card>
       ) : null}
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle>Tax</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-col gap-4 rounded-lg border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <div className="font-semibold">Platform GST registered</div>
+                <Badge variant={gstEnabled ? "secondary" : "outline"}>
+                  {gstEnabled ? "GST On" : "GST Off"}
+                </Badge>
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground font-mono break-all">
+                ORG_GST_REGISTERED
+              </div>
+              <div className="mt-2 text-sm">
+                {gstEnabled ? (
+                  <span className={gstNumber ? "font-medium" : "text-destructive"}>
+                    {gstNumber ? gstMasked : "GST number missing"}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">Not registered</span>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              {gstEnabled ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setGstModalMode("enable");
+                    setGstModalOpen(true);
+                  }}
+                  disabled={!isAdmin || gstSaving || loading}
+                >
+                  Edit
+                </Button>
+              ) : null}
+              <Switch
+                checked={gstEnabled}
+                onCheckedChange={() => {
+                  if (!isAdmin || gstSaving || loading) return;
+                  setGstModalMode(gstEnabled ? "disable" : "enable");
+                  setGstModalOpen(true);
+                }}
+                disabled={!isAdmin || gstSaving || loading}
+              />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="pb-3">
@@ -148,6 +210,45 @@ export function FeesPage() {
           }}
         />
       ) : null}
+
+      <GstRegistrationModal
+        open={gstModalOpen}
+        mode={gstModalMode}
+        initialGstNumber={gstNumber}
+        onClose={() => setGstModalOpen(false)}
+        onSavingChange={setGstSaving}
+        onSubmit={async ({ gstNumber: newNumber, reason }) => {
+          try {
+            if (gstModalMode === "enable") {
+              await operatorAPI.putSetting({
+                key: "ORG_GST_NUMBER",
+                value_type: "str",
+                value: newNumber ?? "",
+                reason,
+              });
+              await operatorAPI.putSetting({
+                key: "ORG_GST_REGISTERED",
+                value_type: "bool",
+                value: true,
+                reason,
+              });
+              toast.success("GST enabled");
+            } else {
+              await operatorAPI.putSetting({
+                key: "ORG_GST_REGISTERED",
+                value_type: "bool",
+                value: false,
+                reason,
+              });
+              toast.success("GST disabled");
+            }
+            await load();
+          } catch (err: any) {
+            toast.error(err?.data?.detail || "Unable to update GST.");
+            throw err;
+          }
+        }}
+      />
     </div>
   );
 }
@@ -245,4 +346,11 @@ function coerceInt(value: unknown) {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+function maskGstNumber(value: string) {
+  const cleaned = value.replace(/\s+/g, "").toUpperCase();
+  if (!cleaned) return "";
+  if (cleaned.length <= 4) return cleaned;
+  return `${"*".repeat(cleaned.length - 4)}${cleaned.slice(-4)}`;
 }

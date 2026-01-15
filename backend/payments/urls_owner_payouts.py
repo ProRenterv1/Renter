@@ -7,6 +7,12 @@ app_name = "payments_owner_payouts"
 urlpatterns = [
     path("summary/", api.owner_payouts_summary, name="owner_payouts_summary"),
     path("history/", api.owner_payouts_history, name="owner_payouts_history"),
+    path("fee-invoices/", api.owner_fee_invoices_list, name="owner_fee_invoices_list"),
+    path(
+        "fee-invoices/<int:invoice_id>/download/",
+        api.owner_fee_invoice_download,
+        name="owner_fee_invoice_download",
+    ),
     path(
         "start-onboarding/",
         api.owner_payouts_start_onboarding,

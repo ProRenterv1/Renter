@@ -274,6 +274,10 @@ CELERY_BEAT_SCHEDULE.update(
             "task": "operator_health_ping",
             "schedule": crontab(),  # every minute
         },
+        "payments_generate_owner_fee_invoices_monthly": {
+            "task": "payments.generate_owner_fee_tax_invoices",
+            "schedule": crontab(day_of_month=1, hour=3, minute=10),
+        },
     }
 )
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

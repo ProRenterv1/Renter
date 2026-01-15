@@ -26,11 +26,20 @@ EXPECTED_TOTAL_KEYS = {
     "rental_subtotal",
     "service_fee",
     "renter_fee",
+    "renter_fee_base",
+    "renter_fee_gst",
+    "renter_fee_total",
     "owner_fee",
+    "owner_fee_base",
+    "owner_fee_gst",
+    "owner_fee_total",
     "platform_fee_total",
     "owner_payout",
     "damage_deposit",
     "total_charge",
+    "gst_enabled",
+    "gst_rate",
+    "gst_number",
 }
 CURRENCY_QUANTIZE = Decimal("0.01")
 

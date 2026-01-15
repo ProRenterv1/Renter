@@ -4,15 +4,44 @@ import pytest
 from django.urls import reverse
 from rest_framework.test import APIClient
 
+from core.settings_resolver import clear_settings_cache
+from operator_settings.models import DbSetting
 from payments.ledger import log_transaction
 from payments.models import OwnerPayoutAccount, Transaction
+from payments.tax import compute_fee_with_gst
 from promotions.models import PromotedSlot
 
 
 def _expected_base_and_gst(price_per_day_cents: int, days: int) -> tuple[int, int]:
     base = price_per_day_cents * days
-    gst = int((Decimal(base) * Decimal("0.05")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    _, gst_amount, _ = compute_fee_with_gst(
+        (Decimal(base) / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    )
+    gst = int((gst_amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     return base, gst
+
+
+@pytest.mark.django_db
+def test_promotion_quote_gst_disabled(owner_user, listing, settings):
+    settings.PROMOTION_PRICE_CENTS = 1500
+    api_client = APIClient()
+    api_client.force_authenticate(owner_user)
+
+    DbSetting.objects.create(
+        key="ORG_GST_REGISTERED",
+        value_json=False,
+        value_type="bool",
+    )
+    clear_settings_cache()
+
+    resp = api_client.get(
+        reverse("promotions:promotion_quote")
+        + f"?listing_id={listing.id}&promotion_start=2025-01-10&promotion_end=2025-01-12",
+        format="json",
+    )
+    assert resp.status_code == 200, resp.data
+    assert resp.data["gst_enabled"] is False
+    assert resp.data["gst_cents"] == 0
 
 
 @pytest.mark.django_db
@@ -131,12 +160,13 @@ def test_pay_for_promotion_rejects_mismatched_totals(monkeypatch, owner_user, li
     )
     monkeypatch.setattr("promotions.api.charge_promotion_payment", lambda **kwargs: "pi_test_123")
 
+    base_cents, gst_cents = _expected_base_and_gst(settings.PROMOTION_PRICE_CENTS, 7)
     payload = {
         "listing_id": listing.id,
         "promotion_start": "2025-01-10",
         "promotion_end": "2025-01-16",
-        "base_price_cents": 100,  # incorrect on purpose
-        "gst_cents": 5,
+        "base_price_cents": base_cents + 100,  # incorrect on purpose
+        "gst_cents": gst_cents,
         "stripe_payment_method_id": "pm_test_123",
     }
 

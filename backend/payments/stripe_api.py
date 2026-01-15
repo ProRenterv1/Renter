@@ -100,12 +100,18 @@ def _extract_booking_fees(booking: Booking) -> dict[str, Decimal]:
     totals = booking.totals or {}
 
     rental_subtotal = _parse_decimal(totals.get("rental_subtotal"), "rental_subtotal")
-    renter_fee_raw = totals.get("renter_fee")
+    renter_fee_raw = totals.get("renter_fee_total")
+    if renter_fee_raw is None:
+        renter_fee_raw = totals.get("renter_fee")
     if renter_fee_raw is None:
         renter_fee_raw = totals.get("service_fee")
     renter_fee = _parse_decimal(renter_fee_raw, "renter_fee")
-    owner_fee = _parse_decimal(totals.get("owner_fee"), "owner_fee")
-    platform_fee_total = _parse_decimal(totals.get("platform_fee_total"), "platform_fee_total")
+    owner_fee_raw = totals.get("owner_fee_total", totals.get("owner_fee"))
+    owner_fee = _parse_decimal(owner_fee_raw, "owner_fee")
+    platform_fee_total_value = totals.get("platform_fee_total")
+    if platform_fee_total_value is None:
+        platform_fee_total_value = renter_fee + owner_fee
+    platform_fee_total = _parse_decimal(platform_fee_total_value, "platform_fee_total")
 
     owner_payout_value = totals.get("owner_payout")
     owner_payout = (
@@ -1343,6 +1349,115 @@ def _extract_transfer_id_from_intent(intent_payload: Any) -> str | None:
     return None
 
 
+def _extract_application_fee_from_intent(intent_payload: Any) -> tuple[str | None, str | None]:
+    """Best-effort extraction of an application fee id/description from a PaymentIntent."""
+    if not intent_payload:
+        return None, None
+    if isinstance(intent_payload, dict):
+        charges = intent_payload.get("charges")
+    else:
+        charges = getattr(intent_payload, "charges", None)
+    if charges is None:
+        return None, None
+    if isinstance(charges, dict):
+        charge_data = charges.get("data") or []
+    else:
+        charge_data = getattr(charges, "data", []) or []
+    if not charge_data:
+        return None, None
+    charge = charge_data[0]
+    if isinstance(charge, dict):
+        application_fee = charge.get("application_fee")
+    else:
+        application_fee = getattr(charge, "application_fee", None)
+    fee_id = None
+    description = None
+    if isinstance(application_fee, dict):
+        fee_id = application_fee.get("id")
+        description = application_fee.get("description")
+    else:
+        fee_id = getattr(application_fee, "id", None)
+        description = getattr(application_fee, "description", None)
+    if fee_id:
+        return str(fee_id), description
+    if isinstance(application_fee, str):
+        return application_fee, description
+    return None, description
+
+
+def _extract_latest_charge_id(intent_payload: Any) -> str | None:
+    """Best-effort extraction of a latest_charge id from a PaymentIntent payload."""
+    if not intent_payload:
+        return None
+    if isinstance(intent_payload, dict):
+        latest_charge = intent_payload.get("latest_charge")
+    else:
+        latest_charge = getattr(intent_payload, "latest_charge", None)
+    if latest_charge:
+        return str(latest_charge)
+    return None
+
+
+def _maybe_update_application_fee_description(
+    *,
+    booking_id: int,
+    intent_payload: Any,
+    intent_id: str | None = None,
+) -> None:
+    """Ensure the application fee description includes the booking id."""
+    fee_id, fee_description = _extract_application_fee_from_intent(intent_payload)
+    if not fee_id and intent_id:
+        intent_payload = _retrieve_intent_with_transfer(intent_id)
+        fee_id, fee_description = _extract_application_fee_from_intent(intent_payload)
+    if not fee_id:
+        latest_charge_id = _extract_latest_charge_id(intent_payload)
+        if latest_charge_id:
+            try:
+                stripe.api_key = _get_stripe_api_key()
+                charge = stripe.Charge.retrieve(latest_charge_id)
+            except StripeConfigurationError:
+                return
+            except stripe.error.StripeError:
+                logger.warning(
+                    "stripe_webhook: failed to retrieve charge %s for fee description",
+                    latest_charge_id,
+                    exc_info=True,
+                )
+                return
+            if isinstance(charge, dict):
+                application_fee = charge.get("application_fee")
+            else:
+                application_fee = getattr(charge, "application_fee", None)
+            if isinstance(application_fee, dict):
+                fee_id = application_fee.get("id")
+                fee_description = application_fee.get("description")
+            else:
+                fee_id = getattr(application_fee, "id", None)
+                fee_description = getattr(application_fee, "description", None)
+            if not fee_id and isinstance(application_fee, str):
+                fee_id = application_fee
+
+    if not fee_id:
+        return
+
+    desired_description = f"Application fee for booking #{booking_id}"
+    if (fee_description or "").strip() == desired_description:
+        return
+
+    try:
+        stripe.api_key = _get_stripe_api_key()
+    except StripeConfigurationError:
+        return
+    try:
+        stripe.ApplicationFee.modify(fee_id, description=desired_description)
+    except stripe.error.StripeError:
+        logger.warning(
+            "stripe_webhook: failed to update application fee %s description",
+            fee_id,
+            exc_info=True,
+        )
+
+
 def _retrieve_intent_with_transfer(intent_id: str) -> Any | None:
     """Retrieve a PaymentIntent with expanded transfer details, if possible."""
     if not intent_id:
@@ -1352,7 +1467,10 @@ def _retrieve_intent_with_transfer(intent_id: str) -> Any | None:
     except StripeConfigurationError:
         return None
     try:
-        return stripe.PaymentIntent.retrieve(intent_id, expand=["charges.data.transfer"])
+        return stripe.PaymentIntent.retrieve(
+            intent_id,
+            expand=["charges.data.transfer", "charges.data.application_fee"],
+        )
     except TypeError:
         try:
             return stripe.PaymentIntent.retrieve(intent_id)
@@ -1430,6 +1548,7 @@ def create_booking_charge_intent(
 
     idempotency_base = f"booking:{booking.id}:{IDEMPOTENCY_VERSION}"
     env_label = getattr(settings, "STRIPE_ENV", "dev") or "dev"
+    totals = booking.totals or {}
     common_metadata = {
         "booking_id": str(booking.id),
         "listing_id": str(booking.listing_id),
@@ -1440,6 +1559,15 @@ def create_booking_charge_intent(
         "owner_fee": str(owner_fee),
         "platform_fee_total": str(platform_fee_total),
         "owner_payout": str(owner_payout),
+        "renter_fee_base": str(totals.get("renter_fee_base", totals.get("renter_fee", ""))),
+        "renter_fee_gst": str(totals.get("renter_fee_gst", "")),
+        "renter_fee_total": str(totals.get("renter_fee_total", "")),
+        "owner_fee_base": str(totals.get("owner_fee_base", totals.get("owner_fee", ""))),
+        "owner_fee_gst": str(totals.get("owner_fee_gst", "")),
+        "owner_fee_total": str(totals.get("owner_fee_total", "")),
+        "gst_enabled": str(totals.get("gst_enabled", False)),
+        "gst_rate": str(totals.get("gst_rate", "")),
+        "gst_number": str(totals.get("gst_number", "")),
         "env": env_label,
     }
     currency = "cad"
@@ -1503,8 +1631,6 @@ def create_booking_charge_intent(
                 transfer_data: dict[str, Any] = {
                     "destination": payout_account.stripe_account_id,
                 }
-                if owner_payout_cents > 0:
-                    transfer_data["amount"] = owner_payout_cents
                 charge_payload.update(
                     {
                         "application_fee_amount": platform_fee_cents,
@@ -2462,5 +2588,10 @@ def stripe_webhook(request):
                     logger.info(
                         "stripe_webhook: platform fee not logged; platform ledger user missing."
                     )
+                _maybe_update_application_fee_description(
+                    booking_id=booking.id,
+                    intent_payload=data_object,
+                    intent_id=intent_id or None,
+                )
 
     return Response(status=status.HTTP_200_OK)

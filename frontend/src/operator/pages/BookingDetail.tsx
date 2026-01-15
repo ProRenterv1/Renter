@@ -287,6 +287,7 @@ export function BookingDetail() {
               <div className="space-y-3">
                 <MoneyRow label="Subtotal (Rental)" value={money.subtotal} />
                 <MoneyRow label="Renter Service Fee" value={money.renterFee} />
+                <MoneyRow label="GST Paid" value={money.gstPaid} />
                 <MoneyRow label="Security Deposit (Hold)" value={money.deposit} />
                 <div className="pt-3 border-t border-border flex justify-between items-center">
                   <span className="font-medium">Total Charged to Renter</span>
@@ -704,13 +705,21 @@ function breakdownFromTotals(totals?: Record<string, unknown> | null) {
     const str = typeof value === "string" ? value : "";
     return str ? `$${str}` : "—";
   };
+  const toNumber = (value: unknown) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : 0;
+  };
   const subtotal = asMoney(totals?.rental_subtotal ?? totals?.subtotal);
   const renterFee = asMoney(totals?.renter_fee);
   const deposit = asMoney(totals?.damage_deposit);
   const total = asMoney(totals?.total_charge ?? totals?.total);
   const platformFee = asMoney(totals?.owner_fee ?? totals?.platform_fee ?? totals?.platform_fee_cents);
   const ownerPayout = asMoney(totals?.owner_payout ?? totals?.owner_payout_amount);
-  return { subtotal, renterFee, deposit, total, platformFee, ownerPayout };
+  const gstEnabled = Boolean(totals?.gst_enabled);
+  const gstPaid = gstEnabled
+    ? `$${(toNumber(totals?.renter_fee_gst) + toNumber(totals?.owner_fee_gst)).toFixed(2)}`
+    : "";
+  return { subtotal, renterFee, deposit, total, platformFee, ownerPayout, gstPaid };
 }
 
 function buildNotificationHistory(events: OperatorBookingEvent[]) {

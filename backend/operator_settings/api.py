@@ -25,6 +25,8 @@ from operator_settings.serializers import (
     MaintenanceBannerSerializer,
     OperatorJobRunSerializer,
     OperatorRunJobSerializer,
+    is_valid_gst_number,
+    normalize_gst_number,
 )
 from operator_settings.tasks import operator_run_job
 
@@ -120,6 +122,13 @@ def _current_effective_setting(key: str, *, now: datetime) -> DbSetting | None:
     )
 
 
+def _current_effective_setting_value(key: str, *, now: datetime, default: object) -> object:
+    setting = _current_effective_setting(key, now=now)
+    if setting is None:
+        return default
+    return setting.value_json
+
+
 def _to_decimal(value) -> Decimal:
     if isinstance(value, Decimal):
         return value
@@ -180,6 +189,29 @@ class OperatorSettingsView(APIView):
         ip, user_agent = _request_ip_and_ua(request)
         with transaction.atomic():
             now = timezone.now()
+            if key == "ORG_GST_REGISTERED" and value is True:
+                raw_number = _current_effective_setting_value(
+                    "ORG_GST_NUMBER",
+                    now=now,
+                    default="",
+                )
+                normalized = normalize_gst_number(str(raw_number or ""))
+                if not normalized or not is_valid_gst_number(normalized):
+                    return Response(
+                        {"detail": "GST number is required when GST registration is enabled."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            if key == "ORG_GST_NUMBER":
+                gst_enabled = _current_effective_setting_value(
+                    "ORG_GST_REGISTERED",
+                    now=now,
+                    default=False,
+                )
+                if gst_enabled and not value:
+                    return Response(
+                        {"detail": "GST number is required when GST registration is enabled."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
             before = _db_setting_dict(_current_effective_setting(key, now=now))
 
             setting = DbSetting.objects.create(
@@ -269,6 +301,9 @@ class OperatorSettingsCurrentView(APIView):
                 DbSetting.ValueType.INT,
                 int(getattr(settings, "PROMOTION_PRICE_CENTS", 0) or 0),
             ),
+            ("ORG_GST_REGISTERED", DbSetting.ValueType.BOOL, False),
+            ("ORG_GST_NUMBER", DbSetting.ValueType.STR, ""),
+            ("ORG_GST_RATE", DbSetting.ValueType.DECIMAL, "0.05"),
             ("DISPUTE_FILING_WINDOW_HOURS", DbSetting.ValueType.INT, 24),
             ("DISPUTE_REBUTTAL_WINDOW_HOURS", DbSetting.ValueType.INT, 24),
             ("DISPUTE_APPEAL_WINDOW_DAYS", DbSetting.ValueType.INT, 5),

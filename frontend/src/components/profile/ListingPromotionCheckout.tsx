@@ -30,6 +30,11 @@ interface ListingPromotionCheckoutProps {
 }
 
 const formatCents = (value: number) => formatCurrency(value / 100, "CAD");
+const formatPercent = (value: number) => {
+  if (!Number.isFinite(value)) return "0";
+  const rounded = Math.round(value * 100) / 100;
+  return rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(2);
+};
 
 type Step = "schedule" | "payment" | "success";
 type PaymentMode = "card" | "earnings";
@@ -41,6 +46,9 @@ interface PromotionQuote {
   baseCents: number;
   gstCents: number;
   totalCents: number;
+  pricePerDayCents: number;
+  gstEnabled: boolean;
+  gstRate: number;
 }
 
 const cardElementOptions: StripeCardElementOptions = {
@@ -86,7 +94,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
   const [pricePerDayCents, setPricePerDayCents] = useState<number | null>(null);
   const [pricingError, setPricingError] = useState<string | null>(null);
-  const [isLoadingPricing, setIsLoadingPricing] = useState<boolean>(true);
+  const [isLoadingPricing, setIsLoadingPricing] = useState<boolean>(false);
   const [checkoutSummary, setCheckoutSummary] = useState<PromotionQuote | null>(null);
   const [paymentForm, setPaymentForm] = useState(createInitialBillingState);
   const [savePaymentMethod, setSavePaymentMethod] = useState(true);
@@ -103,20 +111,6 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
   const [selectedSavedMethodId, setSelectedSavedMethodId] = useState<number | null>(null);
   const [earningsError, setEarningsError] = useState<string | null>(null);
   const currentUser = AuthStore.getCurrentUser();
-
-  const loadPricing = useCallback(async () => {
-    setIsLoadingPricing(true);
-    setPricingError(null);
-    try {
-      const data = await promotionsAPI.fetchPromotionPricing(listing.id);
-      setPricePerDayCents(data?.price_per_day_cents ?? null);
-    } catch {
-      setPricingError("Failed to load promotion pricing. Please try again.");
-      setPricePerDayCents(null);
-    } finally {
-      setIsLoadingPricing(false);
-    }
-  }, [listing.id]);
 
   const loadAvailability = useCallback(async () => {
     setIsLoadingAvailability(true);
@@ -148,10 +142,6 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
   }, [listing.id]);
 
   useEffect(() => {
-    void loadPricing();
-  }, [loadPricing]);
-
-  useEffect(() => {
     setBlockedDates([]);
     void loadAvailability();
   }, [loadAvailability]);
@@ -166,6 +156,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
     setStep("schedule");
     setCheckoutSummary(null);
     setSuccessSlot(null);
+    setPricePerDayCents(null);
   }, [listing.id, today]);
 
   const durationDays = useMemo(() => {
@@ -176,9 +167,9 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
     return 0;
   }, [dateRange]);
 
-  const baseCents = pricePerDayCents && durationDays > 0 ? pricePerDayCents * durationDays : 0;
-  const gstCents = Math.round(baseCents * 0.05);
-  const totalCents = baseCents + gstCents;
+  const baseCents = checkoutSummary?.baseCents ?? 0;
+  const gstCents = checkoutSummary?.gstCents ?? 0;
+  const totalCents = checkoutSummary?.totalCents ?? 0;
 
   const promotionStart = dateRange.from ? format(dateRange.from, "yyyy-MM-dd") : "";
   const promotionEnd = dateRange.to ? format(dateRange.to, "yyyy-MM-dd") : "";
@@ -203,6 +194,56 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
       return false;
     }
   }, [dateRange, isDateBlocked]);
+
+  useEffect(() => {
+    if (!dateRange.from || !dateRange.to || durationDays <= 0) {
+      setCheckoutSummary(null);
+      setPricePerDayCents(null);
+      return;
+    }
+    if (selectionHasBlockedDays) {
+      setCheckoutSummary(null);
+      return;
+    }
+
+    let cancelled = false;
+    const promotionStart = format(dateRange.from, "yyyy-MM-dd");
+    const promotionEnd = format(dateRange.to, "yyyy-MM-dd");
+
+    setIsLoadingPricing(true);
+    setPricingError(null);
+    void promotionsAPI
+      .quote(listing.id, promotionStart, promotionEnd)
+      .then((quote) => {
+        if (cancelled) return;
+        setPricePerDayCents(quote.price_per_day_cents);
+        setCheckoutSummary({
+          startDate: promotionStart,
+          endDate: promotionEnd,
+          durationDays: quote.duration_days,
+          baseCents: quote.base_cents,
+          gstCents: quote.gst_cents,
+          totalCents: quote.total_cents,
+          pricePerDayCents: quote.price_per_day_cents,
+          gstEnabled: quote.gst_enabled,
+          gstRate: parseMoney(quote.gst_rate),
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCheckoutSummary(null);
+        setPricingError("Failed to load promotion pricing. Please try again.");
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingPricing(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dateRange.from, dateRange.to, durationDays, listing.id, selectionHasBlockedDays]);
 
   const preferredAvailableString =
     payoutSummary?.balances?.connect_available_earnings ??
@@ -245,7 +286,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
   };
 
   const handleProceedToPayment = () => {
-    if (!dateRange.from || !dateRange.to || durationDays <= 0 || !pricePerDayCents) {
+    if (!dateRange.from || !dateRange.to || durationDays <= 0 || !checkoutSummary) {
       setPricingError("Please select a valid date range to continue.");
       return;
     }
@@ -263,12 +304,9 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
     setEarningsError(null);
     setPricingError(null);
     setCheckoutSummary({
+      ...checkoutSummary,
       startDate: promotionStart,
       endDate: promotionEnd,
-      durationDays,
-      baseCents,
-      gstCents,
-      totalCents,
     });
     setPaymentError(null);
     setStep("payment");
@@ -636,10 +674,12 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
                 <span>Promotion ({durationDays || 0} {durationDays === 1 ? "day" : "days"})</span>
                 <span>{formatCents(baseCents)}</span>
               </div>
-              <div className="flex items-center justify-between">
-                <span>GST (5%)</span>
-                <span>{formatCents(gstCents)}</span>
-              </div>
+              {checkoutSummary?.gstEnabled && gstCents > 0 ? (
+                <div className="flex items-center justify-between">
+                  <span>GST ({formatPercent((checkoutSummary.gstRate || 0) * 100)}%)</span>
+                  <span>{formatCents(gstCents)}</span>
+                </div>
+              ) : null}
               <Separator />
               <div className="flex items-center justify-between text-base font-semibold text-foreground">
                 <span>Total</span>
@@ -648,7 +688,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
               <Button
                 className="w-full rounded-full"
                 disabled={
-                  !pricePerDayCents ||
+                  !checkoutSummary ||
                   !dateRange.from ||
                   !dateRange.to ||
                   durationDays <= 0 ||
@@ -670,7 +710,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
 
   const renderPaymentStep = () => {
     if (!checkoutSummary) return null;
-    const chargeAmount = checkoutSummary.baseCents + checkoutSummary.gstCents;
+    const chargeAmount = checkoutSummary.totalCents;
     const canPayWithEarnings =
       !!payoutSummary?.connect?.has_account &&
       !!payoutSummary?.connect?.payouts_enabled &&

@@ -47,10 +47,19 @@ def create_booking(listing, owner, renter):
             "rental_subtotal": "80.00",
             "service_fee": "20.00",
             "owner_fee": "4.00",
-            "platform_fee_total": "24.00",
-            "owner_payout": "76.00",
+            "renter_fee_base": "20.00",
+            "renter_fee_gst": "1.00",
+            "renter_fee_total": "21.00",
+            "owner_fee_base": "4.00",
+            "owner_fee_gst": "0.20",
+            "owner_fee_total": "4.20",
+            "platform_fee_total": "25.20",
+            "owner_payout": "75.80",
             "damage_deposit": "15.00",
-            "total_charge": "115.00",
+            "total_charge": "116.00",
+            "gst_enabled": True,
+            "gst_rate": "0.05",
+            "gst_number": "123456789RT0001",
         },
     )
 
@@ -118,7 +127,7 @@ def test_create_booking_payment_intents_logs_transactions(monkeypatch, settings)
 
     charge_txn = Transaction.objects.get(kind=Transaction.Kind.BOOKING_CHARGE)
     assert Transaction.objects.count() == 1
-    assert charge_txn.amount == Decimal("100.00")
+    assert charge_txn.amount == Decimal("101.00")
     assert charge_txn.stripe_id == charge_id
 
     assert booking.charge_payment_intent_id == charge_id
@@ -162,9 +171,9 @@ def test_create_booking_payment_intents_logs_transactions(monkeypatch, settings)
     assert charge_call["automatic_payment_methods"]["allow_redirects"] == "never"
     assert deposit_call["automatic_payment_methods"]["enabled"] is True
     assert deposit_call["automatic_payment_methods"]["allow_redirects"] == "never"
-    assert charge_call["application_fee_amount"] == 2400
+    assert charge_call["application_fee_amount"] == 2520
     assert charge_call["transfer_data"]["destination"] == "acct_test_owner"
-    assert charge_call["transfer_data"]["amount"] == 7600
+    assert charge_call["transfer_data"]["amount"] == 7580
     assert charge_call["transfer_group"] == f"booking:{booking.id}"
     assert charge_call["on_behalf_of"] == "acct_test_owner"
 

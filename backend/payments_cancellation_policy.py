@@ -116,8 +116,12 @@ def compute_refund_amounts(
 
     totals = booking.totals or {}
     rental_subtotal = _get_total_decimal(totals, "rental_subtotal")
-    renter_fee = _get_total_decimal(totals, "renter_fee", totals.get("service_fee", "0"))
-    owner_fee = _get_total_decimal(totals, "owner_fee")
+    renter_fee = _get_total_decimal(
+        totals,
+        "renter_fee_total",
+        totals.get("renter_fee", totals.get("service_fee", "0")),
+    )
+    owner_fee = _get_total_decimal(totals, "owner_fee_total", totals.get("owner_fee", "0"))
     owner_payout = _get_total_decimal(totals, "owner_payout")
     platform_fee_total = _get_total_decimal(totals, "platform_fee_total")
     damage_deposit = _get_total_decimal(totals, "damage_deposit")

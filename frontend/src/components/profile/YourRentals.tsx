@@ -77,6 +77,14 @@ const formatDisputeStatusLabel = (status: DisputeStatus): string => {
   }
 };
 
+const formatPercent = (value: number): string => {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+  const rounded = Math.round(value * 100) / 100;
+  return rounded % 1 === 0 ? String(rounded.toFixed(0)) : rounded.toFixed(2);
+};
+
 interface RentalRow {
   bookingId: number;
   toolName: string;
@@ -90,6 +98,9 @@ interface RentalRow {
   amountToPay: number;
   rentalSubtotal: number;
   serviceFee: number;
+  renterFeeGst: number;
+  gstRate: number;
+  gstEnabled: boolean;
   damageDeposit: number;
   isPayable: boolean;
   isCancelable: boolean;
@@ -108,6 +119,9 @@ type PayableRental = RentalRow & {
   bookingId: number;
   rentalSubtotal: number;
   serviceFee: number;
+  renterFeeGst: number;
+  gstRate: number;
+  gstEnabled: boolean;
   damageDeposit: number;
 };
 
@@ -754,13 +768,18 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
         const bookingWithReturn = booking as BookingWithReturnFields;
         const totals = booking.totals as BookingTotalsWithBase | null;
         let rentalSubtotal = parseMoney(totals?.rental_subtotal ?? totals?.base_amount ?? 0);
-        const rawServiceFee = parseMoney(totals?.service_fee ?? totals?.renter_fee ?? 0);
+        const rawServiceFee = parseMoney(
+          totals?.renter_fee_base ?? totals?.service_fee ?? totals?.renter_fee ?? 0,
+        );
         const amountToPay = getBookingChargeAmount(booking);
         if (!rentalSubtotal && amountToPay && rawServiceFee && amountToPay >= rawServiceFee) {
           rentalSubtotal = Math.max(amountToPay - rawServiceFee, 0);
         }
         const serviceFee =
           rawServiceFee || Math.max(amountToPay - rentalSubtotal, 0);
+        const renterFeeGst = parseMoney(totals?.renter_fee_gst ?? 0);
+        const gstRate = parseMoney(totals?.gst_rate ?? 0);
+        const gstEnabled = totals?.gst_enabled === true;
         const damageDeposit = getBookingDamageDeposit(booking);
         const ownerFirstName = booking.listing_owner_first_name?.trim() || "";
         const ownerLastName = booking.listing_owner_last_name?.trim() || "";
@@ -778,6 +797,9 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
           amountToPay,
           rentalSubtotal,
           serviceFee,
+          renterFeeGst,
+          gstRate,
+          gstEnabled,
           damageDeposit,
           isPayable: booking.status === "confirmed",
           isCancelable: cancelableStatuses.includes(booking.status),
@@ -1051,6 +1073,9 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
       bookingId: row.bookingId,
       rentalSubtotal: row.rentalSubtotal,
       serviceFee: row.serviceFee,
+      renterFeeGst: row.renterFeeGst,
+      gstRate: row.gstRate,
+      gstEnabled: row.gstEnabled,
       damageDeposit: row.damageDeposit,
     });
   };
@@ -1121,7 +1146,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
   }
 
   if (payingRental) {
-    const chargeAmount = payingRental.rentalSubtotal + payingRental.serviceFee;
+    const chargeAmount = payingRental.amountToPay;
     const depositHold = payingRental.damageDeposit;
     const estimatedTotal = depositHold;
     const isPaymentDisabled =
@@ -1383,6 +1408,14 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                     <span className="text-muted-foreground">Service fee</span>
                     <span>{formatCurrency(payingRental.serviceFee)}</span>
                   </div>
+                  {payingRental.gstEnabled && payingRental.renterFeeGst > 0 ? (
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">
+                        GST ({formatPercent(payingRental.gstRate * 100)}%)
+                      </span>
+                      <span>{formatCurrency(payingRental.renterFeeGst)}</span>
+                    </div>
+                  ) : null}
 
                   <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">Damage deposit hold</span>

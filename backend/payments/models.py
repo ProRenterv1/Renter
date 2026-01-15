@@ -9,6 +9,7 @@ class Transaction(models.Model):
         OWNER_EARNING = "OWNER_EARNING", "Owner earning"
         OWNER_PAYOUT = "OWNER_PAYOUT", "Owner payout"
         PLATFORM_FEE = "PLATFORM_FEE", "Platform fee"
+        GST_COLLECTED = "GST_COLLECTED", "GST collected"
         DAMAGE_DEPOSIT_CAPTURE = "DAMAGE_DEPOSIT_CAPTURE", "Damage deposit capture"
         DAMAGE_DEPOSIT_RELEASE = "DAMAGE_DEPOSIT_RELEASE", "Damage deposit release"
         PROMOTION_CHARGE = "PROMOTION_CHARGE", "Promotion charge"
@@ -87,6 +88,30 @@ class OwnerPayoutAccount(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user} - {self.stripe_account_id}"
+
+
+class OwnerFeeTaxInvoice(models.Model):
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="owner_fee_invoices",
+    )
+    period_start = models.DateField()
+    period_end = models.DateField()
+    fee_subtotal = models.DecimalField(max_digits=10, decimal_places=2, default="0.00")
+    gst = models.DecimalField(max_digits=10, decimal_places=2, default="0.00")
+    total = models.DecimalField(max_digits=10, decimal_places=2, default="0.00")
+    invoice_number = models.CharField(max_length=64, unique=True)
+    gst_number_snapshot = models.CharField(max_length=64, blank=True, default="")
+    pdf_s3_key = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-period_start", "-created_at"]
+        unique_together = [("owner", "period_start", "period_end")]
+
+    def __str__(self) -> str:
+        return f"{self.invoice_number} ({self.owner_id})"
 
 
 class PaymentMethod(models.Model):

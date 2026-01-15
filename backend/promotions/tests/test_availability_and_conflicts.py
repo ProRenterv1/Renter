@@ -8,6 +8,7 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from payments.tax import compute_fee_with_gst
 from promotions.api import PROMOTION_CONFLICT_MESSAGE
 from promotions.models import PromotedSlot
 
@@ -20,7 +21,10 @@ def _combine(value: date) -> datetime:
 
 def _expected_base_and_gst(price_per_day_cents: int, days: int) -> tuple[int, int]:
     base = price_per_day_cents * days
-    gst = int((Decimal(base) * Decimal("0.05")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    _, gst_amount, _ = compute_fee_with_gst(
+        (Decimal(base) / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    )
+    gst = int((gst_amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     return base, gst
 
 

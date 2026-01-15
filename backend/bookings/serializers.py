@@ -118,6 +118,7 @@ class BookingSerializer(serializers.ModelSerializer):
             "stripe_customer_id",
             "created_at",
             "updated_at",
+            "paid_at",
         )
         read_only_fields = (
             "id",
@@ -144,6 +145,7 @@ class BookingSerializer(serializers.ModelSerializer):
             "status_label",
             "created_at",
             "updated_at",
+            "paid_at",
             "listing_owner_first_name",
             "listing_owner_last_name",
             "listing_owner_username",
