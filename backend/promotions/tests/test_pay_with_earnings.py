@@ -75,7 +75,16 @@ def seeded_earnings(settings, owner_user, listing):
     return Decimal("50.00")
 
 
-def _promotion_payload(listing_id: int, start: date, end: date, price_per_day_cents: int) -> dict:
+def _promotion_payload(
+    listing_id: int,
+    start: date,
+    end: date,
+    price_per_day_cents: int | None = None,
+) -> dict:
+    if price_per_day_cents is None:
+        from django.conf import settings
+
+        price_per_day_cents = int(getattr(settings, "PROMOTION_PRICE_CENTS", 0))
     duration_days = (end - start).days + 1
     base_cents = price_per_day_cents * duration_days
     _, gst_amount, _ = compute_fee_with_gst(Decimal(base_cents) / Decimal("100"))

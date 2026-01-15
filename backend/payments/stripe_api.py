@@ -106,12 +106,19 @@ def _extract_booking_fees(booking: Booking) -> dict[str, Decimal]:
     if renter_fee_raw is None:
         renter_fee_raw = totals.get("service_fee")
     renter_fee = _parse_decimal(renter_fee_raw, "renter_fee")
-    owner_fee_raw = totals.get("owner_fee_total", totals.get("owner_fee"))
-    owner_fee = _parse_decimal(owner_fee_raw, "owner_fee")
     platform_fee_total_value = totals.get("platform_fee_total")
-    if platform_fee_total_value is None:
-        platform_fee_total_value = renter_fee + owner_fee
-    platform_fee_total = _parse_decimal(platform_fee_total_value, "platform_fee_total")
+    platform_fee_total = (
+        _parse_decimal(platform_fee_total_value, "platform_fee_total")
+        if platform_fee_total_value is not None
+        else None
+    )
+    owner_fee_raw = totals.get("owner_fee_total", totals.get("owner_fee"))
+    if owner_fee_raw is None and platform_fee_total is not None:
+        owner_fee = platform_fee_total - renter_fee
+    else:
+        owner_fee = _parse_decimal(owner_fee_raw, "owner_fee")
+    if platform_fee_total is None:
+        platform_fee_total = renter_fee + owner_fee
 
     owner_payout_value = totals.get("owner_payout")
     owner_payout = (
@@ -440,6 +447,15 @@ def ensure_connect_account(user: User, business_type: str | None = None) -> Owne
                 )
             else:
                 _handle_stripe_error(exc)
+        except (stripe.error.AuthenticationError, stripe.error.PermissionError) as exc:
+            if payout_account is not None:
+                logger.warning(
+                    "connect_account_sync_skipped",
+                    extra={"user_id": user.id, "account_id": existing_account_id},
+                )
+                payout_account.business_type = desired_business_type
+                return payout_account
+            _handle_stripe_error(exc)
         except stripe.error.StripeError as exc:
             _handle_stripe_error(exc)
 
@@ -1630,6 +1646,7 @@ def create_booking_charge_intent(
             if use_destination_charges:
                 transfer_data: dict[str, Any] = {
                     "destination": payout_account.stripe_account_id,
+                    "amount": owner_payout_cents,
                 }
                 charge_payload.update(
                     {
