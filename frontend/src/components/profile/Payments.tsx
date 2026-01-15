@@ -16,7 +16,7 @@ import {
   type OwnerPayoutOnboardingResponse,
 } from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, parseMoney } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
@@ -1031,22 +1031,40 @@ export function Payments() {
 
             {instantError && <p className="text-sm text-red-600">{instantError}</p>}
 
-            {instantQuote && !instantLoading && !instantError && (
-              <>
-                <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-                  You&apos;ll receive:
-                </p>
-                <p className="text-2xl font-semibold">
-                  {new Intl.NumberFormat(undefined, {
-                    style: "currency",
-                    currency: instantQuote.currency.toUpperCase(),
-                  }).format(Number(instantQuote.amount_after_fee))}
-                </p>
-                <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-                  The payout will be sent to your current payout bank account.
-                </p>
-              </>
-            )}
+            {instantQuote && !instantLoading && !instantError && (() => {
+              const feeBase = parseMoney(instantQuote.fee_base ?? 0);
+              const feeGst = parseMoney(instantQuote.fee_gst ?? 0);
+              const net = parseMoney(instantQuote.amount_after_fee ?? 0);
+              return (
+                <>
+                  <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+                    You&apos;ll receive:
+                  </p>
+                  <p className="text-2xl font-semibold">
+                    {formatCurrency(net, instantQuote.currency.toUpperCase())}
+                  </p>
+                  <div className="space-y-1 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Instant payout fee</span>
+                      <span>{formatCurrency(feeBase, instantQuote.currency.toUpperCase())}</span>
+                    </div>
+                    {feeGst > 0 ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">GST on fee</span>
+                        <span>{formatCurrency(feeGst, instantQuote.currency.toUpperCase())}</span>
+                      </div>
+                    ) : null}
+                    <div className="flex items-center justify-between font-medium">
+                      <span>Net amount</span>
+                      <span>{formatCurrency(net, instantQuote.currency.toUpperCase())}</span>
+                    </div>
+                  </div>
+                  <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+                    The payout will be sent to your current payout bank account.
+                  </p>
+                </>
+              );
+            })()}
 
             <div className="flex items-start gap-2 pt-2">
               <Checkbox

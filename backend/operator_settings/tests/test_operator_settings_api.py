@@ -120,6 +120,46 @@ def test_settings_put_requires_reason(operator_admin_client):
     assert resp.status_code == 400
 
 
+def test_gst_registration_requires_number(operator_admin_client):
+    resp = operator_admin_client.put(
+        "/api/operator/settings/",
+        {
+            "key": "ORG_GST_REGISTERED",
+            "value_type": "bool",
+            "value": True,
+            "reason": "enable gst",
+        },
+        format="json",
+    )
+    assert resp.status_code == 400, resp.data
+
+
+def test_gst_number_then_enable(operator_admin_client):
+    number_resp = operator_admin_client.put(
+        "/api/operator/settings/",
+        {
+            "key": "ORG_GST_NUMBER",
+            "value_type": "str",
+            "value": "123456789RT0001",
+            "reason": "set gst",
+        },
+        format="json",
+    )
+    assert number_resp.status_code == 201, number_resp.data
+
+    enable_resp = operator_admin_client.put(
+        "/api/operator/settings/",
+        {
+            "key": "ORG_GST_REGISTERED",
+            "value_type": "bool",
+            "value": True,
+            "reason": "enable gst",
+        },
+        format="json",
+    )
+    assert enable_resp.status_code == 201, enable_resp.data
+
+
 def test_support_can_get_feature_flags_but_cannot_put(operator_support_client):
     resp = operator_support_client.get("/api/operator/feature-flags/")
     assert resp.status_code == 200, resp.data

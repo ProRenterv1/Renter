@@ -12,6 +12,9 @@ from payments.stripe_api import create_owner_transfer_for_booking
 
 logger = logging.getLogger(__name__)
 
+# Ensure auxiliary tasks are registered with Celery.
+from payments import tasks_tax_invoices as _tasks_tax_invoices  # noqa: F401,E402
+
 
 @shared_task(name="payments.process_owner_payouts")
 def process_owner_payouts():

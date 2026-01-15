@@ -274,6 +274,10 @@ CELERY_BEAT_SCHEDULE.update(
             "task": "operator_health_ping",
             "schedule": crontab(),  # every minute
         },
+        "payments_generate_owner_fee_invoices_monthly": {
+            "task": "payments.generate_owner_fee_tax_invoices",
+            "schedule": crontab(day_of_month=1, hour=3, minute=10),
+        },
     }
 )
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -322,6 +326,10 @@ STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY", default="")
 STRIPE_ENV = env("STRIPE_ENV", default="dev")
 STRIPE_PUBLISHABLE_KEY = env("STRIPE_PUBLISHABLE_KEY", default="")
 STRIPE_WEBHOOK_SECRET = env("STRIPE_WEBHOOK_SECRET", default="")
+STRIPE_BOOKINGS_DESTINATION_CHARGES = env.bool(
+    "STRIPE_BOOKINGS_DESTINATION_CHARGES",
+    default=True,
+)
 CONNECT_BUSINESS_NAME = env("CONNECT_BUSINESS_NAME", default="Rentino")
 CONNECT_BUSINESS_URL = env("CONNECT_BUSINESS_URL", default=FRONTEND_ORIGIN)
 CONNECT_BUSINESS_PRODUCT_DESCRIPTION = env(

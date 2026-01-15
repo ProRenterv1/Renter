@@ -118,6 +118,7 @@ class BookingSerializer(serializers.ModelSerializer):
             "stripe_customer_id",
             "created_at",
             "updated_at",
+            "paid_at",
         )
         read_only_fields = (
             "id",
@@ -144,6 +145,7 @@ class BookingSerializer(serializers.ModelSerializer):
             "status_label",
             "created_at",
             "updated_at",
+            "paid_at",
             "listing_owner_first_name",
             "listing_owner_last_name",
             "listing_owner_username",
@@ -331,14 +333,19 @@ class BookingSerializer(serializers.ModelSerializer):
                 booking.charge_payment_intent_id = charge_id or ""
                 booking.renter_stripe_customer_id = customer_id or ""
                 booking.renter_stripe_payment_method_id = payment_method_id or ""
-                booking.save(
-                    update_fields=[
-                        "charge_payment_intent_id",
-                        "renter_stripe_customer_id",
-                        "renter_stripe_payment_method_id",
-                        "updated_at",
-                    ]
-                )
+                booking.status = Booking.Status.PAID
+                if hasattr(booking, "paid_at"):
+                    booking.paid_at = timezone.now()
+                update_fields = [
+                    "charge_payment_intent_id",
+                    "renter_stripe_customer_id",
+                    "renter_stripe_payment_method_id",
+                    "status",
+                    "updated_at",
+                ]
+                if hasattr(booking, "paid_at"):
+                    update_fields.append("paid_at")
+                booking.save(update_fields=update_fields)
 
         try:
             notification_tasks.send_booking_request_email.delay(listing.owner_id, booking.id)

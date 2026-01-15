@@ -100,12 +100,25 @@ def _extract_booking_fees(booking: Booking) -> dict[str, Decimal]:
     totals = booking.totals or {}
 
     rental_subtotal = _parse_decimal(totals.get("rental_subtotal"), "rental_subtotal")
-    renter_fee_raw = totals.get("renter_fee")
+    renter_fee_raw = totals.get("renter_fee_total")
+    if renter_fee_raw is None:
+        renter_fee_raw = totals.get("renter_fee")
     if renter_fee_raw is None:
         renter_fee_raw = totals.get("service_fee")
     renter_fee = _parse_decimal(renter_fee_raw, "renter_fee")
-    owner_fee = _parse_decimal(totals.get("owner_fee"), "owner_fee")
-    platform_fee_total = _parse_decimal(totals.get("platform_fee_total"), "platform_fee_total")
+    platform_fee_total_value = totals.get("platform_fee_total")
+    platform_fee_total = (
+        _parse_decimal(platform_fee_total_value, "platform_fee_total")
+        if platform_fee_total_value is not None
+        else None
+    )
+    owner_fee_raw = totals.get("owner_fee_total", totals.get("owner_fee"))
+    if owner_fee_raw is None and platform_fee_total is not None:
+        owner_fee = platform_fee_total - renter_fee
+    else:
+        owner_fee = _parse_decimal(owner_fee_raw, "owner_fee")
+    if platform_fee_total is None:
+        platform_fee_total = renter_fee + owner_fee
 
     owner_payout_value = totals.get("owner_payout")
     owner_payout = (
@@ -434,6 +447,15 @@ def ensure_connect_account(user: User, business_type: str | None = None) -> Owne
                 )
             else:
                 _handle_stripe_error(exc)
+        except (stripe.error.AuthenticationError, stripe.error.PermissionError) as exc:
+            if payout_account is not None:
+                logger.warning(
+                    "connect_account_sync_skipped",
+                    extra={"user_id": user.id, "account_id": existing_account_id},
+                )
+                payout_account.business_type = desired_business_type
+                return payout_account
+            _handle_stripe_error(exc)
         except stripe.error.StripeError as exc:
             _handle_stripe_error(exc)
 
@@ -1147,6 +1169,13 @@ def create_instant_payout(
 
 def create_owner_transfer_for_booking(*, booking: Booking, payment_intent_id: str) -> None:
     """Transfer the owner's share of a paid booking to their Connect account."""
+    if getattr(settings, "STRIPE_BOOKINGS_DESTINATION_CHARGES", True):
+        logger.debug(
+            "Skipping owner transfer; destination charges enabled.",
+            extra={"booking_id": booking.id},
+        )
+        return
+
     if not booking.totals:
         return
 
@@ -1304,6 +1333,182 @@ def _retrieve_payment_intent(intent_id: str, *, label: str) -> stripe.PaymentInt
     return None
 
 
+def _extract_transfer_id_from_intent(intent_payload: Any) -> str | None:
+    """Best-effort extraction of a transfer id from a PaymentIntent payload."""
+    if not intent_payload:
+        return None
+    if isinstance(intent_payload, dict):
+        charges = intent_payload.get("charges")
+    else:
+        charges = getattr(intent_payload, "charges", None)
+    if charges is None:
+        return None
+    if isinstance(charges, dict):
+        charge_data = charges.get("data") or []
+    else:
+        charge_data = getattr(charges, "data", []) or []
+    if not charge_data:
+        return None
+    charge = charge_data[0]
+    if isinstance(charge, dict):
+        transfer = charge.get("transfer")
+    else:
+        transfer = getattr(charge, "transfer", None)
+    if isinstance(transfer, dict):
+        transfer_id = transfer.get("id")
+    else:
+        transfer_id = getattr(transfer, "id", None)
+    if transfer_id:
+        return str(transfer_id)
+    if isinstance(transfer, str):
+        return transfer
+    return None
+
+
+def _extract_application_fee_from_intent(intent_payload: Any) -> tuple[str | None, str | None]:
+    """Best-effort extraction of an application fee id/description from a PaymentIntent."""
+    if not intent_payload:
+        return None, None
+    if isinstance(intent_payload, dict):
+        charges = intent_payload.get("charges")
+    else:
+        charges = getattr(intent_payload, "charges", None)
+    if charges is None:
+        return None, None
+    if isinstance(charges, dict):
+        charge_data = charges.get("data") or []
+    else:
+        charge_data = getattr(charges, "data", []) or []
+    if not charge_data:
+        return None, None
+    charge = charge_data[0]
+    if isinstance(charge, dict):
+        application_fee = charge.get("application_fee")
+    else:
+        application_fee = getattr(charge, "application_fee", None)
+    fee_id = None
+    description = None
+    if isinstance(application_fee, dict):
+        fee_id = application_fee.get("id")
+        description = application_fee.get("description")
+    else:
+        fee_id = getattr(application_fee, "id", None)
+        description = getattr(application_fee, "description", None)
+    if fee_id:
+        return str(fee_id), description
+    if isinstance(application_fee, str):
+        return application_fee, description
+    return None, description
+
+
+def _extract_latest_charge_id(intent_payload: Any) -> str | None:
+    """Best-effort extraction of a latest_charge id from a PaymentIntent payload."""
+    if not intent_payload:
+        return None
+    if isinstance(intent_payload, dict):
+        latest_charge = intent_payload.get("latest_charge")
+    else:
+        latest_charge = getattr(intent_payload, "latest_charge", None)
+    if latest_charge:
+        return str(latest_charge)
+    return None
+
+
+def _maybe_update_application_fee_description(
+    *,
+    booking_id: int,
+    intent_payload: Any,
+    intent_id: str | None = None,
+) -> None:
+    """Ensure the application fee description includes the booking id."""
+    fee_id, fee_description = _extract_application_fee_from_intent(intent_payload)
+    if not fee_id and intent_id:
+        intent_payload = _retrieve_intent_with_transfer(intent_id)
+        fee_id, fee_description = _extract_application_fee_from_intent(intent_payload)
+    if not fee_id:
+        latest_charge_id = _extract_latest_charge_id(intent_payload)
+        if latest_charge_id:
+            try:
+                stripe.api_key = _get_stripe_api_key()
+                charge = stripe.Charge.retrieve(latest_charge_id)
+            except StripeConfigurationError:
+                return
+            except stripe.error.StripeError:
+                logger.warning(
+                    "stripe_webhook: failed to retrieve charge %s for fee description",
+                    latest_charge_id,
+                    exc_info=True,
+                )
+                return
+            if isinstance(charge, dict):
+                application_fee = charge.get("application_fee")
+            else:
+                application_fee = getattr(charge, "application_fee", None)
+            if isinstance(application_fee, dict):
+                fee_id = application_fee.get("id")
+                fee_description = application_fee.get("description")
+            else:
+                fee_id = getattr(application_fee, "id", None)
+                fee_description = getattr(application_fee, "description", None)
+            if not fee_id and isinstance(application_fee, str):
+                fee_id = application_fee
+
+    if not fee_id:
+        return
+
+    desired_description = f"Application fee for booking #{booking_id}"
+    if (fee_description or "").strip() == desired_description:
+        return
+
+    try:
+        stripe.api_key = _get_stripe_api_key()
+    except StripeConfigurationError:
+        return
+    try:
+        stripe.ApplicationFee.modify(fee_id, description=desired_description)
+    except stripe.error.StripeError:
+        logger.warning(
+            "stripe_webhook: failed to update application fee %s description",
+            fee_id,
+            exc_info=True,
+        )
+
+
+def _retrieve_intent_with_transfer(intent_id: str) -> Any | None:
+    """Retrieve a PaymentIntent with expanded transfer details, if possible."""
+    if not intent_id:
+        return None
+    try:
+        stripe.api_key = _get_stripe_api_key()
+    except StripeConfigurationError:
+        return None
+    try:
+        return stripe.PaymentIntent.retrieve(
+            intent_id,
+            expand=["charges.data.transfer", "charges.data.application_fee"],
+        )
+    except TypeError:
+        try:
+            return stripe.PaymentIntent.retrieve(intent_id)
+        except Exception:  # noqa: BLE001 - tolerate stubbed SDKs
+            return None
+    except stripe.error.InvalidRequestError as exc:
+        if getattr(exc, "code", "") == "resource_missing":
+            return None
+        logger.warning(
+            "stripe_webhook: failed to retrieve PaymentIntent %s",
+            intent_id,
+            exc_info=True,
+        )
+    except stripe.error.StripeError:
+        logger.warning(
+            "stripe_webhook: failed to retrieve PaymentIntent %s",
+            intent_id,
+            exc_info=True,
+        )
+    return None
+
+
 def create_booking_charge_intent(
     *,
     booking: Booking,
@@ -1315,17 +1520,35 @@ def create_booking_charge_intent(
     """
     Create or reuse the rental charge PaymentIntent (automatic capture).
     """
-    totals = booking.totals or {}
-    rental_subtotal = _parse_decimal(totals.get("rental_subtotal"), "rental_subtotal")
-    service_fee = _parse_decimal(
-        totals.get("service_fee", totals.get("renter_fee", "0")),
-        "service_fee",
-    )
+    fees = _extract_booking_fees(booking)
+    rental_subtotal = fees["rental_subtotal"]
+    renter_fee = fees["renter_fee"]
+    owner_fee = fees["owner_fee"]
+    platform_fee_total = fees["platform_fee_total"]
+    owner_payout = fees["owner_payout"]
 
-    charge_amount = rental_subtotal + service_fee
+    charge_amount = rental_subtotal + renter_fee
     if charge_amount <= Decimal("0"):
         raise StripePaymentError("Rental charge must be greater than zero.")
     charge_amount_cents = _to_cents(charge_amount)
+    platform_fee_cents = _to_cents(platform_fee_total)
+    owner_payout_cents = _to_cents(owner_payout)
+
+    listing = getattr(booking, "listing", None)
+    if listing is None:
+        listing = Listing.objects.select_related("owner").filter(pk=booking.listing_id).first()
+    owner = getattr(listing, "owner", None) or getattr(booking, "owner", None)
+    if owner is None:
+        raise StripePaymentError("Listing owner is missing; please contact support.")
+
+    payout_account = ensure_connect_account(owner)
+    if not payout_account.stripe_account_id or not payout_account.charges_enabled:
+        raise StripePaymentError(
+            "Listing owner is not ready to accept payments yet. Please try again later."
+        )
+
+    if owner_payout_cents > charge_amount_cents:
+        raise StripePaymentError("Booking payout exceeds the total charge amount.")
 
     stripe.api_key = _get_stripe_api_key()
     customer_value = (
@@ -1341,12 +1564,30 @@ def create_booking_charge_intent(
 
     idempotency_base = f"booking:{booking.id}:{IDEMPOTENCY_VERSION}"
     env_label = getattr(settings, "STRIPE_ENV", "dev") or "dev"
+    totals = booking.totals or {}
     common_metadata = {
         "booking_id": str(booking.id),
         "listing_id": str(booking.listing_id),
+        "owner_id": str(owner.id),
+        "owner_stripe_account_id": payout_account.stripe_account_id,
+        "rental_subtotal": str(rental_subtotal),
+        "renter_fee": str(renter_fee),
+        "owner_fee": str(owner_fee),
+        "platform_fee_total": str(platform_fee_total),
+        "owner_payout": str(owner_payout),
+        "renter_fee_base": str(totals.get("renter_fee_base", totals.get("renter_fee", ""))),
+        "renter_fee_gst": str(totals.get("renter_fee_gst", "")),
+        "renter_fee_total": str(totals.get("renter_fee_total", "")),
+        "owner_fee_base": str(totals.get("owner_fee_base", totals.get("owner_fee", ""))),
+        "owner_fee_gst": str(totals.get("owner_fee_gst", "")),
+        "owner_fee_total": str(totals.get("owner_fee_total", "")),
+        "gst_enabled": str(totals.get("gst_enabled", False)),
+        "gst_rate": str(totals.get("gst_rate", "")),
+        "gst_number": str(totals.get("gst_number", "")),
         "env": env_label,
     }
     currency = "cad"
+    use_destination_charges = getattr(settings, "STRIPE_BOOKINGS_DESTINATION_CHARGES", True)
 
     charge_intent = _retrieve_payment_intent(
         getattr(booking, "charge_payment_intent_id", ""),
@@ -1355,9 +1596,28 @@ def create_booking_charge_intent(
     if charge_intent is not None:
         status = (getattr(charge_intent, "status", "") or "").lower()
         intent_amount = getattr(charge_intent, "amount", None)
+        needs_recreate = False
+        already_canceled = status == "canceled"
         if status == "succeeded":
-            pass
+            needs_recreate = False
         elif intent_amount not in (None, charge_amount_cents):
+            needs_recreate = True
+        elif use_destination_charges:
+            intent_fee = getattr(charge_intent, "application_fee_amount", None)
+            transfer_data = getattr(charge_intent, "transfer_data", None)
+            if isinstance(transfer_data, dict):
+                transfer_destination = transfer_data.get("destination")
+            else:
+                transfer_destination = getattr(transfer_data, "destination", None)
+            if (
+                intent_fee != platform_fee_cents
+                or transfer_destination != payout_account.stripe_account_id
+            ):
+                needs_recreate = True
+        elif already_canceled:
+            needs_recreate = True
+
+        if needs_recreate and not already_canceled:
             try:
                 stripe.PaymentIntent.cancel(charge_intent.id)
             except stripe.error.InvalidRequestError as exc:
@@ -1366,23 +1626,43 @@ def create_booking_charge_intent(
             except stripe.error.StripeError as exc:  # noqa: PERF203
                 _handle_stripe_error(exc)
             charge_intent = None
-        elif status == "canceled":
+        elif already_canceled:
             charge_intent = None
 
     if charge_intent is None:
         try:
-            charge_intent = stripe.PaymentIntent.create(
-                amount=charge_amount_cents,
-                currency=currency,
-                automatic_payment_methods={**AUTOMATIC_PAYMENT_METHODS_CONFIG},
-                customer=customer_value,
-                payment_method=payment_method_id or None,
-                confirm=bool(payment_method_id),
-                off_session=False,
-                capture_method="automatic",
-                metadata={**common_metadata, "kind": "booking_charge"},
-                idempotency_key=f"{idempotency_base}:charge:{charge_amount_cents}",
-            )
+            charge_payload: dict[str, Any] = {
+                "amount": charge_amount_cents,
+                "currency": currency,
+                "automatic_payment_methods": {**AUTOMATIC_PAYMENT_METHODS_CONFIG},
+                "customer": customer_value,
+                "payment_method": payment_method_id or None,
+                "confirm": bool(payment_method_id),
+                "off_session": False,
+                "capture_method": "automatic",
+                "metadata": {**common_metadata, "kind": "booking_charge"},
+                "idempotency_key": f"{idempotency_base}:charge:{charge_amount_cents}",
+            }
+            if use_destination_charges:
+                transfer_data: dict[str, Any] = {
+                    "destination": payout_account.stripe_account_id,
+                    "amount": owner_payout_cents,
+                }
+                charge_payload.update(
+                    {
+                        "application_fee_amount": platform_fee_cents,
+                        "transfer_data": transfer_data,
+                        "transfer_group": f"booking:{booking.id}",
+                        "on_behalf_of": payout_account.stripe_account_id,
+                        "idempotency_key": (
+                            f"{idempotency_base}:charge_dest_v1:"
+                            f"{charge_amount_cents}:{platform_fee_cents}:"
+                            f"{payout_account.stripe_account_id}"
+                        ),
+                    }
+                )
+
+            charge_intent = stripe.PaymentIntent.create(**charge_payload)
         except stripe.error.StripeError as exc:
             _handle_stripe_error(exc)
 
@@ -2260,5 +2540,75 @@ def stripe_webhook(request):
             booking.status = Booking.Status.PAID
             booking.charge_payment_intent_id = intent_id or booking.charge_payment_intent_id
             booking.save(update_fields=["status", "charge_payment_intent_id", "updated_at"])
+        if getattr(settings, "STRIPE_BOOKINGS_DESTINATION_CHARGES", True):
+            try:
+                fees = _extract_booking_fees(booking)
+            except StripePaymentError as exc:
+                logger.warning(
+                    "stripe_webhook: booking fee data invalid for booking %s: %s",
+                    booking.id,
+                    str(exc) or "fee error",
+                )
+                return Response(status=status.HTTP_200_OK)
+
+            owner_payout = fees["owner_payout"]
+            platform_fee_total = fees["platform_fee_total"]
+            owner = booking.owner
+
+            owner_stripe_id = _extract_transfer_id_from_intent(data_object)
+            if not owner_stripe_id and intent_id:
+                intent_payload = _retrieve_intent_with_transfer(intent_id)
+                if intent_payload is not None:
+                    owner_stripe_id = _extract_transfer_id_from_intent(intent_payload)
+
+            if owner_payout > Decimal("0"):
+                owner_txns = Transaction.objects.filter(
+                    user=owner,
+                    booking=booking,
+                    kind=Transaction.Kind.OWNER_EARNING,
+                )
+                owner_txn_exists = False
+                if owner_stripe_id:
+                    owner_txn_exists = owner_txns.filter(stripe_id=owner_stripe_id).exists()
+                if intent_id and not owner_txn_exists:
+                    owner_txn_exists = owner_txns.filter(stripe_id=intent_id).exists()
+                if not owner_txn_exists:
+                    owner_txn_exists = owner_txns.filter(amount=owner_payout).exists()
+                if not owner_txn_exists:
+                    log_transaction(
+                        user=owner,
+                        booking=booking,
+                        kind=Transaction.Kind.OWNER_EARNING,
+                        amount=owner_payout,
+                        stripe_id=owner_stripe_id or intent_id or None,
+                    )
+
+            if platform_fee_total > Decimal("0"):
+                from payments_refunds import get_platform_ledger_user
+
+                platform_user = get_platform_ledger_user()
+                if platform_user is not None:
+                    platform_txn_exists = Transaction.objects.filter(
+                        user=platform_user,
+                        booking=booking,
+                        kind=Transaction.Kind.PLATFORM_FEE,
+                        amount=platform_fee_total,
+                    ).exists()
+                    if not platform_txn_exists:
+                        log_transaction(
+                            user=platform_user,
+                            booking=booking,
+                            kind=Transaction.Kind.PLATFORM_FEE,
+                            amount=platform_fee_total,
+                        )
+                else:
+                    logger.info(
+                        "stripe_webhook: platform fee not logged; platform ledger user missing."
+                    )
+                _maybe_update_application_fee_description(
+                    booking_id=booking.id,
+                    intent_payload=data_object,
+                    intent_id=intent_id or None,
+                )
 
     return Response(status=status.HTTP_200_OK)

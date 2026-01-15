@@ -29,6 +29,7 @@ from payments.stripe_api import (
     get_connect_available_balance,
     transfer_earnings_to_platform,
 )
+from payments.tax import compute_fee_with_gst, platform_gst_enabled, platform_gst_rate
 from promotions.models import PromotedSlot
 
 logger = logging.getLogger(__name__)
@@ -131,11 +132,79 @@ def _create_promoted_slot(
 def _calculate_totals(duration_days: int) -> tuple[int, int, int, int]:
     price_per_day_cents = _promotion_price_per_day()
     base_cents = price_per_day_cents * duration_days
-    gst_cents = int(
-        (Decimal(base_cents) * Decimal("0.05")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    base_amount = (Decimal(base_cents) / Decimal("100")).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
     )
-    total_cents = base_cents + gst_cents
+    _, gst_amount, total_amount = compute_fee_with_gst(base_amount)
+    gst_cents = int((gst_amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    total_cents = int(
+        (total_amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    )
     return price_per_day_cents, base_cents, gst_cents, total_cents
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def promotion_quote(request):
+    listing_id_raw = request.query_params.get("listing_id")
+    start_raw = request.query_params.get("promotion_start")
+    end_raw = request.query_params.get("promotion_end")
+    if not listing_id_raw:
+        return Response({"detail": "listing_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        listing_id = int(listing_id_raw)
+    except (TypeError, ValueError):
+        return Response(
+            {"detail": "listing_id must be an integer."}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        start_date = _parse_iso_date(start_raw, "promotion_start")
+        end_date = _parse_iso_date(end_raw, "promotion_end")
+    except ValueError:
+        return Response(
+            {"detail": "Invalid promotion dates."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if end_date < start_date:
+        return Response(
+            {"detail": "promotion_end must be on or after promotion_start."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    listing = get_object_or_404(Listing, pk=listing_id)
+    if listing.owner_id != request.user.id:
+        return Response(
+            {"detail": "Only the listing owner can view promotion pricing."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    duration_days = (end_date - start_date).days + 1
+    try:
+        (
+            price_per_day_cents,
+            base_cents,
+            gst_cents,
+            total_cents,
+        ) = _calculate_totals(duration_days)
+    except StripeConfigurationError:
+        return Response(
+            {"detail": "Promotion price is not configured."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    return Response(
+        {
+            "price_per_day_cents": price_per_day_cents,
+            "duration_days": duration_days,
+            "base_cents": base_cents,
+            "gst_cents": gst_cents,
+            "total_cents": total_cents,
+            "gst_enabled": platform_gst_enabled(),
+            "gst_rate": str(platform_gst_rate()),
+        }
+    )
 
 
 @api_view(["GET"])
@@ -221,7 +290,10 @@ def pay_for_promotion(request):
         start_date = _parse_iso_date(data.get("promotion_start"), "promotion_start")
         end_date = _parse_iso_date(data.get("promotion_end"), "promotion_end")
         base_price_cents = _parse_int(data.get("base_price_cents"), "base_price_cents")
-        gst_cents_payload = _parse_int(data.get("gst_cents"), "gst_cents")
+        gst_cents_raw = data.get("gst_cents")
+        gst_cents_payload = (
+            _parse_int(gst_cents_raw, "gst_cents") if gst_cents_raw is not None else None
+        )
     except ValueError:
         logger.warning(
             "Invalid promotion payment parameters",
@@ -264,7 +336,9 @@ def pay_for_promotion(request):
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
 
-    if base_price_cents != expected_base_cents or gst_cents_payload != expected_gst_cents:
+    if base_price_cents != expected_base_cents or (
+        gst_cents_payload is not None and gst_cents_payload != expected_gst_cents
+    ):
         return Response(
             {
                 "detail": "Promotion pricing changed, please refresh and try again.",

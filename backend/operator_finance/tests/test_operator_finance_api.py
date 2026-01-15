@@ -1,5 +1,6 @@
 import importlib
 from datetime import timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -13,9 +14,11 @@ from rest_framework.test import APIClient
 
 import renter.urls as renter_urls
 from bookings.models import Booking
+from core.settings_resolver import clear_settings_cache
 from disputres.services import settlement
 from operator_bookings.models import BookingEvent
 from operator_core.models import OperatorAuditEvent
+from operator_settings.models import DbSetting
 from payments.models import Transaction
 
 pytestmark = pytest.mark.django_db
@@ -362,6 +365,63 @@ def test_settlement_transfer_idempotent(monkeypatch, booking_factory, owner_user
 
     transfers = Transaction.objects.filter(kind=Transaction.Kind.OWNER_EARNING, stripe_id="tr_123")
     assert transfers.count() == 1
+
+
+def test_settlement_transfer_gst_split_idempotent(
+    monkeypatch, booking_factory, owner_user, settings
+):
+    platform_user = User.objects.create_user(
+        username="platform-ledger-gst", password="x", can_list=False, can_rent=False
+    )
+    settings.PLATFORM_LEDGER_USER_ID = platform_user.id
+    DbSetting.objects.create(
+        key="ORG_GST_NUMBER",
+        value_json="123456789RT0001",
+        value_type="str",
+    )
+    DbSetting.objects.create(
+        key="ORG_GST_REGISTERED",
+        value_json=True,
+        value_type="bool",
+    )
+    clear_settings_cache()
+
+    booking = booking_factory(
+        status=Booking.Status.PAID,
+        deposit_hold_id="pi_deposit",
+        charge_payment_intent_id="pi_charge",
+    )
+    booking.owner = owner_user
+    booking.save(update_fields=["owner"])
+
+    monkeypatch.setattr("disputres.services.settlement._get_stripe_api_key", lambda: "sk_test")
+    monkeypatch.setattr(
+        "disputres.services.settlement.ensure_connect_account",
+        lambda _user: SimpleNamespace(stripe_account_id="acct_123", charges_enabled=True),
+    )
+
+    def _transfer_create(**kwargs):
+        return {"id": "tr_gst_1"}
+
+    with patch("stripe.Transfer.create", side_effect=_transfer_create):
+        settlement.transfer_damage_award_to_owner(booking, 1000, dispute_id="case-gst")
+    with patch("stripe.Transfer.create", side_effect=_transfer_create):
+        settlement.transfer_damage_award_to_owner(booking, 1000, dispute_id="case-gst")
+
+    platform_fee = Transaction.objects.filter(
+        user=platform_user,
+        kind=Transaction.Kind.PLATFORM_FEE,
+        stripe_id="tr_gst_1",
+    )
+    gst_collected = Transaction.objects.filter(
+        user=platform_user,
+        kind=Transaction.Kind.GST_COLLECTED,
+        stripe_id="tr_gst_1",
+    )
+    assert platform_fee.count() == 1
+    assert gst_collected.count() == 1
+    assert platform_fee.first().amount == Decimal("9.52")
+    assert gst_collected.first().amount == Decimal("0.48")
 
 
 def test_exports_csv(operator_finance_user, booking_factory, renter_user):

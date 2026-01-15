@@ -17,7 +17,12 @@ from django.utils import timezone
 from core.redis import push_event
 from notifications.models import NotificationLog
 from operator_core.models import OperatorJobRun
-from payments.receipts import upload_booking_receipt_pdf, upload_promotion_receipt_pdf
+from payments.receipts import (
+    upload_booking_receipt_pdf,
+    upload_owner_earnings_statement_pdf,
+    upload_owner_fee_tax_invoice_pdf,
+    upload_promotion_receipt_pdf,
+)
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -917,6 +922,124 @@ def send_booking_payment_receipt_email(user_id: int, booking_id: int):
         attachments=attachments or None,
         user_id=user_id,
         booking_id=booking_id,
+    )
+
+
+@shared_task(queue="emails")
+def send_owner_earnings_statement_email(owner_id: int, booking_id: int):
+    """Email the owner an earnings statement after payment succeeds."""
+    owner = _get_user(owner_id)
+    if not owner or not getattr(owner, "email", None):
+        return
+
+    try:
+        from bookings.models import Booking
+
+        booking = Booking.objects.select_related("listing", "owner").get(pk=booking_id)
+    except Booking.DoesNotExist:
+        logger.warning("notifications: booking %s no longer exists", booking_id)
+        return
+
+    if booking.owner_id != owner_id:
+        logger.warning(
+            "notifications: booking %s owner mismatch for statement email",
+            booking_id,
+        )
+        return
+
+    totals = booking.totals or {}
+    attachments: list[Attachment] = []
+    statement_s3_key: str | None = None
+    try:
+        statement_key, _, pdf_bytes = upload_owner_earnings_statement_pdf(booking)
+        statement_s3_key = statement_key
+        attachments.append((f"{booking.id}_owner_statement.pdf", pdf_bytes, "application/pdf"))
+        booking.owner_statement_s3_key = statement_key
+        booking.save(update_fields=["owner_statement_s3_key", "updated_at"])
+    except Exception:
+        logger.exception(
+            "notifications: failed to generate/upload owner statement PDF for booking %s",
+            booking_id,
+        )
+
+    listing_title = getattr(getattr(booking, "listing", None), "title", "your listing")
+    start_display, end_display, date_range_display = _format_booking_date_range(
+        getattr(booking, "start_date", None),
+        getattr(booking, "end_date", None),
+    )
+    context = {
+        "owner": owner,
+        "listing_title": listing_title,
+        "start_date_display": start_display,
+        "end_date_display": end_display,
+        "date_range_display": date_range_display,
+        "rental_subtotal": totals.get("rental_subtotal") or "0.00",
+        "owner_fee_base": totals.get("owner_fee_base") or totals.get("owner_fee") or "0.00",
+        "owner_fee_gst": totals.get("owner_fee_gst") or "0.00",
+        "owner_payout": totals.get("owner_payout") or "0.00",
+        "statement_s3_key": statement_s3_key,
+    }
+    _send_email_logged(
+        "owner_earnings_statement",
+        to_email=owner.email,
+        subject=f"Earnings statement for {listing_title}",
+        template="owner_earnings_statement.txt",
+        context=context,
+        attachments=attachments or None,
+        user_id=owner_id,
+        booking_id=booking_id,
+    )
+
+
+@shared_task(queue="emails")
+def send_owner_fee_invoice_email(invoice_id: int):
+    """Email the owner their monthly fee tax invoice."""
+    try:
+        from payments.models import OwnerFeeTaxInvoice
+
+        invoice = OwnerFeeTaxInvoice.objects.select_related("owner").get(pk=invoice_id)
+    except OwnerFeeTaxInvoice.DoesNotExist:
+        logger.warning("notifications: owner fee invoice %s no longer exists", invoice_id)
+        return
+
+    owner = getattr(invoice, "owner", None)
+    if not owner or not getattr(owner, "email", None):
+        return
+
+    attachments: list[Attachment] = []
+    invoice_s3_key = invoice.pdf_s3_key or None
+    try:
+        invoice_key, _, pdf_bytes = upload_owner_fee_tax_invoice_pdf(invoice)
+        invoice_s3_key = invoice_key
+        attachments.append((f"{invoice.invoice_number}.pdf", pdf_bytes, "application/pdf"))
+        if invoice.pdf_s3_key != invoice_key:
+            invoice.pdf_s3_key = invoice_key
+            invoice.save(update_fields=["pdf_s3_key"])
+    except Exception:
+        logger.exception(
+            "notifications: failed to generate/upload fee invoice PDF %s",
+            invoice_id,
+        )
+
+    period_label = f"{invoice.period_start.isoformat()} to {invoice.period_end.isoformat()}"
+    context = {
+        "owner": owner,
+        "invoice_number": invoice.invoice_number,
+        "period_label": period_label,
+        "fee_subtotal": invoice.fee_subtotal,
+        "fee_gst": invoice.gst,
+        "total": invoice.total,
+        "gst_number": invoice.gst_number_snapshot,
+        "invoice_s3_key": invoice_s3_key,
+    }
+    _send_email_logged(
+        "owner_fee_invoice",
+        to_email=owner.email,
+        subject="Your monthly tax invoice is ready",
+        template="owner_fee_invoice_ready.txt",
+        context=context,
+        attachments=attachments or None,
+        user_id=getattr(owner, "id", None),
     )
 
 

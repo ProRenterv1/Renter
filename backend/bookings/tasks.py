@@ -7,6 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 from celery import shared_task
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -167,29 +168,30 @@ def authorize_deposit_for_start_day(booking_id: int) -> bool:
             deposit_authorized_at=now,
             updated_at=now,
         )
-        try:
-            create_owner_transfer_for_booking(
-                booking=booking,
-                payment_intent_id=booking.charge_payment_intent_id or "",
-            )
-        except StripeTransientError:
-            logger.exception(
-                "Owner transfer encountered transient error post-deposit for booking %s",
-                booking.id,
-            )
-        except StripeConfigurationError:
-            logger.exception(
-                (
-                    "Owner transfer skipped due to Stripe configuration error "
-                    "post-deposit for booking %s"
-                ),
-                booking.id,
-            )
-        except StripePaymentError:
-            logger.exception(
-                "Owner transfer failed permanently post-deposit for booking %s",
-                booking.id,
-            )
+        if not getattr(settings, "STRIPE_BOOKINGS_DESTINATION_CHARGES", True):
+            try:
+                create_owner_transfer_for_booking(
+                    booking=booking,
+                    payment_intent_id=booking.charge_payment_intent_id or "",
+                )
+            except StripeTransientError:
+                logger.exception(
+                    "Owner transfer encountered transient error post-deposit for booking %s",
+                    booking.id,
+                )
+            except StripeConfigurationError:
+                logger.exception(
+                    (
+                        "Owner transfer skipped due to Stripe configuration error "
+                        "post-deposit for booking %s"
+                    ),
+                    booking.id,
+                )
+            except StripePaymentError:
+                logger.exception(
+                    "Owner transfer failed permanently post-deposit for booking %s",
+                    booking.id,
+                )
         return True
 
     customer_id = (
@@ -246,29 +248,30 @@ def authorize_deposit_for_start_day(booking_id: int) -> bool:
             deposit_authorized_at=now,
             updated_at=now,
         )
-        try:
-            create_owner_transfer_for_booking(
-                booking=booking,
-                payment_intent_id=booking.charge_payment_intent_id or "",
-            )
-        except StripeTransientError:
-            logger.exception(
-                "Owner transfer encountered transient error post-deposit for booking %s",
-                booking.id,
-            )
-        except StripeConfigurationError:
-            logger.exception(
-                (
-                    "Owner transfer skipped due to Stripe configuration error "
-                    "post-deposit for booking %s"
-                ),
-                booking.id,
-            )
-        except StripePaymentError:
-            logger.exception(
-                "Owner transfer failed permanently post-deposit for booking %s",
-                booking.id,
-            )
+        if not getattr(settings, "STRIPE_BOOKINGS_DESTINATION_CHARGES", True):
+            try:
+                create_owner_transfer_for_booking(
+                    booking=booking,
+                    payment_intent_id=booking.charge_payment_intent_id or "",
+                )
+            except StripeTransientError:
+                logger.exception(
+                    "Owner transfer encountered transient error post-deposit for booking %s",
+                    booking.id,
+                )
+            except StripeConfigurationError:
+                logger.exception(
+                    (
+                        "Owner transfer skipped due to Stripe configuration error "
+                        "post-deposit for booking %s"
+                    ),
+                    booking.id,
+                )
+            except StripePaymentError:
+                logger.exception(
+                    "Owner transfer failed permanently post-deposit for booking %s",
+                    booking.id,
+                )
         return True
     return False
 

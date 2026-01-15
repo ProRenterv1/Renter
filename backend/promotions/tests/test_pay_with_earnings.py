@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -13,6 +13,7 @@ from listings.models import Listing
 from listings.services import compute_booking_totals
 from payments.ledger import log_transaction
 from payments.models import OwnerPayoutAccount, Transaction
+from payments.tax import compute_fee_with_gst
 from promotions.models import PromotedSlot
 
 User = get_user_model()
@@ -74,25 +75,39 @@ def seeded_earnings(settings, owner_user, listing):
     return Decimal("50.00")
 
 
-def _promotion_payload(listing_id: int, start: date, end: date) -> dict:
+def _promotion_payload(
+    listing_id: int,
+    start: date,
+    end: date,
+    price_per_day_cents: int | None = None,
+) -> dict:
+    if price_per_day_cents is None:
+        from django.conf import settings
+
+        price_per_day_cents = int(getattr(settings, "PROMOTION_PRICE_CENTS", 0))
+    duration_days = (end - start).days + 1
+    base_cents = price_per_day_cents * duration_days
+    _, gst_amount, _ = compute_fee_with_gst(Decimal(base_cents) / Decimal("100"))
+    gst_cents = int((gst_amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     return {
         "listing_id": listing_id,
         "promotion_start": start.isoformat(),
         "promotion_end": end.isoformat(),
-        "base_price_cents": 3000,
-        "gst_cents": 150,
+        "base_price_cents": base_cents,
+        "gst_cents": gst_cents,
         "pay_with_earnings": True,
     }
 
 
 @pytest.mark.django_db
-def test_pay_with_earnings_success(monkeypatch, seeded_earnings, owner_user, listing):
+def test_pay_with_earnings_success(monkeypatch, seeded_earnings, owner_user, listing, settings):
+    price_per_day_cents = settings.PROMOTION_PRICE_CENTS
     url = reverse("promotions:promotion_pay")
     api_client = APIClient()
     api_client.force_authenticate(owner_user)
 
     today = date.today()
-    payload = _promotion_payload(listing.id, today, today + timedelta(days=2))
+    payload = _promotion_payload(listing.id, today, today + timedelta(days=2), price_per_day_cents)
 
     monkeypatch.setattr(
         "promotions.api.compute_owner_available_balance",

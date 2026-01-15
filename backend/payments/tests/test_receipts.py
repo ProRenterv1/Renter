@@ -8,9 +8,13 @@ from django.utils import timezone
 from bookings.models import Booking
 from listings.models import Listing
 from payments.receipts import (
+    _extract_owner_earnings_breakdown,
+    _extract_payment_breakdown,
     render_booking_receipt_pdf,
+    render_owner_earnings_statement_pdf,
     render_promotion_receipt_pdf,
     upload_booking_receipt_pdf,
+    upload_owner_earnings_statement_pdf,
     upload_promotion_receipt_pdf,
 )
 from promotions.models import PromotedSlot
@@ -87,6 +91,67 @@ def test_render_booking_receipt_pdf_returns_pdf_bytes(listing, owner_user, rente
     assert isinstance(pdf_bytes, bytes)
     assert pdf_bytes
     assert pdf_bytes.startswith(b"%PDF")
+
+
+def test_render_owner_earnings_statement_pdf_returns_pdf_bytes(listing, owner_user, renter_user):
+    booking = Booking.objects.create(
+        listing=listing,
+        owner=owner_user,
+        renter=renter_user,
+        start_date=date(2025, 7, 1),
+        end_date=date(2025, 7, 4),
+        charge_payment_intent_id="pi_charge_owner",
+        totals={
+            "days": "3",
+            "rental_subtotal": "135.00",
+            "owner_fee_base": "6.75",
+            "owner_fee_gst": "0.34",
+            "owner_fee_total": "7.09",
+            "owner_payout": "127.91",
+            "total_charge": "155.25",
+        },
+    )
+
+    pdf_bytes = render_owner_earnings_statement_pdf(booking)
+
+    assert isinstance(pdf_bytes, bytes)
+    assert pdf_bytes
+    assert pdf_bytes.startswith(b"%PDF")
+
+
+def test_extract_payment_breakdown_includes_gst_fields():
+    totals = {
+        "rental_subtotal": "100.00",
+        "renter_fee_base": "10.00",
+        "renter_fee_gst": "0.50",
+        "renter_fee_total": "10.50",
+        "damage_deposit": "0.00",
+        "total_charge": "110.50",
+        "gst_enabled": True,
+        "gst_rate": "0.05",
+    }
+    breakdown = _extract_payment_breakdown(totals)
+
+    assert breakdown.rent == Decimal("100.00")
+    assert breakdown.service_fee == Decimal("10.00")
+    assert breakdown.service_fee_gst == Decimal("0.50")
+    assert breakdown.service_fee_total == Decimal("10.50")
+    assert breakdown.total_charge == Decimal("110.50")
+
+
+def test_extract_owner_earnings_breakdown_includes_gst_fields():
+    totals = {
+        "rental_subtotal": "100.00",
+        "owner_fee_base": "5.00",
+        "owner_fee_gst": "0.25",
+        "owner_payout": "94.75",
+    }
+    breakdown = _extract_owner_earnings_breakdown(totals)
+
+    assert breakdown.rental_subtotal == Decimal("100.00")
+    assert breakdown.owner_fee_base == Decimal("5.00")
+    assert breakdown.owner_fee_gst == Decimal("0.25")
+    assert breakdown.owner_payout == Decimal("94.75")
 
 
 def test_render_promotion_receipt_pdf_returns_pdf_bytes(promotion_slot):
@@ -170,6 +235,59 @@ def test_upload_promotion_receipt_pdf_uploads_and_returns_key(
     key, url, pdf_bytes = upload_promotion_receipt_pdf(promotion_slot)
 
     expected_key = f"uploads/private/receipts/promotions/{promotion_slot.id}_promotion_receipt.pdf"
+    assert key == expected_key
+    expected_url = storage_s3.public_url(expected_key)
+    assert url == expected_url
+    assert isinstance(pdf_bytes, bytes)
+    assert pdf_bytes.startswith(b"%PDF")
+
+    assert len(stub_client.calls) == 1
+    call = stub_client.calls[0]
+    assert call["Bucket"] == settings.AWS_STORAGE_BUCKET_NAME
+    assert call["Key"] == expected_key
+    assert call["ContentType"] == "application/pdf"
+    assert call["Body"] == pdf_bytes
+
+
+def test_upload_owner_earnings_statement_pdf_uploads_and_returns_key(
+    listing, owner_user, renter_user, settings, monkeypatch
+):
+    booking = Booking.objects.create(
+        listing=listing,
+        owner=owner_user,
+        renter=renter_user,
+        start_date=date(2025, 8, 10),
+        end_date=date(2025, 8, 13),
+        charge_payment_intent_id="pi_charge_owner_upload",
+        totals={
+            "days": "3",
+            "rental_subtotal": "135.00",
+            "owner_fee_base": "6.75",
+            "owner_fee_gst": "0.34",
+            "owner_fee_total": "7.09",
+            "owner_payout": "127.91",
+            "total_charge": "155.25",
+        },
+    )
+
+    settings.AWS_STORAGE_BUCKET_NAME = "test-bucket"
+    settings.AWS_S3_REGION_NAME = "ca-central-1"
+    settings.AWS_S3_ENDPOINT_URL = ""
+
+    class _StubS3Client:
+        def __init__(self):
+            self.calls = []
+
+        def put_object(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"ResponseMetadata": {"HTTPStatusCode": 200}}
+
+    stub_client = _StubS3Client()
+    monkeypatch.setattr("payments.receipts.storage_s3._client", lambda: stub_client)
+
+    key, url, pdf_bytes = upload_owner_earnings_statement_pdf(booking)
+
+    expected_key = f"uploads/private/owner-statements/{booking.id}_owner_statement.pdf"
     assert key == expected_key
     expected_url = storage_s3.public_url(expected_key)
     assert url == expected_url

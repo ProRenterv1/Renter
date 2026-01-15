@@ -71,13 +71,14 @@ def _gmv_from_totals_dict(totals: dict | None) -> Decimal:
             return Decimal("0")
 
     if "total_charge" in totals:
-        return _to_decimal(totals.get("total_charge"))
+        total_charge = _to_decimal(totals.get("total_charge"))
+        deposit = _to_decimal(totals.get("damage_deposit"))
+        return max(total_charge - deposit, Decimal("0"))
 
     subtotal = _to_decimal(totals.get("rental_subtotal"))
     renter_fee = _to_decimal(totals.get("renter_fee"))
-    damage_deposit = _to_decimal(totals.get("damage_deposit"))
-    if subtotal or renter_fee or damage_deposit:
-        return subtotal + renter_fee + damage_deposit
+    if subtotal or renter_fee:
+        return subtotal + renter_fee
     return Decimal("0")
 
 

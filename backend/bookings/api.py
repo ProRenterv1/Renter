@@ -78,9 +78,14 @@ def _decimal_from_value(value: object, default: str | Decimal = "0") -> Decimal:
     return _quantize_money(candidate)
 
 
-def _ensure_booking_totals(booking: Booking) -> dict[str, str]:
+def _ensure_booking_totals(booking: Booking) -> dict[str, object]:
     totals = booking.totals or {}
-    if "rental_subtotal" not in totals or "total_charge" not in totals:
+    if (
+        "rental_subtotal" not in totals
+        or "total_charge" not in totals
+        or "renter_fee_total" not in totals
+        or "owner_fee_total" not in totals
+    ):
         renter_override = (
             booking.renter.active_fee_overrides() if getattr(booking, "renter", None) else {}
         )
@@ -113,10 +118,14 @@ def _booking_days(booking: Booking, totals: dict[str, object]) -> int:
 def _pricing_breakdown(booking: Booking) -> dict[str, Decimal | int | dict[str, str]]:
     totals = _ensure_booking_totals(booking)
     rental_subtotal = _decimal_from_value(totals.get("rental_subtotal"))
-    renter_fee_val = totals.get("renter_fee", totals.get("service_fee", "0"))
+    renter_fee_val = totals.get(
+        "renter_fee_total",
+        totals.get("renter_fee", totals.get("service_fee", "0")),
+    )
     renter_fee = _decimal_from_value(renter_fee_val)
     owner_payout = _decimal_from_value(totals.get("owner_payout"))
-    owner_fee = _decimal_from_value(totals.get("owner_fee"))
+    owner_fee_val = totals.get("owner_fee_total", totals.get("owner_fee", "0"))
+    owner_fee = _decimal_from_value(owner_fee_val)
     platform_total_default = renter_fee + owner_fee
     platform_fee_total = _decimal_from_value(
         totals.get("platform_fee_total"),
@@ -1276,14 +1285,15 @@ class BookingViewSet(viewsets.ModelViewSet):
                 {"detail": "Temporary payment issue, please retry."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        except StripePaymentError:
+        except StripePaymentError as exc:
             logger.warning(
                 "Stripe payment error while creating charge intent for booking %s",
                 booking.id,
                 exc_info=True,
             )
+            message = str(exc) or "Payment could not be completed."
             return Response(
-                {"detail": "Payment could not be completed."},
+                {"detail": message},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1291,6 +1301,8 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking.renter_stripe_customer_id = customer_id or ""
         booking.renter_stripe_payment_method_id = payment_method_id or ""
         booking.status = Booking.Status.PAID
+        if hasattr(booking, "paid_at"):
+            booking.paid_at = timezone.now()
         booking.save(
             update_fields=[
                 "status",
@@ -1298,36 +1310,42 @@ class BookingViewSet(viewsets.ModelViewSet):
                 "renter_stripe_customer_id",
                 "renter_stripe_payment_method_id",
                 "updated_at",
+                "paid_at",
             ]
         )
-        try:
-            create_owner_transfer_for_booking(
-                booking=booking,
-                payment_intent_id=booking.charge_payment_intent_id or "",
-            )
-        except StripeTransientError:
-            logger.warning(
-                "Stripe transient error while transferring owner payout for booking %s",
-                booking.id,
-                exc_info=True,
-            )
-        except StripeConfigurationError:
-            logger.warning(
-                "Stripe configuration error while transferring owner payout for booking %s",
-                booking.id,
-                exc_info=True,
-            )
-        except StripePaymentError:
-            logger.warning(
-                "Stripe payment error while transferring owner payout for booking %s",
-                booking.id,
-                exc_info=True,
-            )
+        if not getattr(settings, "STRIPE_BOOKINGS_DESTINATION_CHARGES", True):
+            try:
+                create_owner_transfer_for_booking(
+                    booking=booking,
+                    payment_intent_id=booking.charge_payment_intent_id or "",
+                )
+            except StripeTransientError:
+                logger.warning(
+                    "Stripe transient error while transferring owner payout for booking %s",
+                    booking.id,
+                    exc_info=True,
+                )
+            except StripeConfigurationError:
+                logger.warning(
+                    "Stripe configuration error while transferring owner payout for booking %s",
+                    booking.id,
+                    exc_info=True,
+                )
+            except StripePaymentError:
+                logger.warning(
+                    "Stripe payment error while transferring owner payout for booking %s",
+                    booking.id,
+                    exc_info=True,
+                )
 
         _schedule_deposit_authorization(booking)
         try:
             notification_tasks.send_booking_payment_receipt_email.delay(
                 booking.renter_id,
+                booking.id,
+            )
+            notification_tasks.send_owner_earnings_statement_email.delay(
+                booking.owner_id,
                 booking.id,
             )
         except Exception:

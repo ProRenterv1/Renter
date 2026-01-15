@@ -12,6 +12,8 @@ from rest_framework.test import APIClient
 
 from backend.payments.stripe_api import StripeConfigurationError, StripeTransientError
 from bookings.models import Booking
+from core.settings_resolver import clear_settings_cache
+from operator_settings.models import DbSetting
 from payments import api as payments_api
 from payments import stripe_api
 from payments.ledger import log_transaction
@@ -615,6 +617,17 @@ def test_owner_payouts_instant_payout_preview(owner_user, booking_factory, monke
         end_date=date.today() + timedelta(days=2),
         status=Booking.Status.PAID,
     )
+    DbSetting.objects.create(
+        key="ORG_GST_NUMBER",
+        value_json="123456789RT0001",
+        value_type="str",
+    )
+    DbSetting.objects.create(
+        key="ORG_GST_REGISTERED",
+        value_json=True,
+        value_type="bool",
+    )
+    clear_settings_cache()
     log_transaction(
         user=owner_user,
         booking=booking,
@@ -638,7 +651,9 @@ def test_owner_payouts_instant_payout_preview(owner_user, booking_factory, monke
     assert resp.data["executed"] is False
     assert resp.data["currency"] == "cad"
     assert resp.data["amount_before_fee"] == "150.00"
-    assert resp.data["amount_after_fee"] == "145.50"
+    assert resp.data["fee_base"] == "4.50"
+    assert resp.data["fee_gst"] == "0.23"
+    assert resp.data["amount_after_fee"] == "145.27"
     payout_account.refresh_from_db()
     assert payout_account.lifetime_instant_payouts == Decimal("0.00")
 
@@ -668,6 +683,17 @@ def test_owner_payouts_instant_payout_executes_and_logs(owner_user, booking_fact
         end_date=date.today() + timedelta(days=1),
         status=Booking.Status.PAID,
     )
+    DbSetting.objects.create(
+        key="ORG_GST_NUMBER",
+        value_json="123456789RT0001",
+        value_type="str",
+    )
+    DbSetting.objects.create(
+        key="ORG_GST_REGISTERED",
+        value_json=True,
+        value_type="bool",
+    )
+    clear_settings_cache()
     log_transaction(
         user=owner_user,
         booking=booking,
@@ -712,17 +738,22 @@ def test_owner_payouts_instant_payout_executes_and_logs(owner_user, booking_fact
     assert resp.data["executed"] is True
     assert resp.data["stripe_payout_id"] == "po_test_123"
     assert resp.data["amount_before_fee"] == "200.00"
-    assert resp.data["amount_after_fee"] == "194.00"
-    assert captured_call["amount_cents"] == 19400
+    assert resp.data["fee_base"] == "6.00"
+    assert resp.data["fee_gst"] == "0.30"
+    assert resp.data["amount_after_fee"] == "193.70"
+    assert captured_call["amount_cents"] == 19370
     assert captured_call["metadata"]["amount_before_fee"] == "200.00"
     assert captured_call["user"] == owner_user
     assert captured_call["payout_account"] == payout_account
     assert captured_fee_transfer["payout_account"] == payout_account
-    assert captured_fee_transfer["amount_cents"] == 600
+    assert captured_fee_transfer["amount_cents"] == 630
     assert captured_fee_transfer["metadata"]["kind"] == "instant_payout_fee"
     assert captured_fee_transfer["metadata"]["payout_id"] == "po_test_123"
     assert captured_fee_transfer["metadata"]["amount_before_fee"] == "200.00"
-    assert captured_fee_transfer["metadata"]["amount_after_fee"] == "194.00"
+    assert captured_fee_transfer["metadata"]["amount_after_fee"] == "193.70"
+    assert captured_fee_transfer["metadata"]["fee_base"] == "6.00"
+    assert captured_fee_transfer["metadata"]["fee_gst"] == "0.30"
+    assert captured_fee_transfer["metadata"]["fee_total"] == "6.30"
 
     payout_account.refresh_from_db()
     assert payout_account.lifetime_instant_payouts == Decimal("250.00")
@@ -734,3 +765,5 @@ def test_owner_payouts_instant_payout_executes_and_logs(owner_user, booking_fact
     fee_txn = Transaction.objects.get(user=owner_user, kind=Transaction.Kind.PLATFORM_FEE)
     assert fee_txn.amount == Decimal("6.00")
     assert fee_txn.stripe_id == "tr_fee_123"
+    gst_txn = Transaction.objects.get(user=owner_user, kind=Transaction.Kind.GST_COLLECTED)
+    assert gst_txn.amount == Decimal("0.30")

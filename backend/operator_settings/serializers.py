@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+import re
+
 from rest_framework import serializers
 
 from operator_settings.models import DbSetting, FeatureFlag, MaintenanceBanner, OperatorJobRun
+
+_GST_NUMBER_REGEX = re.compile(r"^\d{9}RT\d{4}$")
+
+
+def normalize_gst_number(value: str) -> str:
+    return "".join(ch for ch in value.strip().upper() if ch.isalnum())
+
+
+def is_valid_gst_number(value: str) -> bool:
+    return bool(_GST_NUMBER_REGEX.match(value))
 
 
 class DbSettingSerializer(serializers.ModelSerializer):
@@ -56,6 +68,7 @@ class DbSettingPutSerializer(serializers.Serializer):
         return reason
 
     def validate(self, attrs: dict) -> dict:
+        key = attrs.get("key")
         value_type = attrs.get("value_type")
         value = attrs.get("value")
 
@@ -67,6 +80,16 @@ class DbSettingPutSerializer(serializers.Serializer):
             raise serializers.ValidationError({"value": "value must be a decimal string"})
         if value_type == DbSetting.ValueType.STR and not isinstance(value, str):
             raise serializers.ValidationError({"value": "value must be a string"})
+
+        if key == "ORG_GST_NUMBER":
+            if value_type != DbSetting.ValueType.STR:
+                raise serializers.ValidationError({"value_type": "value_type must be str"})
+            normalized = normalize_gst_number(value)
+            if normalized and not is_valid_gst_number(normalized):
+                raise serializers.ValidationError(
+                    {"value": "value must match CRA format (#########RT####)"}
+                )
+            attrs["value"] = normalized
 
         return attrs
 

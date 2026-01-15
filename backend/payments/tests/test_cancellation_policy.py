@@ -15,11 +15,20 @@ def _build_paid_booking() -> Booking:
         "days": "3",
         "rental_subtotal": "300.00",
         "renter_fee": "30.00",
+        "renter_fee_base": "30.00",
+        "renter_fee_gst": "0.00",
+        "renter_fee_total": "30.00",
         "owner_fee": "15.00",
+        "owner_fee_base": "15.00",
+        "owner_fee_gst": "0.00",
+        "owner_fee_total": "15.00",
         "owner_payout": "240.00",
         "platform_fee_total": "45.00",
         "damage_deposit": "150.00",
         "total_charge": "330.00",
+        "gst_enabled": False,
+        "gst_rate": "0.05",
+        "gst_number": "",
     }
     return booking
 

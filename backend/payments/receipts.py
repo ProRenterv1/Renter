@@ -15,6 +15,7 @@ from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
 
 from bookings.models import Booking
+from payments.models import OwnerFeeTaxInvoice
 from promotions.models import PromotedSlot
 from storage import s3 as storage_s3
 
@@ -30,6 +31,8 @@ _TEXT_MUTED = (80 / 255, 90 / 255, 105 / 255)
 class _PaymentBreakdown:
     rent: Decimal
     service_fee: Decimal
+    service_fee_gst: Decimal
+    service_fee_total: Decimal
     damage_deposit: Decimal
     total_charge: Decimal
 
@@ -41,6 +44,21 @@ class _PromotionPaymentBreakdown:
     total_charge: Decimal
     price_per_day: Decimal
     duration_days: int
+
+
+@dataclass(frozen=True)
+class _OwnerEarningsBreakdown:
+    rental_subtotal: Decimal
+    owner_fee_base: Decimal
+    owner_fee_gst: Decimal
+    owner_payout: Decimal
+
+
+@dataclass(frozen=True)
+class _OwnerFeeInvoiceBreakdown:
+    fee_subtotal: Decimal
+    fee_gst: Decimal
+    total: Decimal
 
 
 def _cents_to_decimal(value: int | Decimal) -> Decimal:
@@ -56,6 +74,10 @@ def render_booking_receipt_pdf(booking: Booking) -> bytes:
     """
     totals: Mapping[str, str | int | float | Decimal] = booking.totals or {}
     breakdown = _extract_payment_breakdown(totals)
+    gst_enabled = bool(totals.get("gst_enabled")) and breakdown.service_fee_gst > _ZERO
+    gst_rate_raw = totals.get("gst_rate", "0.05")
+    gst_rate = _to_decimal(gst_rate_raw)
+    gst_rate_pct = _format_percent(gst_rate * Decimal("100"))
 
     renter_name = _display_name(getattr(booking, "renter", None))
     owner_name = _display_name(getattr(booking, "owner", None))
@@ -157,7 +179,12 @@ def render_booking_receipt_pdf(booking: Booking) -> bytes:
     new_section("Payment breakdown", spacing=0.2)
     draw_row("Rent price", _format_currency(breakdown.rent))
     draw_row("Service fee", _format_currency(breakdown.service_fee))
+    if gst_enabled:
+        draw_row(
+            f"GST ({gst_rate_pct}%) on service fee", _format_currency(breakdown.service_fee_gst)
+        )
     draw_row("Damage deposit", _format_currency(breakdown.damage_deposit))
+    draw_row("Total charge", _format_currency(breakdown.total_charge))
     y -= 0.1 * inch
 
     new_section("Client", spacing=0.2)
@@ -172,6 +199,253 @@ def render_booking_receipt_pdf(booking: Booking) -> bytes:
     pdf.save()
 
     return buffer.getvalue()
+
+
+def render_owner_earnings_statement_pdf(booking: Booking) -> bytes:
+    """
+    Render a PDF earnings statement for the owner.
+
+    The function is pure – it only reads data from the Booking instance and
+    returns the rendered PDF bytes.
+    """
+    totals: Mapping[str, str | int | float | Decimal] = booking.totals or {}
+    breakdown = _extract_owner_earnings_breakdown(totals)
+
+    owner_name = _display_name(getattr(booking, "owner", None))
+    listing_title = getattr(getattr(booking, "listing", None), "title", "Listing")
+
+    start_date = booking.start_date
+    end_date = booking.end_date or booking.start_date
+    inclusive_end = (end_date - timedelta(days=1)) if end_date else start_date
+    date_range_display = _format_date_range(start_date, inclusive_end)
+
+    created_at = booking.created_at
+    if created_at:
+        if timezone.is_aware(created_at):
+            created_dt = timezone.localtime(created_at)
+        else:
+            created_dt = created_at
+        created_display = _format_date(created_dt.date())
+    else:
+        created_display = "N/A"
+    booking_id = getattr(booking, "id", None) or getattr(booking, "pk", None) or "N/A"
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    pdf.setTitle("Rentino Owner Earnings Statement")
+
+    width, height = letter
+    margin = 0.9 * inch
+    y = height - margin
+
+    business_name = "Rentino"
+    business_email = "asterokamax@gmail.com"
+
+    # Background and header
+    pdf.saveState()
+    pdf.setFillColorRGB(*_BRAND_MUTED_BG)
+    pdf.rect(0, 0, width, height, stroke=0, fill=1)
+    header_height = 1.0 * inch
+    pdf.setFillColorRGB(*_BRAND_COLOR)
+    pdf.rect(0, height - header_height, width, header_height, stroke=0, fill=1)
+    pdf.setFillColorRGB(1, 1, 1)
+    pdf.setFont("Helvetica-Bold", 22)
+    pdf.drawString(margin, height - 0.65 * inch, business_name)
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(margin, height - 0.82 * inch, business_email)
+    pdf.restoreState()
+    y = height - header_height - 0.3 * inch
+
+    def new_section(title: str, *, spacing: float = 0.22) -> None:
+        nonlocal y
+        pdf.setFont("Helvetica-Bold", 12)
+        pdf.setFillColorRGB(*_BRAND_COLOR)
+        pdf.drawString(margin, y, title)
+        pdf.setFillColorRGB(*_TEXT_PRIMARY)
+        y -= spacing * inch
+
+    def draw_row(label: str, value: str, *, label_width: float = 2.6) -> None:
+        nonlocal y
+        pdf.setFont("Helvetica-Bold", 10)
+        pdf.setFillColorRGB(*_TEXT_PRIMARY)
+        pdf.drawString(margin, y, label)
+        pdf.setFont("Helvetica", 10)
+        pdf.setFillColorRGB(*_TEXT_MUTED)
+        pdf.drawString(margin + label_width * inch, y, value)
+        y -= 0.18 * inch
+
+    pdf.setStrokeColorRGB(0.85, 0.85, 0.85)
+    pdf.setFillColorRGB(*_TEXT_PRIMARY)
+
+    header_x = width - margin - 2.6 * inch
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(header_x, y, f"Statement No: {booking_id}")
+    pdf.drawString(header_x, y - 0.18 * inch, f"Issued on: {created_display}")
+    y -= 0.65 * inch
+
+    pdf.line(margin, y, width - margin, y)
+    y -= 0.25 * inch
+
+    new_section("Booking", spacing=0.2)
+    draw_row("Listing", listing_title)
+    draw_row("Date range", date_range_display)
+    draw_row("Owner", owner_name)
+    draw_row("Booking ID", str(booking_id))
+    y -= 0.1 * inch
+
+    new_section("Earnings breakdown", spacing=0.2)
+    draw_row("Rental subtotal", _format_currency(breakdown.rental_subtotal))
+    draw_row("Owner fee", _format_currency(breakdown.owner_fee_base))
+    if breakdown.owner_fee_gst > _ZERO:
+        draw_row("GST on owner fee", _format_currency(breakdown.owner_fee_gst))
+    draw_row("Net credited to owner", _format_currency(breakdown.owner_payout))
+    y -= 0.1 * inch
+
+    pdf.setFont("Helvetica", 9)
+    pdf.setFillColorRGB(*_TEXT_MUTED)
+    pdf.drawString(
+        margin,
+        y,
+        "Owner is not GST-registered; no GST charged on rental amounts.",
+    )
+    y -= 0.3 * inch
+
+    pdf.showPage()
+    pdf.save()
+
+    return buffer.getvalue()
+
+
+def upload_owner_earnings_statement_pdf(booking: Booking) -> Tuple[str, str, bytes]:
+    """
+    Generate and upload an owner earnings statement PDF to S3.
+
+    Returns a tuple of (key, url, pdf_bytes) for the uploaded file.
+    """
+    if not booking.id:
+        raise ValueError("Booking must be persisted before generating a statement.")
+
+    pdf_bytes = render_owner_earnings_statement_pdf(booking)
+    key = f"uploads/private/owner-statements/{booking.id}_owner_statement.pdf"
+
+    storage_s3._client().put_object(
+        Bucket=settings.AWS_STORAGE_BUCKET_NAME,
+        Key=key,
+        Body=pdf_bytes,
+        ContentType="application/pdf",
+    )
+    url = storage_s3.public_url(key)
+    return key, url, pdf_bytes
+
+
+def render_owner_fee_tax_invoice_pdf(invoice: OwnerFeeTaxInvoice) -> bytes:
+    """
+    Render a PDF monthly tax invoice for owner fees.
+    """
+    breakdown = _OwnerFeeInvoiceBreakdown(
+        fee_subtotal=_to_decimal(invoice.fee_subtotal),
+        fee_gst=_to_decimal(invoice.gst),
+        total=_to_decimal(invoice.total),
+    )
+    owner = getattr(invoice, "owner", None)
+    owner_name = _display_name(owner)
+    owner_email = getattr(owner, "email", "") or "N/A"
+
+    period_label = f"{invoice.period_start.isoformat()} to {invoice.period_end.isoformat()}"
+    issued_on = _format_date(date.today())
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    pdf.setTitle("Rentino Owner Fee Tax Invoice")
+
+    width, height = letter
+    margin = 0.9 * inch
+    y = height - margin
+
+    pdf.saveState()
+    pdf.setFillColorRGB(*_BRAND_MUTED_BG)
+    pdf.rect(0, 0, width, height, stroke=0, fill=1)
+    header_height = 1.0 * inch
+    pdf.setFillColorRGB(*_BRAND_COLOR)
+    pdf.rect(0, height - header_height, width, header_height, stroke=0, fill=1)
+    pdf.setFillColorRGB(1, 1, 1)
+    pdf.setFont("Helvetica-Bold", 22)
+    pdf.drawString(margin, height - 0.65 * inch, "Rentino")
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(margin, height - 0.82 * inch, "asterokamax@gmail.com")
+    pdf.restoreState()
+    y = height - header_height - 0.3 * inch
+
+    def new_section(title: str, *, spacing: float = 0.22) -> None:
+        nonlocal y
+        pdf.setFont("Helvetica-Bold", 12)
+        pdf.setFillColorRGB(*_BRAND_COLOR)
+        pdf.drawString(margin, y, title)
+        pdf.setFillColorRGB(*_TEXT_PRIMARY)
+        y -= spacing * inch
+
+    def draw_row(label: str, value: str, *, label_width: float = 2.6) -> None:
+        nonlocal y
+        pdf.setFont("Helvetica-Bold", 10)
+        pdf.setFillColorRGB(*_TEXT_PRIMARY)
+        pdf.drawString(margin, y, label)
+        pdf.setFont("Helvetica", 10)
+        pdf.setFillColorRGB(*_TEXT_MUTED)
+        pdf.drawString(margin + label_width * inch, y, value)
+        y -= 0.18 * inch
+
+    pdf.setStrokeColorRGB(0.85, 0.85, 0.85)
+    pdf.setFillColorRGB(*_TEXT_PRIMARY)
+
+    header_x = width - margin - 2.6 * inch
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(header_x, y, f"Invoice No: {invoice.invoice_number}")
+    pdf.drawString(header_x, y - 0.18 * inch, f"Issued on: {issued_on}")
+    y -= 0.65 * inch
+
+    pdf.line(margin, y, width - margin, y)
+    y -= 0.25 * inch
+
+    new_section("Recipient", spacing=0.2)
+    draw_row("Owner", owner_name)
+    draw_row("Email", owner_email)
+    draw_row("Billing period", period_label)
+    y -= 0.1 * inch
+
+    new_section("Fee summary", spacing=0.2)
+    draw_row("Owner fee subtotal", _format_currency(breakdown.fee_subtotal))
+    if breakdown.fee_gst > _ZERO:
+        draw_row("GST on owner fees", _format_currency(breakdown.fee_gst))
+    draw_row("Total", _format_currency(breakdown.total))
+    y -= 0.1 * inch
+
+    if invoice.gst_number_snapshot:
+        pdf.setFont("Helvetica", 9)
+        pdf.setFillColorRGB(*_TEXT_MUTED)
+        pdf.drawString(margin, y, f"GST number: {invoice.gst_number_snapshot}")
+        y -= 0.25 * inch
+
+    pdf.showPage()
+    pdf.save()
+
+    return buffer.getvalue()
+
+
+def upload_owner_fee_tax_invoice_pdf(invoice: OwnerFeeTaxInvoice) -> Tuple[str, str, bytes]:
+    """
+    Generate and upload a monthly tax invoice PDF to S3.
+    """
+    pdf_bytes = render_owner_fee_tax_invoice_pdf(invoice)
+    key = f"uploads/private/fee-invoices/{invoice.invoice_number}.pdf"
+
+    storage_s3._client().put_object(
+        Bucket=settings.AWS_STORAGE_BUCKET_NAME,
+        Key=key,
+        Body=pdf_bytes,
+        ContentType="application/pdf",
+    )
+    url = storage_s3.public_url(key)
+    return key, url, pdf_bytes
 
 
 def upload_booking_receipt_pdf(booking: Booking) -> Tuple[str, str, bytes]:
@@ -293,7 +567,8 @@ def render_promotion_receipt_pdf(slot: PromotedSlot) -> bytes:
     new_section("Payment breakdown", spacing=0.2)
     draw_row("Price per day", _format_currency(breakdown.price_per_day))
     draw_row("Promotion price", _format_currency(breakdown.base_price))
-    draw_row("GST (5%)", _format_currency(breakdown.gst))
+    if breakdown.gst > _ZERO:
+        draw_row("GST", _format_currency(breakdown.gst))
     draw_row("Total charged", _format_currency(breakdown.total_charge))
     y -= 0.1 * inch
 
@@ -333,14 +608,35 @@ def upload_promotion_receipt_pdf(slot: PromotedSlot) -> Tuple[str, str, bytes]:
 
 def _extract_payment_breakdown(totals: Mapping[str, object]) -> _PaymentBreakdown:
     rent = _get_amount(totals, ("rental_subtotal",))
-    service_fee = _get_amount(totals, ("renter_fee", "service_fee"))
+    service_fee = _get_amount(totals, ("renter_fee_base", "renter_fee", "service_fee"))
+    service_fee_gst = _get_amount(totals, ("renter_fee_gst",))
+    service_fee_total_raw = totals.get("renter_fee_total")
+    if service_fee_total_raw not in (None, ""):
+        service_fee_total = _to_decimal(service_fee_total_raw)
+    else:
+        service_fee_total = _to_decimal(service_fee + service_fee_gst)
     damage_deposit = _get_amount(totals, ("damage_deposit",))
     total_charge = _get_amount(totals, ("total_charge",), required=True)
     return _PaymentBreakdown(
         rent=rent,
         service_fee=service_fee,
+        service_fee_gst=service_fee_gst,
+        service_fee_total=service_fee_total,
         damage_deposit=damage_deposit,
         total_charge=total_charge,
+    )
+
+
+def _extract_owner_earnings_breakdown(totals: Mapping[str, object]) -> _OwnerEarningsBreakdown:
+    rental_subtotal = _get_amount(totals, ("rental_subtotal",))
+    owner_fee_base = _get_amount(totals, ("owner_fee_base", "owner_fee"))
+    owner_fee_gst = _get_amount(totals, ("owner_fee_gst",))
+    owner_payout = _get_amount(totals, ("owner_payout",))
+    return _OwnerEarningsBreakdown(
+        rental_subtotal=rental_subtotal,
+        owner_fee_base=owner_fee_base,
+        owner_fee_gst=owner_fee_gst,
+        owner_payout=owner_payout,
     )
 
 
@@ -370,6 +666,13 @@ def _to_decimal(value: object) -> Decimal:
 
 def _format_currency(amount: Decimal) -> str:
     return f"CAD {amount:,.2f}"
+
+
+def _format_percent(value: Decimal) -> str:
+    rounded = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if rounded == rounded.to_integral_value():
+        return f"{int(rounded)}"
+    return f"{rounded}"
 
 
 def _display_name(user) -> str:
@@ -447,4 +750,8 @@ __all__ = [
     "upload_booking_receipt_pdf",
     "render_promotion_receipt_pdf",
     "upload_promotion_receipt_pdf",
+    "render_owner_earnings_statement_pdf",
+    "upload_owner_earnings_statement_pdf",
+    "render_owner_fee_tax_invoice_pdf",
+    "upload_owner_fee_tax_invoice_pdf",
 ]

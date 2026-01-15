@@ -1,0 +1,13 @@
+Hi {{ owner.first_name|default:owner.username|default:"there" }},
+
+Your monthly tax invoice is ready.
+
+Invoice: {{ invoice_number }}
+Period: {{ period_label }}
+Owner fee subtotal: ${{ fee_subtotal }}
+GST on owner fees: ${{ fee_gst }}
+Total: ${{ total }}
+GST number: {{ gst_number|default:"N/A" }}
+
+Thanks,
+Rentino

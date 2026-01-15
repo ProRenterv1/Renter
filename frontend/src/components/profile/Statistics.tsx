@@ -15,6 +15,7 @@ import {
 import {
   listingsAPI,
   paymentsAPI,
+  type OwnerFeeInvoice,
   type OwnerPayoutHistoryRow,
   type OwnerPayoutSummary,
 } from "@/lib/api";
@@ -22,10 +23,12 @@ import { formatCurrency, parseMoney } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Skeleton } from "../ui/skeleton";
+import { Button } from "../ui/button";
 
 export function Statistics() {
   const [summary, setSummary] = useState<OwnerPayoutSummary | null>(null);
   const [history, setHistory] = useState<OwnerPayoutHistoryRow[]>([]);
+  const [invoices, setInvoices] = useState<OwnerFeeInvoice[]>([]);
   const [activeListings, setActiveListings] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -38,16 +41,18 @@ export function Statistics() {
       setLoading(true);
       setError(null);
       try {
-        const [summaryRes, historyRes, listingsRes] = await Promise.all([
+        const [summaryRes, historyRes, listingsRes, invoicesRes] = await Promise.all([
           paymentsAPI.ownerPayoutsSummary(),
           paymentsAPI.ownerPayoutsHistory({ limit: 500 }),
           listingsAPI.mine(),
+          paymentsAPI.listOwnerFeeInvoices(),
         ]);
 
         if (cancelled) return;
 
         setSummary(summaryRes);
         setHistory(historyRes.results ?? []);
+        setInvoices(invoicesRes.results ?? []);
 
         const listingsArray = Array.isArray((listingsRes as any)?.results)
           ? (listingsRes as any).results
@@ -62,6 +67,7 @@ export function Statistics() {
       } catch (err) {
         if (!cancelled) {
           setError("Unable to load statistics right now.");
+          setInvoices([]);
         }
       } finally {
         if (!cancelled) {
@@ -75,6 +81,23 @@ export function Statistics() {
       cancelled = true;
     };
   }, []);
+
+  const handleInvoiceDownload = async (invoice: OwnerFeeInvoice) => {
+    try {
+      const res = await paymentsAPI.downloadOwnerFeeInvoice(invoice.id);
+      if (res?.url) {
+        window.open(res.url, "_blank", "noopener,noreferrer");
+      }
+    } catch {
+      // noop, surface via toast once added
+    }
+  };
+
+  const formatInvoiceMonth = (invoice: OwnerFeeInvoice) => {
+    const dt = new Date(invoice.period_start);
+    if (Number.isNaN(dt.getTime())) return invoice.period_start;
+    return dt.toLocaleString(undefined, { month: "short", year: "numeric" });
+  };
 
   const unpaidSinceLastPayout = useMemo(() => {
     if (!summary) return 0;
@@ -289,6 +312,53 @@ export function Statistics() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Tax invoices</CardTitle>
+          <CardDescription>Monthly owner fee invoices (GST on platform fees)</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <Skeleton className="h-20 w-full" />
+          ) : invoices.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No invoices yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-muted-foreground">
+                    <th className="py-2 pr-4">Month</th>
+                    <th className="py-2 pr-4">Subtotal</th>
+                    <th className="py-2 pr-4">GST</th>
+                    <th className="py-2 pr-4">Total</th>
+                    <th className="py-2 text-right">Download</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {invoices.map((invoice) => (
+                    <tr key={invoice.id} className="border-t border-border">
+                      <td className="py-2 pr-4">{formatInvoiceMonth(invoice)}</td>
+                      <td className="py-2 pr-4">{formatCurrency(parseMoney(invoice.fee_subtotal))}</td>
+                      <td className="py-2 pr-4">{formatCurrency(parseMoney(invoice.gst))}</td>
+                      <td className="py-2 pr-4">{formatCurrency(parseMoney(invoice.total))}</td>
+                      <td className="py-2 text-right">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleInvoiceDownload(invoice)}
+                        >
+                          Download
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

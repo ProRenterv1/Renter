@@ -56,6 +56,18 @@ def mock_stripe_payment_methods(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def mock_connect_account(monkeypatch):
+    payout_account = SimpleNamespace(
+        stripe_account_id="acct_test_owner",
+        payouts_enabled=True,
+        charges_enabled=True,
+        is_fully_onboarded=True,
+    )
+    monkeypatch.setattr(stripe_api, "ensure_connect_account", lambda _user: payout_account)
+    return payout_account
+
+
 def auth(user):
     client = APIClient()
     token_resp = client.post(
@@ -115,13 +127,23 @@ def test_booking_create_charges_and_defers_deposit_hold(renter_user, listing, mo
     assert booking.totals
     assert booking.renter_stripe_customer_id == "cus_123"
     assert booking.renter_stripe_payment_method_id == "pm_123"
+    assert booking.paid_at is not None
 
     assert len(created_calls) == 1
     (charge_call,) = created_calls
 
     rental_subtotal = Decimal(booking.totals["rental_subtotal"])
-    service_fee = Decimal(booking.totals.get("service_fee", booking.totals.get("renter_fee", "0")))
-    expected_charge_cents = int((rental_subtotal + service_fee) * Decimal("100"))
+    renter_fee_total = Decimal(
+        booking.totals.get(
+            "renter_fee_total",
+            booking.totals.get("service_fee", booking.totals.get("renter_fee", "0")),
+        )
+    )
+    expected_charge_cents = int((rental_subtotal + renter_fee_total) * Decimal("100"))
+    platform_fee_total = Decimal(booking.totals["platform_fee_total"])
+    expected_fee_cents = int(platform_fee_total * Decimal("100"))
+    owner_payout = Decimal(booking.totals["owner_payout"])
+    expected_owner_payout_cents = int(owner_payout * Decimal("100"))
 
     assert charge_call["amount"] == expected_charge_cents
     assert charge_call["currency"] == "cad"
@@ -129,6 +151,11 @@ def test_booking_create_charges_and_defers_deposit_hold(renter_user, listing, mo
     assert charge_call["capture_method"] == "automatic"
     assert charge_call["automatic_payment_methods"]["enabled"] is True
     assert charge_call["automatic_payment_methods"]["allow_redirects"] == "never"
+    assert charge_call["application_fee_amount"] == expected_fee_cents
+    assert charge_call["transfer_data"]["destination"] == "acct_test_owner"
+    assert charge_call["transfer_data"]["amount"] == expected_owner_payout_cents
+    assert charge_call["transfer_group"] == f"booking:{booking.id}"
+    assert charge_call["on_behalf_of"] == "acct_test_owner"
 
 
 def test_create_booking_payment_intents_uses_booking_totals(
@@ -173,14 +200,26 @@ def test_create_booking_payment_intents_uses_booking_totals(
     assert len(created_calls) == 2
 
     rental_subtotal = Decimal(booking.totals["rental_subtotal"])
-    service_fee = Decimal(booking.totals.get("service_fee", booking.totals.get("renter_fee", "0")))
-    expected_charge_cents = int((rental_subtotal + service_fee) * Decimal("100"))
+    renter_fee_total = Decimal(
+        booking.totals.get(
+            "renter_fee_total",
+            booking.totals.get("service_fee", booking.totals.get("renter_fee", "0")),
+        )
+    )
+    expected_charge_cents = int((rental_subtotal + renter_fee_total) * Decimal("100"))
     deposit = Decimal(booking.totals.get("damage_deposit", "0"))
     expected_deposit_cents = int(deposit * Decimal("100"))
+    platform_fee_total = Decimal(booking.totals["platform_fee_total"])
+    expected_fee_cents = int(platform_fee_total * Decimal("100"))
+    owner_payout = Decimal(booking.totals["owner_payout"])
+    expected_owner_payout_cents = int(owner_payout * Decimal("100"))
 
     charge_call, deposit_call = created_calls
     assert charge_call["amount"] == expected_charge_cents
     assert deposit_call["amount"] == expected_deposit_cents
+    assert charge_call["application_fee_amount"] == expected_fee_cents
+    assert charge_call["transfer_data"]["destination"] == "acct_test_owner"
+    assert charge_call["transfer_data"]["amount"] == expected_owner_payout_cents
 
 
 def test_booking_create_no_deposit_when_zero_damage_deposit(
@@ -309,6 +348,17 @@ def test_booking_create_transient_error_is_retry_safe(renter_user, listing, monk
     expected_base = f"booking:{booking.id}:{stripe_api.IDEMPOTENCY_VERSION}"
     totals = booking.totals or {}
     rental_subtotal = Decimal(totals["rental_subtotal"])
-    service_fee = Decimal(totals.get("service_fee", totals.get("renter_fee", "0")))
-    expected_charge_cents = int((rental_subtotal + service_fee) * Decimal("100"))
-    assert created_calls[1]["idempotency_key"] == f"{expected_base}:charge:{expected_charge_cents}"
+    renter_fee_total = Decimal(
+        totals.get(
+            "renter_fee_total",
+            totals.get("service_fee", totals.get("renter_fee", "0")),
+        )
+    )
+    expected_charge_cents = int((rental_subtotal + renter_fee_total) * Decimal("100"))
+    platform_fee_total = Decimal(totals["platform_fee_total"])
+    expected_fee_cents = int(platform_fee_total * Decimal("100"))
+    expected_key = (
+        f"{expected_base}:charge_dest_v1:{expected_charge_cents}:"
+        f"{expected_fee_cents}:acct_test_owner"
+    )
+    assert created_calls[1]["idempotency_key"] == expected_key
