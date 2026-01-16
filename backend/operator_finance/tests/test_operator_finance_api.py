@@ -196,7 +196,7 @@ def test_booking_finance_read(operator_finance_user, booking_factory):
     tx2 = Transaction.objects.create(
         user=booking.renter,
         booking=booking,
-        kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE,
+        kind=Transaction.Kind.DAMAGE_DEPOSIT_HOLD,
         amount="3.00",
         stripe_id="pi_deposit",
     )
@@ -214,24 +214,41 @@ def test_booking_finance_read(operator_finance_user, booking_factory):
 def test_refund_action_creates_audit_event_and_is_idempotent(
     operator_finance_user, booking_factory, monkeypatch
 ):
+    today = timezone.localdate()
     booking = booking_factory(
-        status=Booking.Status.PAID, charge_payment_intent_id="pi_charge", deposit_hold_id=""
+        status=Booking.Status.PAID,
+        charge_payment_intent_id="pi_charge",
+        deposit_hold_id="",
+        start_date=today - timedelta(days=2),
+        end_date=today,
+        paid_at=timezone.now() - timedelta(hours=2),
+        totals={
+            "rental_subtotal": "100.00",
+            "renter_fee": "10.00",
+            "renter_fee_total": "10.00",
+            "owner_fee": "5.00",
+            "owner_fee_total": "5.00",
+            "owner_payout": "95.00",
+        },
     )
     client = _ops_client(operator_finance_user)
 
     monkeypatch.setattr("disputres.services.settlement._get_stripe_api_key", lambda: "sk_test")
 
     def _refund_create(**kwargs):
-        return SimpleNamespace(id="re_123", amount=500)
+        return SimpleNamespace(id="re_123", amount=9500)
 
     with patch("stripe.Refund.create", side_effect=_refund_create):
         resp = client.post(
             f"/api/operator/bookings/{booking.id}/refund",
-            {"amount": "5.00", "reason": "duplicate charge", "notify_user": True},
+            {"reason": "duplicate charge", "notify_user": True},
             format="json",
         )
     assert resp.status_code == status.HTTP_200_OK, resp.data
-    assert Transaction.objects.filter(kind=Transaction.Kind.REFUND).count() == 1
+    refunds = Transaction.objects.filter(kind=Transaction.Kind.REFUND, booking=booking)
+    assert refunds.count() == 2
+    assert refunds.filter(user=booking.renter).count() == 1
+    assert refunds.filter(user=booking.owner).count() == 1
     assert OperatorAuditEvent.objects.filter(
         entity_id=str(booking.id), action="operator.booking.refund"
     ).exists()
@@ -242,10 +259,64 @@ def test_refund_action_creates_audit_event_and_is_idempotent(
     with patch("stripe.Refund.create", side_effect=_refund_create):
         client.post(
             f"/api/operator/bookings/{booking.id}/refund",
-            {"amount": "5.00", "reason": "duplicate charge"},
+            {"reason": "duplicate charge"},
             format="json",
         )
-    assert Transaction.objects.filter(kind=Transaction.Kind.REFUND).count() == 1
+    assert Transaction.objects.filter(kind=Transaction.Kind.REFUND, booking=booking).count() == 2
+
+
+def test_refund_rejected_outside_window(operator_finance_user, booking_factory):
+    today = timezone.localdate()
+    booking = booking_factory(
+        status=Booking.Status.PAID,
+        charge_payment_intent_id="pi_charge",
+        start_date=today - timedelta(days=6),
+        end_date=today - timedelta(days=3),
+        paid_at=timezone.now() - timedelta(days=5),
+        totals={
+            "rental_subtotal": "100.00",
+            "renter_fee": "10.00",
+            "renter_fee_total": "10.00",
+            "owner_fee": "5.00",
+            "owner_fee_total": "5.00",
+            "owner_payout": "95.00",
+        },
+    )
+    client = _ops_client(operator_finance_user)
+    resp = client.post(
+        f"/api/operator/bookings/{booking.id}/refund",
+        {"reason": "late"},
+        format="json",
+    )
+    assert resp.status_code == status.HTTP_400_BAD_REQUEST
+    assert "48 hours" in resp.data["detail"]
+
+
+def test_refund_rejects_amount_not_owner_payout(operator_finance_user, booking_factory):
+    today = timezone.localdate()
+    booking = booking_factory(
+        status=Booking.Status.PAID,
+        charge_payment_intent_id="pi_charge",
+        start_date=today - timedelta(days=2),
+        end_date=today,
+        paid_at=timezone.now() - timedelta(hours=4),
+        totals={
+            "rental_subtotal": "100.00",
+            "renter_fee": "10.00",
+            "renter_fee_total": "10.00",
+            "owner_fee": "5.00",
+            "owner_fee_total": "5.00",
+            "owner_payout": "95.00",
+        },
+    )
+    client = _ops_client(operator_finance_user)
+    resp = client.post(
+        f"/api/operator/bookings/{booking.id}/refund",
+        {"amount": "100.00", "reason": "over refund"},
+        format="json",
+    )
+    assert resp.status_code == status.HTTP_400_BAD_REQUEST
+    assert "owner payout" in resp.data["detail"].lower()
 
 
 def test_deposit_capture_action_idempotent(operator_finance_user, booking_factory, monkeypatch):
@@ -336,8 +407,14 @@ def test_settlement_refund_idempotent(monkeypatch, booking_factory):
     with patch("stripe.Refund.create", side_effect=_refund_create):
         settlement.refund_booking_charge(booking, 500, dispute_id="dispute-1")
 
-    refunds = Transaction.objects.filter(kind=Transaction.Kind.REFUND, stripe_id="re_idem")
-    assert refunds.count() == 1
+    renter_refunds = Transaction.objects.filter(
+        kind=Transaction.Kind.REFUND, stripe_id="re_idem", user=booking.renter
+    )
+    owner_refunds = Transaction.objects.filter(
+        kind=Transaction.Kind.REFUND, stripe_id="re_idem", user=booking.owner
+    )
+    assert renter_refunds.count() == 1
+    assert owner_refunds.count() == 1
 
 
 def test_settlement_transfer_idempotent(monkeypatch, booking_factory, owner_user):
@@ -457,7 +534,17 @@ def test_exports_csv(operator_finance_user, booking_factory, renter_user):
     assert resp.status_code == status.HTTP_200_OK
     content = resp.content.decode().strip().splitlines()
     header = content[0].split(",")
-    assert header == ["created_at", "source", "booking_id", "txn_id", "amount", "currency"]
+    assert header == [
+        "created_at",
+        "source",
+        "booking_id",
+        "txn_id",
+        "Gross income",
+        "Stripe Fee",
+        "GST",
+        "Net income",
+        "currency",
+    ]
     body = "\n".join(content[1:])
     assert Transaction.Kind.PLATFORM_FEE in body
     assert Transaction.Kind.PROMOTION_CHARGE in body

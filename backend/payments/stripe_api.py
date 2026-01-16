@@ -141,6 +141,144 @@ def _extract_booking_fees(booking: Booking) -> dict[str, Decimal]:
     }
 
 
+def get_payment_intent_fee(intent_id: str) -> Decimal | None:
+    """Return the Stripe processing fee for a PaymentIntent, if available."""
+    intent_id = (intent_id or "").strip()
+    if not intent_id:
+        return None
+    stripe.api_key = _get_stripe_api_key()
+
+    def _fee_from_balance_transaction(balance_txn) -> int | None:
+        fee_value = None
+        if isinstance(balance_txn, dict):
+            fee_value = balance_txn.get("fee")
+        elif balance_txn and not isinstance(balance_txn, str):
+            fee_value = getattr(balance_txn, "fee", None)
+
+        if fee_value is None and isinstance(balance_txn, str):
+            try:
+                balance_txn_payload = stripe.BalanceTransaction.retrieve(balance_txn)
+            except stripe.error.StripeError as exc:  # noqa: PERF203
+                _handle_stripe_error(exc)
+            if isinstance(balance_txn_payload, dict):
+                fee_value = balance_txn_payload.get("fee")
+            else:
+                fee_value = getattr(balance_txn_payload, "fee", None)
+
+        if fee_value is None:
+            return None
+        try:
+            return int(fee_value)
+        except (TypeError, ValueError):
+            return None
+
+    def _fee_from_intent(intent_payload) -> Decimal | None:
+        charges = getattr(intent_payload, "charges", None)
+        if isinstance(charges, dict):
+            charge_items = charges.get("data") or []
+        else:
+            charge_items = getattr(charges, "data", None) or []
+
+        if not charge_items:
+            latest_charge = (
+                intent_payload.get("latest_charge")
+                if isinstance(intent_payload, dict)
+                else getattr(intent_payload, "latest_charge", None)
+            )
+            if latest_charge:
+                if isinstance(latest_charge, dict) or (
+                    latest_charge and not isinstance(latest_charge, str)
+                ):
+                    charge_payload = latest_charge
+                else:
+                    try:
+                        charge_payload = stripe.Charge.retrieve(latest_charge)
+                    except stripe.error.StripeError as exc:  # noqa: PERF203
+                        _handle_stripe_error(exc)
+                if isinstance(charge_payload, dict):
+                    balance_txn = charge_payload.get("balance_transaction")
+                else:
+                    balance_txn = getattr(charge_payload, "balance_transaction", None)
+                fee_value = _fee_from_balance_transaction(balance_txn)
+                if fee_value is not None:
+                    return (Decimal(fee_value) / Decimal("100")).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+            return None
+
+        fee_cents = 0
+        fee_found = False
+        for charge in charge_items:
+            if isinstance(charge, dict):
+                balance_txn = charge.get("balance_transaction")
+            else:
+                balance_txn = getattr(charge, "balance_transaction", None)
+
+            fee_value = _fee_from_balance_transaction(balance_txn)
+            if fee_value is None:
+                continue
+
+            fee_found = True
+            fee_cents += fee_value
+
+        if not fee_found:
+            return None
+
+        return (Decimal(fee_cents) / Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+
+    if intent_id.startswith("ch_"):
+        try:
+            charge_payload = stripe.Charge.retrieve(intent_id, expand=["balance_transaction"])
+        except stripe.error.StripeError as exc:  # noqa: PERF203
+            _handle_stripe_error(exc)
+        if isinstance(charge_payload, dict):
+            balance_txn = charge_payload.get("balance_transaction")
+        else:
+            balance_txn = getattr(charge_payload, "balance_transaction", None)
+        fee_value = _fee_from_balance_transaction(balance_txn)
+        if fee_value is None:
+            return None
+        return (Decimal(fee_value) / Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+
+    if intent_id.startswith("cs_"):
+        try:
+            session = stripe.checkout.Session.retrieve(
+                intent_id, expand=["payment_intent.charges.data.balance_transaction"]
+            )
+        except stripe.error.StripeError as exc:  # noqa: PERF203
+            _handle_stripe_error(exc)
+        payment_intent = (
+            session.get("payment_intent")
+            if isinstance(session, dict)
+            else getattr(session, "payment_intent", None)
+        )
+        if not payment_intent:
+            return None
+        if isinstance(payment_intent, str):
+            try:
+                intent_payload = stripe.PaymentIntent.retrieve(
+                    payment_intent, expand=["charges.data.balance_transaction"]
+                )
+            except stripe.error.StripeError as exc:  # noqa: PERF203
+                _handle_stripe_error(exc)
+        else:
+            intent_payload = payment_intent
+        return _fee_from_intent(intent_payload)
+
+    try:
+        intent = stripe.PaymentIntent.retrieve(
+            intent_id, expand=["charges.data.balance_transaction"]
+        )
+    except stripe.error.StripeError as exc:  # noqa: PERF203
+        _handle_stripe_error(exc)
+
+    return _fee_from_intent(intent)
+
+
 def _handle_stripe_error(exc: stripe.error.StripeError) -> None:
     """Map Stripe SDK errors onto internal exception types."""
     if isinstance(exc, stripe.error.CardError):
@@ -160,6 +298,132 @@ def _handle_stripe_error(exc: stripe.error.StripeError) -> None:
     if isinstance(exc, stripe.error.InvalidRequestError):
         raise StripePaymentError(exc.user_message or "Invalid payment request.") from exc
     raise StripePaymentError(exc.user_message or "Stripe payment failure.") from exc
+
+
+def _stripe_timestamp_to_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        ts = int(value)
+    except (TypeError, ValueError):
+        return None
+    return datetime.fromtimestamp(ts, tz=datetime_timezone.utc)
+
+
+def _available_on_from_balance_transaction(balance_txn: Any) -> datetime | None:
+    available_on = None
+    if isinstance(balance_txn, dict):
+        available_on = balance_txn.get("available_on")
+    elif balance_txn and not isinstance(balance_txn, str):
+        available_on = getattr(balance_txn, "available_on", None)
+
+    if available_on is None and isinstance(balance_txn, str):
+        try:
+            balance_txn_payload = stripe.BalanceTransaction.retrieve(balance_txn)
+        except stripe.error.StripeError:
+            logger.warning(
+                "stripe_balance_transaction_unavailable",
+                extra={"balance_txn": balance_txn},
+                exc_info=True,
+            )
+            return None
+        if isinstance(balance_txn_payload, dict):
+            available_on = balance_txn_payload.get("available_on")
+        else:
+            available_on = getattr(balance_txn_payload, "available_on", None)
+
+    return _stripe_timestamp_to_datetime(available_on)
+
+
+def _available_on_from_transfer(transfer_payload: Any) -> datetime | None:
+    if not transfer_payload:
+        return None
+    if isinstance(transfer_payload, dict):
+        balance_txn = transfer_payload.get("balance_transaction")
+    else:
+        balance_txn = getattr(transfer_payload, "balance_transaction", None)
+    return _available_on_from_balance_transaction(balance_txn)
+
+
+def _available_on_from_intent(intent_payload: Any, intent_id: str | None = None) -> datetime | None:
+    try:
+        stripe.api_key = _get_stripe_api_key()
+    except StripeConfigurationError:
+        pass
+
+    def _available_on_from_charges(charges_payload: Any) -> datetime | None:
+        if isinstance(charges_payload, dict):
+            charge_items = charges_payload.get("data") or []
+        else:
+            charge_items = getattr(charges_payload, "data", None) or []
+
+        available_candidates = []
+        for charge in charge_items:
+            if isinstance(charge, dict):
+                balance_txn = charge.get("balance_transaction")
+            else:
+                balance_txn = getattr(charge, "balance_transaction", None)
+            available_at = _available_on_from_balance_transaction(balance_txn)
+            if available_at is not None:
+                available_candidates.append(available_at)
+
+        if available_candidates:
+            return max(available_candidates)
+        return None
+
+    if intent_payload:
+        charges_payload = (
+            intent_payload.get("charges")
+            if isinstance(intent_payload, dict)
+            else getattr(intent_payload, "charges", None)
+        )
+        available_at = _available_on_from_charges(charges_payload)
+        if available_at is not None:
+            return available_at
+
+        latest_charge = (
+            intent_payload.get("latest_charge")
+            if isinstance(intent_payload, dict)
+            else getattr(intent_payload, "latest_charge", None)
+        )
+        if latest_charge:
+            if isinstance(latest_charge, dict) or (
+                latest_charge and not isinstance(latest_charge, str)
+            ):
+                charge_payload = latest_charge
+            else:
+                try:
+                    charge_payload = stripe.Charge.retrieve(
+                        latest_charge, expand=["balance_transaction"]
+                    )
+                except stripe.error.StripeError:
+                    charge_payload = None
+            if charge_payload is not None:
+                if isinstance(charge_payload, dict):
+                    balance_txn = charge_payload.get("balance_transaction")
+                else:
+                    balance_txn = getattr(charge_payload, "balance_transaction", None)
+                available_at = _available_on_from_balance_transaction(balance_txn)
+                if available_at is not None:
+                    return available_at
+
+    if not intent_id:
+        return None
+
+    try:
+        stripe.api_key = _get_stripe_api_key()
+        intent_payload = stripe.PaymentIntent.retrieve(
+            intent_id, expand=["charges.data.balance_transaction"]
+        )
+    except (StripeConfigurationError, stripe.error.StripeError):
+        return None
+
+    charges_payload = (
+        intent_payload.get("charges")
+        if isinstance(intent_payload, dict)
+        else getattr(intent_payload, "charges", None)
+    )
+    return _available_on_from_charges(charges_payload)
 
 
 def call_stripe_callable(
@@ -586,25 +850,10 @@ def ensure_connect_account(user: User, business_type: str | None = None) -> Owne
     return _sync_payout_account_from_stripe(payout_account, account_data)
 
 
-def get_connect_available_balance(payout_account: OwnerPayoutAccount) -> Decimal | None:
-    """Return the available balance (in dollars) for a Stripe Connect account, if known."""
-    account_id = getattr(payout_account, "stripe_account_id", "") or ""
-    if not account_id:
+def _balance_cents_for_currency(entries: Any, currency_code: str) -> int | None:
+    if not entries:
         return None
-
-    stripe.api_key = _get_stripe_api_key()
-    try:
-        balance = stripe.Balance.retrieve(stripe_account=account_id)
-    except stripe.error.StripeError as exc:
-        logger.warning(
-            "stripe_balance_unavailable",
-            extra={"account_id": account_id, "error": str(exc)},
-        )
-        return None
-
-    available_list = getattr(balance, "available", None) or []
-    available_cents = None
-    for entry in available_list:
+    for entry in entries:
         currency = ""
         amount = None
         try:
@@ -614,18 +863,53 @@ def get_connect_available_balance(payout_account: OwnerPayoutAccount) -> Decimal
             currency = getattr(entry, "currency", "") or ""
             amount = getattr(entry, "amount", None)
             currency = currency.lower()
+        if currency == currency_code:
+            return amount
+    return None
 
-        if currency == "cad":
-            available_cents = amount
-            break
 
-    if available_cents is None:
+def _cents_to_decimal(cents: int | None) -> Decimal | None:
+    if cents is None:
         return None
-
     try:
-        return (Decimal(str(available_cents)) / Decimal("100")).quantize(Decimal("0.01"))
+        return (Decimal(str(cents)) / Decimal("100")).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError):
         return None
+
+
+def get_connect_balance_snapshot(
+    payout_account: OwnerPayoutAccount,
+) -> dict[str, Decimal | None]:
+    """Return available and total balances (in dollars) for a Stripe Connect account."""
+    account_id = getattr(payout_account, "stripe_account_id", "") or ""
+    if not account_id:
+        return {"available": None, "total": None}
+
+    stripe.api_key = _get_stripe_api_key()
+    try:
+        balance = stripe.Balance.retrieve(stripe_account=account_id)
+    except stripe.error.StripeError as exc:
+        logger.warning(
+            "stripe_balance_unavailable",
+            extra={"account_id": account_id, "error": str(exc)},
+        )
+        return {"available": None, "total": None}
+
+    available_cents = _balance_cents_for_currency(getattr(balance, "available", None) or [], "cad")
+    pending_cents = _balance_cents_for_currency(getattr(balance, "pending", None) or [], "cad")
+    if available_cents is None and pending_cents is None:
+        return {"available": None, "total": None}
+    total_cents = (available_cents or 0) + (pending_cents or 0)
+    return {
+        "available": _cents_to_decimal(available_cents),
+        "total": _cents_to_decimal(total_cents),
+    }
+
+
+def get_connect_available_balance(payout_account: OwnerPayoutAccount) -> Decimal | None:
+    """Return the available balance (in dollars) for a Stripe Connect account, if known."""
+    snapshot = get_connect_balance_snapshot(payout_account)
+    return snapshot.get("available")
 
 
 def sync_connect_account_personal_info(
@@ -1239,6 +1523,7 @@ def create_owner_transfer_for_booking(*, booking: Booking, payment_intent_id: st
     if transfer_id is None and hasattr(transfer, "get"):
         transfer_id = transfer.get("id")
 
+    stripe_available_on = _available_on_from_transfer(transfer)
     log_transaction(
         user=owner,
         booking=booking,
@@ -1247,6 +1532,7 @@ def create_owner_transfer_for_booking(*, booking: Booking, payment_intent_id: st
         amount=owner_payout,
         currency="cad",
         stripe_id=transfer_id,
+        stripe_available_on=stripe_available_on,
     )
 
 
@@ -1465,8 +1751,17 @@ def _maybe_update_application_fee_description(
     except StripeConfigurationError:
         return
     try:
-        stripe.ApplicationFee.modify(fee_id, description=desired_description)
-    except stripe.error.StripeError:
+        if hasattr(stripe.ApplicationFee, "modify"):
+            stripe.ApplicationFee.modify(fee_id, description=desired_description)
+            return
+        if hasattr(stripe.ApplicationFee, "update"):
+            stripe.ApplicationFee.update(fee_id, description=desired_description)
+            return
+        logger.warning(
+            "stripe_webhook: application fee update unsupported in stripe sdk",
+            extra={"fee_id": fee_id},
+        )
+    except (stripe.error.StripeError, AttributeError):
         logger.warning(
             "stripe_webhook: failed to update application fee %s description",
             fee_id,
@@ -1646,7 +1941,6 @@ def create_booking_charge_intent(
             if use_destination_charges:
                 transfer_data: dict[str, Any] = {
                     "destination": payout_account.stripe_account_id,
-                    "amount": owner_payout_cents,
                 }
                 charge_payload.update(
                     {
@@ -1701,6 +1995,13 @@ def create_booking_deposit_hold_intent(
     """
     Create or reuse the damage deposit PaymentIntent (manual capture).
     """
+    listing = getattr(booking, "listing", None)
+    if listing is None:
+        listing = Listing.objects.select_related("owner").filter(pk=booking.listing_id).first()
+    owner = getattr(listing, "owner", None) or getattr(booking, "owner", None)
+    if owner is None:
+        raise StripePaymentError("Listing owner is missing; please contact support.")
+
     totals = booking.totals or {}
     damage_deposit = _parse_decimal(totals.get("damage_deposit", "0"), "damage_deposit")
     if damage_deposit < Decimal("0"):
@@ -1710,6 +2011,14 @@ def create_booking_deposit_hold_intent(
     deposit_amount_cents = _to_cents(damage_deposit)
 
     stripe.api_key = _get_stripe_api_key()
+    use_destination_charges = getattr(settings, "STRIPE_BOOKINGS_DESTINATION_CHARGES", True)
+    payout_account = None
+    if use_destination_charges:
+        payout_account = ensure_connect_account(owner)
+        if not payout_account.stripe_account_id or not payout_account.charges_enabled:
+            raise StripePaymentError(
+                "Listing owner is not ready to accept payments yet. Please try again later."
+            )
     customer_value = (
         customer_id or getattr(booking.renter, "stripe_customer_id", "") or ""
     ).strip()
@@ -1730,6 +2039,8 @@ def create_booking_deposit_hold_intent(
     common_metadata = {
         "booking_id": str(booking.id),
         "listing_id": str(booking.listing_id),
+        "owner_id": str(owner.id),
+        "owner_stripe_account_id": (payout_account.stripe_account_id if payout_account else ""),
         "env": env_label,
     }
     currency = "cad"
@@ -1748,10 +2059,28 @@ def create_booking_deposit_hold_intent(
     if deposit_intent is not None:
         status = (getattr(deposit_intent, "status", "") or "").lower()
         intent_amount = getattr(deposit_intent, "amount", None)
+        already_canceled = status == "canceled"
         if status == "succeeded":
             return deposit_intent.id
         if intent_amount not in (None, deposit_amount_cents):
             _cancel_payment_intent(deposit_intent.id)
+            deposit_intent = None
+        elif use_destination_charges:
+            intent_fee = getattr(deposit_intent, "application_fee_amount", None)
+            transfer_data = getattr(deposit_intent, "transfer_data", None)
+            if isinstance(transfer_data, dict):
+                transfer_destination = transfer_data.get("destination")
+            else:
+                transfer_destination = getattr(transfer_data, "destination", None)
+            if transfer_destination != payout_account.stripe_account_id or intent_fee not in (
+                0,
+                None,
+            ):
+                if not already_canceled and _cancel_payment_intent(deposit_intent.id):
+                    deposit_intent = None
+            if already_canceled:
+                deposit_intent = None
+        elif already_canceled:
             deposit_intent = None
         elif status in {"requires_capture", "processing"}:
             pass
@@ -1761,18 +2090,35 @@ def create_booking_deposit_hold_intent(
 
     if deposit_intent is None:
         try:
-            deposit_intent = stripe.PaymentIntent.create(
-                amount=deposit_amount_cents,
-                currency=currency,
-                automatic_payment_methods={**AUTOMATIC_PAYMENT_METHODS_CONFIG},
-                customer=customer_value,
-                payment_method=payment_method_id,
-                confirm=True,
-                off_session=True,
-                capture_method="manual",
-                metadata={**common_metadata, "kind": "damage_deposit"},
-                idempotency_key=f"{idempotency_base}:deposit:{deposit_amount_cents}",
-            )
+            deposit_payload: dict[str, Any] = {
+                "amount": deposit_amount_cents,
+                "currency": currency,
+                "automatic_payment_methods": {**AUTOMATIC_PAYMENT_METHODS_CONFIG},
+                "customer": customer_value,
+                "payment_method": payment_method_id,
+                "confirm": True,
+                "off_session": True,
+                "capture_method": "manual",
+                "metadata": {**common_metadata, "kind": "damage_deposit"},
+                "idempotency_key": f"{idempotency_base}:deposit:{deposit_amount_cents}",
+            }
+            if use_destination_charges:
+                deposit_payload.update(
+                    {
+                        "application_fee_amount": 0,
+                        "transfer_data": {
+                            "destination": payout_account.stripe_account_id,
+                        },
+                        "transfer_group": f"booking:{booking.id}",
+                        "on_behalf_of": payout_account.stripe_account_id,
+                        "idempotency_key": (
+                            f"{idempotency_base}:deposit_dest_v1:"
+                            f"{deposit_amount_cents}:0:"
+                            f"{payout_account.stripe_account_id}"
+                        ),
+                    }
+                )
+            deposit_intent = stripe.PaymentIntent.create(**deposit_payload)
         except stripe.error.CardError as exc:
             decline_code = getattr(exc, "decline_code", "") or ""
             if decline_code == "insufficient_funds":
@@ -1794,7 +2140,7 @@ def create_booking_deposit_hold_intent(
     existing_deposit_txn = Transaction.objects.filter(
         user=booking.renter,
         booking=booking,
-        kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE,
+        kind=Transaction.Kind.DAMAGE_DEPOSIT_HOLD,
         stripe_id=deposit_intent_id,
     ).first()
 
@@ -1802,7 +2148,7 @@ def create_booking_deposit_hold_intent(
         log_transaction(
             user=booking.renter,
             booking=booking,
-            kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE,
+            kind=Transaction.Kind.DAMAGE_DEPOSIT_HOLD,
             amount=damage_deposit,
             currency=currency,
             stripe_id=deposit_intent_id,
@@ -2575,12 +2921,14 @@ def stripe_webhook(request):
                 if not owner_txn_exists:
                     owner_txn_exists = owner_txns.filter(amount=owner_payout).exists()
                 if not owner_txn_exists:
+                    stripe_available_on = _available_on_from_intent(data_object, intent_id)
                     log_transaction(
                         user=owner,
                         booking=booking,
                         kind=Transaction.Kind.OWNER_EARNING,
                         amount=owner_payout,
                         stripe_id=owner_stripe_id or intent_id or None,
+                        stripe_available_on=stripe_available_on,
                     )
 
             if platform_fee_total > Decimal("0"):

@@ -142,9 +142,6 @@ def test_booking_create_charges_and_defers_deposit_hold(renter_user, listing, mo
     expected_charge_cents = int((rental_subtotal + renter_fee_total) * Decimal("100"))
     platform_fee_total = Decimal(booking.totals["platform_fee_total"])
     expected_fee_cents = int(platform_fee_total * Decimal("100"))
-    owner_payout = Decimal(booking.totals["owner_payout"])
-    expected_owner_payout_cents = int(owner_payout * Decimal("100"))
-
     assert charge_call["amount"] == expected_charge_cents
     assert charge_call["currency"] == "cad"
     assert charge_call["metadata"]["kind"] == "booking_charge"
@@ -153,7 +150,6 @@ def test_booking_create_charges_and_defers_deposit_hold(renter_user, listing, mo
     assert charge_call["automatic_payment_methods"]["allow_redirects"] == "never"
     assert charge_call["application_fee_amount"] == expected_fee_cents
     assert charge_call["transfer_data"]["destination"] == "acct_test_owner"
-    assert charge_call["transfer_data"]["amount"] == expected_owner_payout_cents
     assert charge_call["transfer_group"] == f"booking:{booking.id}"
     assert charge_call["on_behalf_of"] == "acct_test_owner"
 
@@ -211,15 +207,15 @@ def test_create_booking_payment_intents_uses_booking_totals(
     expected_deposit_cents = int(deposit * Decimal("100"))
     platform_fee_total = Decimal(booking.totals["platform_fee_total"])
     expected_fee_cents = int(platform_fee_total * Decimal("100"))
-    owner_payout = Decimal(booking.totals["owner_payout"])
-    expected_owner_payout_cents = int(owner_payout * Decimal("100"))
-
     charge_call, deposit_call = created_calls
     assert charge_call["amount"] == expected_charge_cents
     assert deposit_call["amount"] == expected_deposit_cents
     assert charge_call["application_fee_amount"] == expected_fee_cents
     assert charge_call["transfer_data"]["destination"] == "acct_test_owner"
-    assert charge_call["transfer_data"]["amount"] == expected_owner_payout_cents
+    assert deposit_call["application_fee_amount"] == 0
+    assert deposit_call["transfer_data"]["destination"] == "acct_test_owner"
+    assert deposit_call["transfer_group"] == f"booking:{booking.id}"
+    assert deposit_call["on_behalf_of"] == "acct_test_owner"
 
 
 def test_booking_create_no_deposit_when_zero_damage_deposit(

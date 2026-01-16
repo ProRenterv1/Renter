@@ -18,6 +18,7 @@ from notifications import tasks as notification_tasks
 from payments.ledger import log_transaction
 from payments.models import Transaction
 from payments.stripe_api import (
+    _available_on_from_transfer,
     _get_stripe_api_key,
     _handle_stripe_error,
     _to_cents,
@@ -328,6 +329,7 @@ def settle_and_cancel_for_deposit_failure(booking: Booking) -> None:
                 _handle_stripe_error(exc)
 
         owner_transfer_id: str | None = None
+        owner_transfer_available_on: datetime | None = None
         if owner_amount > Decimal("0"):
             owner = getattr(booking, "owner", None)
             if owner:
@@ -350,6 +352,7 @@ def settle_and_cancel_for_deposit_failure(booking: Booking) -> None:
                             ),
                         )
                         owner_transfer_id = getattr(transfer, "id", None)
+                        owner_transfer_available_on = _available_on_from_transfer(transfer)
                     except stripe.error.StripeError as exc:
                         _handle_stripe_error(exc)
 
@@ -420,6 +423,7 @@ def settle_and_cancel_for_deposit_failure(booking: Booking) -> None:
                     kind=Transaction.Kind.OWNER_EARNING,
                     amount=owner_amount,
                     stripe_id=owner_transfer_id,
+                    stripe_available_on=owner_transfer_available_on,
                 )
 
             if platform_amount > Decimal("0"):

@@ -12,6 +12,7 @@ import { DepositActionModal } from "../components/modals/DepositActionModal";
 import { toast } from "sonner";
 import { PermissionGate } from "../components/PermissionGate";
 import { OPERATOR_ADMIN_ROLE, OPERATOR_FINANCE_ROLE } from "../utils/permissions";
+import { parseMoney } from "@/lib/utils";
 
 export function BookingFinancePage() {
   const { bookingId } = useParams();
@@ -96,6 +97,55 @@ export function BookingFinancePage() {
     return new Date(booking.dispute_window_expires_at).toLocaleString();
   }, [booking?.dispute_window_expires_at]);
 
+  const refundWindow = useMemo(() => {
+    if (!booking?.paid_at || !booking?.end_date) {
+      return { allowed: false, reason: "Refunds open after payment is completed." };
+    }
+    const paidAt = new Date(booking.paid_at);
+    if (Number.isNaN(paidAt.getTime())) {
+      return { allowed: false, reason: "Refunds open after payment is completed." };
+    }
+    const endParts = booking.end_date.split("-");
+    if (endParts.length !== 3) {
+      return { allowed: false, reason: "Invalid booking end date." };
+    }
+    const endYear = Number(endParts[0]);
+    const endMonth = Number(endParts[1]);
+    const endDay = Number(endParts[2]);
+    if (!endYear || !endMonth || !endDay) {
+      return { allowed: false, reason: "Invalid booking end date." };
+    }
+    const actualEnd = new Date(endYear, endMonth - 1, endDay);
+    actualEnd.setDate(actualEnd.getDate() - 1);
+    actualEnd.setHours(23, 59, 59, 999);
+    const windowStart = paidAt;
+    const windowEnd = new Date(actualEnd.getTime() + 48 * 60 * 60 * 1000);
+    const now = new Date();
+    if (now < windowStart) {
+      return { allowed: false, reason: "Refunds open after payment is completed." };
+    }
+    if (now > windowEnd) {
+      return { allowed: false, reason: "Refund window closed (48 hours after end date)." };
+    }
+    return { allowed: true, reason: "" };
+  }, [booking?.paid_at, booking?.end_date]);
+
+  const ownerRefundAmount = useMemo(() => {
+    const totals = booking?.totals as Record<string, unknown> | undefined;
+    if (!totals) return "";
+    const payoutRaw = totals["owner_payout"];
+    let payout = parseMoney(payoutRaw);
+    if (!payout && (payoutRaw == null || payoutRaw === "")) {
+      const rentalSubtotal = parseMoney(totals["rental_subtotal"]);
+      const ownerFee = parseMoney(totals["owner_fee_total"] ?? totals["owner_fee"]);
+      payout = rentalSubtotal - ownerFee;
+    }
+    if (!Number.isFinite(payout) || payout <= 0) {
+      return "";
+    }
+    return payout.toFixed(2);
+  }, [booking?.totals]);
+
   if (loading) {
     return (
       <div className="space-y-4">
@@ -133,6 +183,8 @@ export function BookingFinancePage() {
             <Button
               className="border border-[#F1C2C6] bg-[#FDEEEF] text-[#8C2A2F] hover:bg-[#F1C2C6] dark:border-[#4A252A] dark:bg-[#241517] dark:text-[#F2B4B9] dark:hover:bg-[#4A252A]"
               onClick={() => setRefundOpen(true)}
+              disabled={!refundWindow.allowed}
+              title={refundWindow.allowed ? undefined : refundWindow.reason}
             >
               Refund
             </Button>
@@ -276,7 +328,13 @@ export function BookingFinancePage() {
         </div>
       </div>
 
-      <RefundModal open={refundOpen} onClose={() => setRefundOpen(false)} onSubmit={handleRefund} />
+      <RefundModal
+        open={refundOpen}
+        onClose={() => setRefundOpen(false)}
+        onSubmit={handleRefund}
+        defaultAmount={ownerRefundAmount}
+        amountLocked
+      />
       <DepositActionModal
         open={captureOpen}
         mode="capture"

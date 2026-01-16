@@ -23,10 +23,12 @@ import { addDays, format } from "date-fns";
 import { useNavigate } from "react-router-dom";
 import {
   bookingsAPI,
+  platformAPI,
   usersAPI,
   reviewsAPI,
   type Listing as ApiListing,
   type PublicProfile,
+  type PlatformPricing,
 } from "@/lib/api";
 import { AuthStore } from "@/lib/auth";
 import { startConversationForListing } from "@/lib/chat";
@@ -75,6 +77,12 @@ function getMaxBookingDaysForCurrentUser(): number {
 const roundToCents = (value: number) =>
   Math.round((Number.isFinite(value) ? value : 0) * 100) / 100;
 
+const formatPercent = (value: number) => {
+  if (!Number.isFinite(value)) return "0";
+  const percent = value * 100;
+  return percent % 1 === 0 ? percent.toFixed(0) : percent.toFixed(2);
+};
+
 export default function Booking({
   listing,
   onBack,
@@ -105,6 +113,7 @@ export default function Booking({
   const [reviewsLoading, setReviewsLoading] = useState(false);
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
   const [currentUser, setCurrentUser] = useState(() => AuthStore.getCurrentUser());
+  const [pricing, setPricing] = useState<PlatformPricing | null>(null);
 
   useEffect(() => {
     const unsubscribe = AuthStore.subscribe(() => {
@@ -112,6 +121,24 @@ export default function Booking({
     });
     return () => {
       unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    platformAPI
+      .pricing()
+      .then((data) => {
+        if (!active) return;
+        setPricing(data);
+      })
+      .catch((error) => {
+        console.error("Failed to load platform pricing", error);
+        if (!active) return;
+        setPricing(null);
+      });
+    return () => {
+      active = false;
     };
   }, []);
 
@@ -367,11 +394,22 @@ export default function Booking({
       ? computeRentalDays(dateRange.from, addDays(dateRange.to, 1))
       : 0;
   const safeRentalDays = numberOfDays > 0 ? numberOfDays : 0;
+  const serviceFeeRate =
+    pricing && typeof pricing.renter_fee_rate === "number"
+      ? pricing.renter_fee_rate / 100
+      : SERVICE_FEE_RATE;
   const rentalSubtotal = roundToCents(safeRentalDays * pricePerDay);
-  const serviceFee = roundToCents(rentalSubtotal * SERVICE_FEE_RATE);
+  const serviceFee = roundToCents(rentalSubtotal * serviceFeeRate);
   const renterFeeWaived = Boolean(currentUser?.renter_fee_exempt);
   const displayedServiceFee = renterFeeWaived ? 0 : serviceFee;
-  const chargeToday = roundToCents(rentalSubtotal + displayedServiceFee);
+  const gstEnabled = pricing?.gst_enabled === true;
+  const gstRate = parseMoney(pricing?.gst_rate ?? 0);
+  const showServiceFeeGst = gstEnabled && displayedServiceFee > 0;
+  const serviceFeeGst = showServiceFeeGst
+    ? roundToCents(displayedServiceFee * gstRate)
+    : 0;
+  const gstPercentLabel = formatPercent(gstRate);
+  const chargeToday = roundToCents(rentalSubtotal + displayedServiceFee + serviceFeeGst);
   const damageDepositHold = roundToCents(damageDepositAmount);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -832,6 +870,14 @@ export default function Booking({
                             <span>{formatCurrency(displayedServiceFee)}</span>
                           )}
                         </div>
+                        {showServiceFeeGst ? (
+                          <div className="flex items-center justify-between">
+                            <span className="text-muted-foreground">
+                              GST on service fee ({gstPercentLabel}%)
+                            </span>
+                            <span>{formatCurrency(serviceFeeGst)}</span>
+                          </div>
+                        ) : null}
                         {renterFeeWaived ? (
                           <p className="text-xs text-emerald-700">
                             Renter fee waived for your account.
@@ -1116,6 +1162,11 @@ export default function Booking({
                     <p className="text-sm text-muted-foreground mt-1">
                       Charge today for {numberOfDays} {numberOfDays === 1 ? "day" : "days"}
                     </p>
+                    {showServiceFeeGst ? (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        GST on service fee ({gstPercentLabel}%): {formatCurrency(serviceFeeGst)}
+                      </p>
+                    ) : null}
                     {damageDepositHold > 0 && (
                       <p className="text-xs text-muted-foreground">
                         Damage deposit hold: {formatCurrency(damageDepositHold)}

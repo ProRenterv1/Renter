@@ -13,7 +13,12 @@ from django.db.models import Sum
 from bookings.models import Booking
 from payments.ledger import log_transaction
 from payments.models import Transaction
-from payments.stripe_api import _get_stripe_api_key, _handle_stripe_error, _to_cents
+from payments.stripe_api import (
+    _available_on_from_transfer,
+    _get_stripe_api_key,
+    _handle_stripe_error,
+    _to_cents,
+)
 from payments_cancellation_policy import CancellationSettlement
 
 logger = logging.getLogger(__name__)
@@ -157,6 +162,7 @@ def apply_cancellation_settlement(booking: Booking, settlement: CancellationSett
 
     if owner_adjustment != _ZERO:
         owner_stripe_id: str | None = None
+        owner_stripe_available_on = None
         if owner_adjustment < _ZERO:
             transfer_txn = (
                 Transaction.objects.filter(
@@ -223,6 +229,7 @@ def apply_cancellation_settlement(booking: Booking, settlement: CancellationSett
                     owner_stripe_id = getattr(transfer, "id", None) or (
                         transfer.get("id") if hasattr(transfer, "get") else None
                     )
+                    owner_stripe_available_on = _available_on_from_transfer(transfer)
                 except stripe.error.StripeError as exc:
                     _handle_stripe_error(exc)
             else:
@@ -237,6 +244,7 @@ def apply_cancellation_settlement(booking: Booking, settlement: CancellationSett
             kind=Transaction.Kind.OWNER_EARNING,
             amount=owner_adjustment,
             stripe_id=owner_stripe_id,
+            stripe_available_on=owner_stripe_available_on,
         )
 
     if settlement.platform_delta != Decimal("0"):

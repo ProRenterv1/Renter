@@ -11,7 +11,12 @@ from django.conf import settings
 from bookings.models import Booking
 from payments.ledger import log_transaction
 from payments.models import Transaction
-from payments.stripe_api import StripePaymentError, _get_stripe_api_key, _handle_stripe_error
+from payments.stripe_api import (
+    StripePaymentError,
+    _available_on_from_transfer,
+    _get_stripe_api_key,
+    _handle_stripe_error,
+)
 from payments.stripe_api import capture_deposit_amount as _capture_deposit_amount
 from payments.stripe_api import ensure_connect_account
 from payments.stripe_api import release_deposit_hold as _release_deposit_hold
@@ -63,6 +68,10 @@ def refund_booking_charge(
     refund_kwargs = {"payment_intent": intent_id, "idempotency_key": idempotency_key}
     if amount_cents is not None:
         refund_kwargs["amount"] = int(amount_cents)
+    use_destination_charges = getattr(settings, "STRIPE_BOOKINGS_DESTINATION_CHARGES", True)
+    if use_destination_charges:
+        refund_kwargs["reverse_transfer"] = True
+        refund_kwargs["refund_application_fee"] = False
 
     try:
         refund = stripe.Refund.create(**refund_kwargs)
@@ -106,9 +115,59 @@ def refund_booking_charge(
     if refunded_cents is None:
         raise StripePaymentError("Unable to determine refunded amount.")
 
+    owner = getattr(booking, "owner", None)
+    owner_reversal_id: str | None = None
+    owner_refund_amount = -_cents_to_decimal(refunded_cents)
+    owner_refund_exists = False
+    if owner and owner_refund_amount != Decimal("0.00"):
+        owner_refund_exists = Transaction.objects.filter(
+            user=owner,
+            booking=booking,
+            kind=Transaction.Kind.REFUND,
+            amount=owner_refund_amount,
+        ).exists()
+
+    if not use_destination_charges and not owner_refund_exists:
+        if owner is None:
+            raise StripePaymentError("Booking owner is missing for refund reversal.")
+        transfer_txn = (
+            Transaction.objects.filter(
+                user=owner,
+                booking=booking,
+                kind=Transaction.Kind.OWNER_EARNING,
+                amount__gt=0,
+            )
+            .exclude(stripe_id__isnull=True)
+            .exclude(stripe_id="")
+            .order_by("created_at")
+            .first()
+        )
+        if transfer_txn is None:
+            raise StripePaymentError("Owner payout transfer not found for refund reversal.")
+        try:
+            reversal = stripe.Transfer.create_reversal(
+                transfer_txn.stripe_id,
+                amount=int(refunded_cents),
+                idempotency_key=f"{id_base}:owner_reversal:{refunded_cents}",
+            )
+            owner_reversal_id = getattr(reversal, "id", None) or (
+                reversal.get("id") if hasattr(reversal, "get") else None
+            )
+        except stripe.error.InvalidRequestError as exc:
+            if getattr(exc, "code", "") == "resource_missing":
+                logger.info(
+                    "Stripe transfer %s missing for booking %s; assuming reversed.",
+                    transfer_txn.stripe_id,
+                    booking.id,
+                )
+            else:
+                _handle_stripe_error(exc)
+        except stripe.error.StripeError as exc:
+            _handle_stripe_error(exc)
+
     ledger_stripe_id = refund_id or intent_id
     existing_refund = Transaction.objects.filter(
-        kind=Transaction.Kind.REFUND, stripe_id=ledger_stripe_id
+        user=booking.renter, kind=Transaction.Kind.REFUND, stripe_id=ledger_stripe_id
     ).first()
 
     if existing_refund is None:
@@ -119,6 +178,25 @@ def refund_booking_charge(
             amount=_cents_to_decimal(refunded_cents),
             stripe_id=ledger_stripe_id,
         )
+
+    if owner and (use_destination_charges or owner_reversal_id) and not owner_refund_exists:
+        owner_stripe_id = owner_reversal_id or ledger_stripe_id
+        existing_owner_refund = Transaction.objects.filter(
+            user=owner,
+            booking=booking,
+            kind=Transaction.Kind.REFUND,
+            amount=owner_refund_amount,
+        )
+        if owner_stripe_id:
+            existing_owner_refund = existing_owner_refund.filter(stripe_id=owner_stripe_id)
+        if not existing_owner_refund.exists():
+            log_transaction(
+                user=owner,
+                booking=booking,
+                kind=Transaction.Kind.REFUND,
+                amount=owner_refund_amount,
+                stripe_id=owner_stripe_id,
+            )
 
     return refund_id, refunded_cents
 
@@ -255,6 +333,7 @@ def transfer_damage_award_to_owner(
     transfer_id = getattr(transfer, "id", None) or (
         transfer.get("id") if hasattr(transfer, "get") else ""
     )
+    stripe_available_on = _available_on_from_transfer(transfer)
 
     owner_amount = _cents_to_decimal(amount_cents)
     existing_owner_txn = Transaction.objects.filter(
@@ -270,6 +349,7 @@ def transfer_damage_award_to_owner(
             kind=Transaction.Kind.OWNER_EARNING,
             amount=owner_amount,
             stripe_id=transfer_id,
+            stripe_available_on=stripe_available_on,
         )
 
     platform_user = get_platform_ledger_user()

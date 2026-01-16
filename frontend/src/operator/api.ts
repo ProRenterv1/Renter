@@ -122,7 +122,8 @@ export type OperatorBookingDetail = OperatorBookingListItem & {
   totals: Record<string, unknown>;
   charge_payment_intent_id: string | null;
   deposit_hold_id: string | null;
-   deposit_locked?: boolean;
+  paid_at?: string | null;
+  deposit_locked?: boolean;
   events: OperatorBookingEvent[];
   disputes: { id: number; status: string; category: string; created_at: string }[];
   pickup_confirmed_at?: string | null;

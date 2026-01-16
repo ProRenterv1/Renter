@@ -78,6 +78,7 @@ def render_booking_receipt_pdf(booking: Booking) -> bytes:
     gst_rate_raw = totals.get("gst_rate", "0.05")
     gst_rate = _to_decimal(gst_rate_raw)
     gst_rate_pct = _format_percent(gst_rate * Decimal("100"))
+    rental_total = _to_decimal(breakdown.rent + breakdown.service_fee_total)
 
     renter_name = _display_name(getattr(booking, "renter", None))
     owner_name = _display_name(getattr(booking, "owner", None))
@@ -183,8 +184,11 @@ def render_booking_receipt_pdf(booking: Booking) -> bytes:
         draw_row(
             f"GST ({gst_rate_pct}%) on service fee", _format_currency(breakdown.service_fee_gst)
         )
+    draw_row("Total rental charge", _format_currency(rental_total))
+    y -= 0.1 * inch
+
+    new_section("Deposit", spacing=0.2)
     draw_row("Damage deposit", _format_currency(breakdown.damage_deposit))
-    draw_row("Total charge", _format_currency(breakdown.total_charge))
     y -= 0.1 * inch
 
     new_section("Client", spacing=0.2)

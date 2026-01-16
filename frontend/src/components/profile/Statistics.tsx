@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { DollarSign, TrendingUp, Package, Users } from "lucide-react";
+import { DollarSign, TrendingUp, Users, Wallet } from "lucide-react";
 import {
   BarChart,
   Bar,
@@ -12,13 +12,8 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
-import {
-  listingsAPI,
-  paymentsAPI,
-  type OwnerFeeInvoice,
-  type OwnerPayoutHistoryRow,
-  type OwnerPayoutSummary,
-} from "@/lib/api";
+import { paymentsAPI, type OwnerFeeInvoice, type OwnerPayoutHistoryRow, type OwnerPayoutSummary } from "@/lib/api";
+import { AuthStore } from "@/lib/auth";
 import { formatCurrency, parseMoney } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Alert, AlertDescription } from "../ui/alert";
@@ -29,10 +24,10 @@ export function Statistics() {
   const [summary, setSummary] = useState<OwnerPayoutSummary | null>(null);
   const [history, setHistory] = useState<OwnerPayoutHistoryRow[]>([]);
   const [invoices, setInvoices] = useState<OwnerFeeInvoice[]>([]);
-  const [activeListings, setActiveListings] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const completedStatusLabels = useMemo(() => ["completed", "disputed"], []);
+  const currentUserId = AuthStore.getCurrentUser()?.id ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -41,10 +36,9 @@ export function Statistics() {
       setLoading(true);
       setError(null);
       try {
-        const [summaryRes, historyRes, listingsRes, invoicesRes] = await Promise.all([
+        const [summaryRes, historyRes, invoicesRes] = await Promise.all([
           paymentsAPI.ownerPayoutsSummary(),
           paymentsAPI.ownerPayoutsHistory({ limit: 500 }),
-          listingsAPI.mine(),
           paymentsAPI.listOwnerFeeInvoices(),
         ]);
 
@@ -54,16 +48,6 @@ export function Statistics() {
         setHistory(historyRes.results ?? []);
         setInvoices(invoicesRes.results ?? []);
 
-        const listingsArray = Array.isArray((listingsRes as any)?.results)
-          ? (listingsRes as any).results
-          : Array.isArray(listingsRes)
-            ? (listingsRes as any)
-            : [];
-
-        const activeCount = listingsArray.filter(
-          (l: any) => l?.is_active && !(l as any).is_deleted,
-        ).length;
-        setActiveListings(activeCount);
       } catch (err) {
         if (!cancelled) {
           setError("Unable to load statistics right now.");
@@ -99,12 +83,21 @@ export function Statistics() {
     return dt.toLocaleString(undefined, { month: "short", year: "numeric" });
   };
 
-  const unpaidSinceLastPayout = useMemo(() => {
+  const totalProfitBalance = useMemo(() => {
     if (!summary) return 0;
-    const connectBalance = summary.balances.connect_available_earnings;
-    if (connectBalance !== undefined && connectBalance !== null) {
-      return parseMoney(connectBalance || "0");
+    const connectTotal = summary.balances.connect_total_balance;
+    if (connectTotal !== undefined && connectTotal !== null) {
+      return parseMoney(connectTotal || "0");
     }
+    const ledgerTotal = summary.balances.total_balance;
+    if (ledgerTotal !== undefined && ledgerTotal !== null) {
+      return parseMoney(ledgerTotal || "0");
+    }
+    return parseMoney(summary.balances.available_earnings || "0");
+  }, [summary]);
+
+  const availableFundsBalance = useMemo(() => {
+    if (!summary) return 0;
     return parseMoney(summary.balances.available_earnings || "0");
   }, [summary]);
 
@@ -133,26 +126,43 @@ export function Statistics() {
 
   const normalizedHistory = useMemo(() => {
     return history
-      .filter(
-        (row) =>
-          row.kind !== "DAMAGE_DEPOSIT_CAPTURE" &&
-          row.kind !== "DAMAGE_DEPOSIT_RELEASE" &&
-          row.kind !== "OWNER_PAYOUT",
-      )
       .map((row) => {
-        const amount = parseMoney(row.amount || "0");
-        const signed =
-          row.kind === "PROMOTION_CHARGE" && row.stripe_id
-            ? 0
-            : (row.direction === "debit" ? -1 : 1) * amount;
+        const amount = Math.abs(parseMoney(row.amount || "0"));
+        const isOwnerBooking =
+          row.booking_id === null ||
+          currentUserId === null ||
+          row.booking_owner_id === currentUserId;
+        let signed: number | null = null;
+
+        if (row.kind === "OWNER_EARNING") {
+          if (!isOwnerBooking) return null;
+          signed = row.direction === "debit" ? -amount : amount;
+        } else if (row.kind === "DAMAGE_DEPOSIT_CAPTURE") {
+          if (!isOwnerBooking) return null;
+          signed = amount;
+        } else if (row.kind === "REFUND") {
+          if (!isOwnerBooking) return null;
+          signed = -amount;
+        } else if (row.kind === "PROMOTION_CHARGE") {
+          const stripeId = (row.stripe_id || "").toLowerCase();
+          const paidWithEarnings =
+            stripeId.startsWith("tr_") || stripeId.startsWith("earnings:");
+          if (!paidWithEarnings) return null;
+          signed = -amount;
+        }
+
+        if (signed === null) return null;
         return {
           ...row,
           signedAmount: signed,
           createdDate: new Date(row.created_at),
         };
       })
+      .filter((row): row is OwnerPayoutHistoryRow & { signedAmount: number; createdDate: Date } =>
+        Boolean(row),
+      )
       .sort((a, b) => a.createdDate.getTime() - b.createdDate.getTime());
-  }, [history]);
+  }, [history, currentUserId]);
 
   const { monthlyData, rentalData } = useMemo(() => {
     const now = new Date();
@@ -261,10 +271,10 @@ export function Statistics() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl">
-              {loading ? <Skeleton className="h-6 w-20" /> : formatCurrency(unpaidSinceLastPayout)}
+              {loading ? <Skeleton className="h-6 w-20" /> : formatCurrency(totalProfitBalance)}
             </div>
             <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-              Balance currently available in your Stripe Connect account
+              Total balance (available + pending)
             </p>
           </CardContent>
         </Card>
@@ -286,13 +296,15 @@ export function Statistics() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm">Active Listings</CardTitle>
-            <Package className="w-4 h-4" style={{ color: "var(--text-muted)" }} />
+            <CardTitle className="text-sm">Available Funds</CardTitle>
+            <Wallet className="w-4 h-4" style={{ color: "var(--text-muted)" }} />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl">{loading ? <Skeleton className="h-6 w-10" /> : activeListings}</div>
+            <div className="text-2xl">
+              {loading ? <Skeleton className="h-6 w-20" /> : formatCurrency(availableFundsBalance)}
+            </div>
             <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-              Currently active
+              Ready to withdraw to your bank account
             </p>
           </CardContent>
         </Card>

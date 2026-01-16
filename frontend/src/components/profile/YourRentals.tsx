@@ -96,6 +96,7 @@ interface RentalRow {
   ownerLastName: string;
   ownerUsername: string;
   amountToPay: number;
+  chargeToday: number;
   rentalSubtotal: number;
   serviceFee: number;
   renterFeeGst: number;
@@ -781,6 +782,16 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
         const gstRate = parseMoney(totals?.gst_rate ?? 0);
         const gstEnabled = totals?.gst_enabled === true;
         const damageDeposit = getBookingDamageDeposit(booking);
+        const totalCharge = parseMoney(totals?.total_charge ?? 0);
+        const chargeToday =
+          totalCharge > 0
+            ? Math.max(totalCharge - damageDeposit, 0)
+            : Math.max(
+                rentalSubtotal +
+                  serviceFee +
+                  (gstEnabled && renterFeeGst > 0 ? renterFeeGst : 0),
+                0,
+              );
         const ownerFirstName = booking.listing_owner_first_name?.trim() || "";
         const ownerLastName = booking.listing_owner_last_name?.trim() || "";
         const ownerUsername = booking.listing_owner_username?.trim() || "";
@@ -795,6 +806,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
           ownerLastName,
           ownerUsername,
           amountToPay,
+          chargeToday,
           rentalSubtotal,
           serviceFee,
           renterFeeGst,
@@ -1146,9 +1158,8 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
   }
 
   if (payingRental) {
-    const chargeAmount = payingRental.amountToPay;
+    const chargeAmount = payingRental.chargeToday;
     const depositHold = payingRental.damageDeposit;
-    const estimatedTotal = depositHold;
     const isPaymentDisabled =
       paymentLoading ||
       (!isSavedMode && (!stripe || !elements)) ||
@@ -1417,12 +1428,6 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                     </div>
                   ) : null}
 
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Damage deposit hold</span>
-                    <span>{formatCurrency(depositHold)}</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground">Refundable upon return</p>
-
                   <Separator />
 
                   <div className="flex items-center justify-between text-[18px]">
@@ -1431,10 +1436,18 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                       {formatCurrency(chargeAmount)}
                     </span>
                   </div>
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>Estimated authorization (deposit hold)</span>
-                    <span>{formatCurrency(estimatedTotal)}</span>
-                  </div>
+                  {depositHold > 0 && (
+                    <>
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>Damage deposit authorization</span>
+                        <span>{formatCurrency(depositHold)}</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        The deposit authorization is placed on pickup day. If there aren't enough
+                        funds in the account, the booking will be canceled with a partial refund.
+                      </p>
+                    </>
+                  )}
                 </div>
 
                 <Separator className="my-6" />
@@ -1722,7 +1735,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-col gap-1">
-                          <span>{formatCurrency(row.amountToPay)}</span>
+                          <span>{formatCurrency(row.chargeToday)}</span>
                           {row.damageDeposit > 0 && (
                             <span className="text-xs text-muted-foreground">
                               Hold {formatCurrency(row.damageDeposit)}

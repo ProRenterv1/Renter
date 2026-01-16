@@ -1,3 +1,6 @@
+import logging
+from decimal import Decimal
+
 from django.apps import apps
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
@@ -5,6 +8,12 @@ from rest_framework import serializers
 
 from bookings.models import Booking
 from operator_bookings.models import BookingEvent
+from payments.stripe_api import (
+    StripeConfigurationError,
+    StripePaymentError,
+    StripeTransientError,
+    get_payment_intent_fee,
+)
 
 
 def _display_name(user) -> str:
@@ -21,6 +30,9 @@ def _display_name(user) -> str:
     if getattr(user, "id", None):
         return f"User {user.id}"
     return ""
+
+
+logger = logging.getLogger(__name__)
 
 
 class OperatorBookingUserSerializer(serializers.Serializer):
@@ -122,8 +134,32 @@ class OperatorBookingDetailSerializer(OperatorBookingListSerializer):
             "events",
             "disputes",
             "created_at",
+            "paid_at",
         ]
         read_only_fields = fields
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        totals = data.get("totals") or {}
+        if totals.get("stripe_fee") not in (None, ""):
+            return data
+        intent_id = getattr(instance, "charge_payment_intent_id", "") or ""
+        if not intent_id:
+            return data
+        try:
+            fee_value = get_payment_intent_fee(intent_id)
+        except (StripeConfigurationError, StripePaymentError, StripeTransientError) as exc:
+            logger.warning(
+                "operator_booking_detail: stripe fee lookup failed for booking %s: %s",
+                getattr(instance, "id", "unknown"),
+                str(exc) or "stripe error",
+            )
+            return data
+        if fee_value is None:
+            return data
+        totals = {**totals, "stripe_fee": f"{fee_value.quantize(Decimal('0.01'))}"}
+        data["totals"] = totals
+        return data
 
     def get_events(self, obj: Booking):
         events = getattr(obj, "prefetched_events", None)

@@ -73,6 +73,8 @@ export type PlatformPricing = {
   owner_fee_rate: number;
   instant_payout_fee_bps: number;
   instant_payout_fee_rate: number;
+  gst_enabled?: boolean;
+  gst_rate?: number | string;
 };
 
 export interface SignupPayload {
@@ -418,8 +420,10 @@ export interface OwnerPayoutBalances {
   lifetime_deposit_released: string;
   net_earnings: string;
   last_30_days_net: string;
+  total_balance?: string;
   available_earnings: string;
   connect_available_earnings?: string | null;
+  connect_total_balance?: string | null;
 }
 
 export interface OwnerPayoutConnect {
@@ -473,6 +477,7 @@ export interface OwnerPayoutHistoryRow {
   amount: string;
   currency: string;
   booking_id: number | null;
+  booking_owner_id?: number | null;
   booking_status: string | null;
   listing_title: string | null;
   direction: "credit" | "debit";
@@ -522,6 +527,9 @@ export interface BookingTotals {
   renter_fee_gst?: string;
   renter_fee_total?: string;
   owner_fee?: string;
+  owner_fee_base?: string;
+  owner_fee_gst?: string;
+  owner_fee_total?: string;
   platform_fee_total?: string;
   owner_payout?: string;
   damage_deposit?: string;

@@ -10,7 +10,6 @@ from bookings.domain import (
     assert_can_cancel,
     assert_can_complete,
     ensure_no_conflict,
-    is_pre_payment,
     mark_canceled,
     validate_booking_dates,
 )
@@ -21,8 +20,6 @@ from core.settings_resolver import get_int
 from listings.services import compute_booking_totals
 from notifications import tasks as notification_tasks
 from operator_bookings.models import BookingEvent
-from payments_cancellation_policy import compute_refund_amounts
-from payments_refunds import apply_cancellation_settlement
 
 logger = logging.getLogger(__name__)
 
@@ -58,44 +55,21 @@ def force_cancel_booking(
         "updated_at",
     ]
 
-    if is_pre_payment(booking):
-        with transaction.atomic():
-            mark_canceled(booking, actor=actor, auto=False, reason=cancel_reason)
-            booking.save(update_fields=update_fields)
-            _record_event(
-                booking,
-                type_value=BookingEvent.Type.STATUS_CHANGE,
-                payload={"from": prev_status, "to": booking.status, "reason": cancel_reason or ""},
-                actor=operator_user,
-            )
-            _record_event(
-                booking,
-                type_value=BookingEvent.Type.OPERATOR_ACTION,
-                payload={"action": "force_cancel", "actor": actor, "reason": cancel_reason},
-                actor=operator_user,
-            )
-    else:
-        settlement = compute_refund_amounts(
-            booking=booking,
-            actor=actor,
-            today=timezone.localdate(),
+    with transaction.atomic():
+        mark_canceled(booking, actor=actor, auto=False, reason=cancel_reason)
+        booking.save(update_fields=update_fields)
+        _record_event(
+            booking,
+            type_value=BookingEvent.Type.STATUS_CHANGE,
+            payload={"from": prev_status, "to": booking.status, "reason": cancel_reason or ""},
+            actor=operator_user,
         )
-        apply_cancellation_settlement(booking, settlement)
-        with transaction.atomic():
-            mark_canceled(booking, actor=actor, auto=False, reason=cancel_reason)
-            booking.save(update_fields=update_fields)
-            _record_event(
-                booking,
-                type_value=BookingEvent.Type.STATUS_CHANGE,
-                payload={"from": prev_status, "to": booking.status, "reason": cancel_reason or ""},
-                actor=operator_user,
-            )
-            _record_event(
-                booking,
-                type_value=BookingEvent.Type.OPERATOR_ACTION,
-                payload={"action": "force_cancel", "actor": actor, "reason": cancel_reason},
-                actor=operator_user,
-            )
+        _record_event(
+            booking,
+            type_value=BookingEvent.Type.OPERATOR_ACTION,
+            payload={"action": "force_cancel", "actor": actor, "reason": cancel_reason},
+            actor=operator_user,
+        )
 
     try:
         create_system_message(
