@@ -51,6 +51,14 @@ const PLATFORM_RULE_ROWS: SettingRow[] = [
     valueHelpText: "Store as a decimal string (example: 1000 or 1000.00).",
     formatValue: (v) => formatCurrency(parseMoney(v), "CAD"),
   },
+  {
+    key: "LISTING_SOFT_DELETE_RETENTION_DAYS",
+    label: "Deleted listing retention (days)",
+    valueType: "int",
+    valueLabel: "Days",
+    valueHelpText: "How long deleted listings remain visible in Ops.",
+    formatValue: (v) => formatIntWithUnit(v, "day"),
+  },
 ];
 
 const UPLOAD_RULE_ROWS: SettingRow[] = [

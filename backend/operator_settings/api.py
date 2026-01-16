@@ -276,6 +276,11 @@ class OperatorSettingsCurrentView(APIView):
                 str(getattr(settings, "UNVERIFIED_MAX_REPLACEMENT_CAD", "0")),
             ),
             (
+                "LISTING_SOFT_DELETE_RETENTION_DAYS",
+                DbSetting.ValueType.INT,
+                int(getattr(settings, "LISTING_SOFT_DELETE_RETENTION_DAYS", 0) or 0),
+            ),
+            (
                 "S3_MAX_UPLOAD_BYTES",
                 DbSetting.ValueType.INT,
                 int(getattr(settings, "S3_MAX_UPLOAD_BYTES", 0) or 0),

@@ -6,21 +6,36 @@ import logging
 from datetime import timedelta
 
 from celery import shared_task
+from django.conf import settings
 from django.utils import timezone
+
+from core.settings_resolver import get_int
 
 from .models import Listing
 
 logger = logging.getLogger(__name__)
 
 
+def _retention_days() -> int:
+    default_days = getattr(settings, "LISTING_SOFT_DELETE_RETENTION_DAYS", 3)
+    try:
+        default_days = int(default_days)
+    except (TypeError, ValueError):
+        default_days = 3
+    retention_days = get_int("LISTING_SOFT_DELETE_RETENTION_DAYS", default_days)
+    if retention_days < 0:
+        retention_days = 0
+    return retention_days
+
+
 @shared_task(name="listings.purge_soft_deleted_listings")
 def purge_soft_deleted_listings() -> int:
     """
-    Hard-delete listings that were soft-deleted at least 7 days ago.
+    Hard-delete listings that were soft-deleted at least the configured retention window.
     Returns the number of listings deleted.
     """
     now = timezone.now()
-    cutoff = now - timedelta(days=7)
+    cutoff = now - timedelta(days=_retention_days())
 
     qs = Listing.objects.filter(
         is_deleted=True,

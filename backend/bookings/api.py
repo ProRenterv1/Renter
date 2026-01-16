@@ -323,7 +323,7 @@ class BookingViewSet(viewsets.ModelViewSet):
             )
 
         listing = get_object_or_404(
-            Listing.objects.filter(is_active=True),
+            Listing.objects.filter(is_active=True, is_deleted=False),
             pk=listing_id,
         )
 

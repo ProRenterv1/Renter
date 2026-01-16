@@ -49,6 +49,19 @@ def operator_user():
     return user
 
 
+@pytest.fixture
+def operator_admin_user():
+    group, _ = Group.objects.get_or_create(name="operator_admin")
+    user = User.objects.create_user(
+        username="operator_admin",
+        email="operator_admin@example.com",
+        password="pass123",
+        is_staff=True,
+    )
+    user.groups.add(group)
+    return user
+
+
 def _ops_client(user=None):
     client = APIClient()
     client.defaults["HTTP_HOST"] = "ops.example.com"
@@ -119,7 +132,7 @@ def test_operator_listings_filters(operator_user):
     )
     Listing.objects.filter(pk=listing_out.id).update(created_at=older)
 
-    client = _ops_client(operator_user)
+    client = _ops_client(operator_admin_user)
     after = (now - timedelta(hours=1)).isoformat()
     before = (now + timedelta(hours=1)).isoformat()
     resp = client.get(
@@ -174,7 +187,7 @@ def test_operator_listing_detail_includes_photos_and_owner(operator_user):
         key="b",
         url="http://example.com/b.jpg",
     )
-    client = _ops_client(operator_user)
+    client = _ops_client(operator_admin_user)
     resp = client.get(f"/api/operator/listings/{listing.id}/")
 
     assert resp.status_code == 200, resp.data
@@ -200,7 +213,7 @@ def test_operator_listing_activate_deactivate_audits(operator_user):
         city="Calgary",
         is_active=True,
     )
-    client = _ops_client(operator_user)
+    client = _ops_client(operator_admin_user)
 
     resp = client.post(
         f"/api/operator/listings/{listing.id}/deactivate/", {"reason": "check"}, format="json"
@@ -240,7 +253,7 @@ def test_operator_listing_emergency_edit_audit(operator_user):
         city="Toronto",
         is_active=True,
     )
-    client = _ops_client(operator_user)
+    client = _ops_client(operator_admin_user)
 
     bad = client.patch(
         f"/api/operator/listings/{listing.id}/emergency-edit/",
@@ -303,3 +316,144 @@ def test_operator_listing_mark_needs_review_creates_note(operator_user):
     assert list_resp.status_code == 200
     ids = [row["id"] for row in _results(list_resp)]
     assert listing.id in ids
+
+
+def test_operator_listings_include_recently_deleted(operator_admin_user, settings):
+    settings.LISTING_SOFT_DELETE_RETENTION_DAYS = 3
+    owner = User.objects.create_user(
+        username="owner_deleted", email="owner_deleted@example.com", password="pass", is_staff=True
+    )
+    now = timezone.now()
+    active_listing = Listing.objects.create(
+        owner=owner,
+        title="Active",
+        description="",
+        daily_price_cad="10.00",
+        replacement_value_cad="0",
+        damage_deposit_cad="0",
+        city="Edmonton",
+        is_active=True,
+    )
+    recent_deleted = Listing.objects.create(
+        owner=owner,
+        title="Deleted Recent",
+        description="",
+        daily_price_cad="10.00",
+        replacement_value_cad="0",
+        damage_deposit_cad="0",
+        city="Edmonton",
+        is_active=True,
+        is_deleted=True,
+        deleted_at=now - timedelta(days=1),
+    )
+    old_deleted = Listing.objects.create(
+        owner=owner,
+        title="Deleted Old",
+        description="",
+        daily_price_cad="10.00",
+        replacement_value_cad="0",
+        damage_deposit_cad="0",
+        city="Edmonton",
+        is_active=True,
+        is_deleted=True,
+        deleted_at=now - timedelta(days=5),
+    )
+
+    client = _ops_client(operator_admin_user)
+    resp = client.get("/api/operator/listings/", {"include_deleted": "true"})
+    assert resp.status_code == 200, resp.data
+    ids = [row["id"] for row in _results(resp)]
+    assert active_listing.id in ids
+    assert recent_deleted.id in ids
+    assert old_deleted.id not in ids
+
+
+def test_operator_listing_detail_allows_recently_deleted(operator_admin_user, settings):
+    settings.LISTING_SOFT_DELETE_RETENTION_DAYS = 3
+    owner = User.objects.create_user(
+        username="owner_deleted_detail",
+        email="owner_deleted_detail@example.com",
+        password="pass",
+        is_staff=True,
+    )
+    listing = Listing.objects.create(
+        owner=owner,
+        title="Deleted Detail",
+        description="",
+        daily_price_cad="10.00",
+        replacement_value_cad="0",
+        damage_deposit_cad="0",
+        city="Edmonton",
+        is_active=True,
+        is_deleted=True,
+        deleted_at=timezone.now() - timedelta(days=1),
+    )
+    client = _ops_client(operator_admin_user)
+    resp = client.get(f"/api/operator/listings/{listing.id}/")
+    assert resp.status_code == 200, resp.data
+    assert resp.data["is_deleted"] is True
+    assert resp.data["deleted_at"] is not None
+
+
+def test_operator_listings_hide_recently_deleted_for_non_admin(operator_user, settings):
+    settings.LISTING_SOFT_DELETE_RETENTION_DAYS = 3
+    owner = User.objects.create_user(
+        username="owner_deleted_support",
+        email="owner_deleted_support@example.com",
+        password="pass",
+        is_staff=True,
+    )
+    now = timezone.now()
+    active_listing = Listing.objects.create(
+        owner=owner,
+        title="Active",
+        description="",
+        daily_price_cad="10.00",
+        replacement_value_cad="0",
+        damage_deposit_cad="0",
+        city="Edmonton",
+        is_active=True,
+    )
+    recent_deleted = Listing.objects.create(
+        owner=owner,
+        title="Deleted Recent",
+        description="",
+        daily_price_cad="10.00",
+        replacement_value_cad="0",
+        damage_deposit_cad="0",
+        city="Edmonton",
+        is_active=True,
+        is_deleted=True,
+        deleted_at=now - timedelta(days=1),
+    )
+    client = _ops_client(operator_user)
+    resp = client.get("/api/operator/listings/", {"include_deleted": "true"})
+    assert resp.status_code == 200, resp.data
+    ids = [row["id"] for row in _results(resp)]
+    assert active_listing.id in ids
+    assert recent_deleted.id not in ids
+
+
+def test_operator_listing_detail_denies_recently_deleted_for_non_admin(operator_user, settings):
+    settings.LISTING_SOFT_DELETE_RETENTION_DAYS = 3
+    owner = User.objects.create_user(
+        username="owner_deleted_support_detail",
+        email="owner_deleted_support_detail@example.com",
+        password="pass",
+        is_staff=True,
+    )
+    listing = Listing.objects.create(
+        owner=owner,
+        title="Deleted Detail",
+        description="",
+        daily_price_cad="10.00",
+        replacement_value_cad="0",
+        damage_deposit_cad="0",
+        city="Edmonton",
+        is_active=True,
+        is_deleted=True,
+        deleted_at=timezone.now() - timedelta(days=1),
+    )
+    client = _ops_client(operator_user)
+    resp = client.get(f"/api/operator/listings/{listing.id}/")
+    assert resp.status_code == 404

@@ -1,15 +1,19 @@
 import logging
+from datetime import timedelta
 
+from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
-from django.db.models import CharField, Exists, OuterRef, Prefetch
+from django.db.models import CharField, Exists, OuterRef, Prefetch, Q
 from django.db.models.functions import Cast
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.settings_resolver import get_int
 from listings.models import Listing, ListingPhoto
 from operator_core.audit import audit
 from operator_core.models import OperatorAuditEvent, OperatorNote, OperatorTag
@@ -30,6 +34,41 @@ ALLOWED_OPERATOR_ROLES = (
 )
 
 
+def _soft_delete_cutoff():
+    default_days = getattr(settings, "LISTING_SOFT_DELETE_RETENTION_DAYS", 3)
+    try:
+        default_days = int(default_days)
+    except (TypeError, ValueError):
+        default_days = 3
+    retention_days = get_int("LISTING_SOFT_DELETE_RETENTION_DAYS", default_days)
+    if retention_days < 0:
+        retention_days = 0
+    return timezone.now() - timedelta(days=retention_days)
+
+
+def _with_recently_deleted(qs):
+    cutoff = _soft_delete_cutoff()
+    return qs.filter(
+        Q(is_deleted=False) | Q(is_deleted=True, deleted_at__isnull=False, deleted_at__gte=cutoff)
+    )
+
+
+def _include_deleted_param(value) -> bool:
+    return str(value or "").lower() in {"1", "true", "yes"}
+
+
+def _user_is_admin(user) -> bool:
+    return bool(user and user.groups.filter(name="operator_admin").exists())
+
+
+def _request_ip_and_ua(request):
+    ip = (request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",")[0].strip() or request.META.get(
+        "REMOTE_ADDR", ""
+    )
+    user_agent = request.META.get("HTTP_USER_AGENT", "")
+    return ip, user_agent
+
+
 class OperatorListingListView(generics.ListAPIView):
     serializer_class = OperatorListingListSerializer
     permission_classes = [IsOperator, HasOperatorRole.with_roles(ALLOWED_OPERATOR_ROLES)]
@@ -44,8 +83,8 @@ class OperatorListingListView(generics.ListAPIView):
             object_id=Cast(OuterRef("pk"), output_field=CharField()),
             tags__name="needs_review",
         )
-        return (
-            Listing.objects.filter(is_deleted=False)
+        qs = (
+            Listing.objects.all()
             .select_related("owner", "owner__payout_account", "category")
             .prefetch_related(
                 Prefetch(
@@ -57,6 +96,10 @@ class OperatorListingListView(generics.ListAPIView):
             .annotate(needs_review=Exists(needs_review_qs))
             .order_by("-created_at")
         )
+        include_deleted = _include_deleted_param(self.request.query_params.get("include_deleted"))
+        if include_deleted and _user_is_admin(self.request.user):
+            return _with_recently_deleted(qs)
+        return qs.filter(is_deleted=False)
 
 
 class OperatorListingDetailView(generics.RetrieveAPIView):
@@ -73,22 +116,17 @@ class OperatorListingDetailView(generics.RetrieveAPIView):
             object_id=Cast(OuterRef("pk"), output_field=CharField()),
             tags__name="needs_review",
         )
-        return (
-            Listing.objects.filter(is_deleted=False)
+        qs = (
+            Listing.objects.all()
             .select_related("owner", "owner__payout_account", "category")
             .prefetch_related(
                 Prefetch("photos", queryset=photos_qs, to_attr="prefetched_photos"),
             )
             .annotate(needs_review=Exists(needs_review_qs))
         )
-
-
-def _request_ip_and_ua(request):
-    ip = (request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",")[0].strip() or request.META.get(
-        "REMOTE_ADDR", ""
-    )
-    user_agent = request.META.get("HTTP_USER_AGENT", "")
-    return ip, user_agent
+        if _user_is_admin(self.request.user):
+            return _with_recently_deleted(qs)
+        return qs.filter(is_deleted=False)
 
 
 class OperatorListingActionBase(APIView):
