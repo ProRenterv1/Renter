@@ -71,6 +71,7 @@ def test_to_cents_rounding():
 
 def test_create_booking_payment_intents_logs_transactions(monkeypatch, settings):
     settings.STRIPE_SECRET_KEY = "sk_test"
+    settings.STRIPE_BOOKINGS_DESTINATION_CHARGES = True
 
     owner = User.objects.create_user(username="owner-ledger", password="x")
     renter = User.objects.create_user(username="renter-ledger", password="x")
@@ -95,8 +96,10 @@ def test_create_booking_payment_intents_logs_transactions(monkeypatch, settings)
             assert key_parts[-2].isdigit()
             assert key_parts[-1] == "acct_test_owner"
         else:
-            assert key_parts[-2] == "deposit"
-            assert key_parts[-1].isdigit()
+            assert key_parts[-4] == "deposit_dest_v1"
+            assert key_parts[-3].isdigit()
+            assert key_parts[-2] == "0"
+            assert key_parts[-1] == "acct_test_owner"
         create_calls["count"] += 1
         kind = kwargs["metadata"]["kind"]
         intent_id = f"pi_{kind}_{create_calls['count']}"
@@ -140,7 +143,7 @@ def test_create_booking_payment_intents_logs_transactions(monkeypatch, settings)
         payment_method_id="pm_mock",
     )
 
-    deposit_txn = Transaction.objects.get(kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE)
+    deposit_txn = Transaction.objects.get(kind=Transaction.Kind.DAMAGE_DEPOSIT_HOLD)
     assert Transaction.objects.count() == 2
     assert deposit_txn.amount == Decimal("15.00")
     assert deposit_txn.stripe_id == deposit_id
@@ -161,7 +164,7 @@ def test_create_booking_payment_intents_logs_transactions(monkeypatch, settings)
 
     assert Transaction.objects.count() == 2
     assert Transaction.objects.filter(kind=Transaction.Kind.BOOKING_CHARGE).count() == 1
-    assert Transaction.objects.filter(kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE).count() == 1
+    assert Transaction.objects.filter(kind=Transaction.Kind.DAMAGE_DEPOSIT_HOLD).count() == 1
     assert create_calls["count"] == 2
 
     charge_call, deposit_call = created_calls
@@ -173,9 +176,12 @@ def test_create_booking_payment_intents_logs_transactions(monkeypatch, settings)
     assert deposit_call["automatic_payment_methods"]["allow_redirects"] == "never"
     assert charge_call["application_fee_amount"] == 2520
     assert charge_call["transfer_data"]["destination"] == "acct_test_owner"
-    assert charge_call["transfer_data"]["amount"] == 7580
     assert charge_call["transfer_group"] == f"booking:{booking.id}"
     assert charge_call["on_behalf_of"] == "acct_test_owner"
+    assert deposit_call["application_fee_amount"] == 0
+    assert deposit_call["transfer_data"]["destination"] == "acct_test_owner"
+    assert deposit_call["transfer_group"] == f"booking:{booking.id}"
+    assert deposit_call["on_behalf_of"] == "acct_test_owner"
 
 
 def test_create_booking_charge_requires_onboarded_owner(monkeypatch, settings):

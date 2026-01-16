@@ -157,9 +157,17 @@ def _build_email_context(extra: Optional[dict]) -> dict:
         "SITE_TAGLINE",
         "Peer-to-peer rentals in Edmonton",
     )
-    logo_url = getattr(settings, "SITE_LOGO_URL", "") or (
-        f"{frontend_origin}/logo.png" if frontend_origin else ""
-    )
+    logo_url = (getattr(settings, "SITE_LOGO_URL", "") or "").strip()
+    if not logo_url and frontend_origin:
+        logo_url = f"{frontend_origin}/logo.png"
+    if logo_url and not logo_url.startswith(("http://", "https://", "//", "cid:")):
+        if frontend_origin:
+            if logo_url.startswith("/"):
+                logo_url = f"{frontend_origin}{logo_url}"
+            else:
+                logo_url = f"{frontend_origin}/{logo_url}"
+        else:
+            logo_url = ""
     primary_color = getattr(settings, "SITE_PRIMARY_COLOR", "#5B8CA6")
     primary_text_color = getattr(settings, "SITE_PRIMARY_TEXT_COLOR", "#F4F9FC")
     heading_color = getattr(settings, "SITE_EMAIL_HEADING_COLOR", "#102030")
@@ -726,13 +734,19 @@ def send_booking_request_email(owner_id: int, booking_id: int):
     renter_full_name = " ".join(part for part in (renter_first, renter_last) if part).strip()
     if not renter_full_name:
         renter_full_name = _display_name(renter)
+    start_date = getattr(booking, "start_date", None)
+    end_date_exclusive = getattr(booking, "end_date", None)
+    # Booking end dates are stored as exclusive; emails should show the inclusive day.
+    end_date_inclusive = (
+        end_date_exclusive - timedelta(days=1) if end_date_exclusive else start_date
+    )
     context = {
         "owner": owner,
         "owner_full_name": _display_name(owner),
         "booking": booking,
         "listing_title": listing_title,
-        "start_date": booking.start_date,
-        "end_date": booking.end_date,
+        "start_date": start_date,
+        "end_date": end_date_inclusive,
         "totals": booking.totals or {},
         "renter": renter,
         "renter_first_name": renter_first,

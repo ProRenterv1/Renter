@@ -220,6 +220,10 @@ class ListingSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"detail": "Please verify your phone before creating listings."}
             )
+        if not is_user_identity_verified(user):
+            raise serializers.ValidationError(
+                {"detail": "Please complete KYC verification before creating listings."}
+            )
         validated_data["owner"] = user
         return super().create(validated_data)
 

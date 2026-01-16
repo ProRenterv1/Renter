@@ -79,8 +79,22 @@ def mark_user_identity_verified(user) -> None:
 
 @pytest.fixture
 def owner_user():
-    return User.objects.create_user(
+    user = User.objects.create_user(
         username="owner",
+        password="x",
+        can_list=True,
+        can_rent=True,
+        email_verified=True,
+        phone_verified=True,
+    )
+    mark_user_identity_verified(user)
+    return user
+
+
+@pytest.fixture
+def unverified_owner_user():
+    return User.objects.create_user(
+        username="owner-unverified",
         password="x",
         can_list=True,
         can_rent=True,
@@ -163,8 +177,10 @@ def test_create_listing_success(owner_user, category):
     assert Listing.objects.filter(slug=resp.data["slug"]).exists()
 
 
-def test_create_listing_blocked_for_unverified_high_values(owner_user, category, settings):
-    client = auth(owner_user)
+def test_create_listing_blocked_for_unverified_high_values(
+    unverified_owner_user, category, settings
+):
+    client = auth(unverified_owner_user)
     payload = create_listing_payload(
         category=category.slug,
         replacement_value_cad="1500.00",
@@ -177,9 +193,11 @@ def test_create_listing_blocked_for_unverified_high_values(owner_user, category,
     assert resp.data["non_field_errors"][0] == listing_limit_error_message(settings)
 
 
-def test_update_listing_blocked_for_unverified_high_values(owner_user, category, settings):
-    listing = make_listing(owner_user, category=category)
-    client = auth(owner_user)
+def test_update_listing_blocked_for_unverified_high_values(
+    unverified_owner_user, category, settings
+):
+    listing = make_listing(unverified_owner_user, category=category)
+    client = auth(unverified_owner_user)
     payload = {"replacement_value_cad": "1500.00"}
 
     resp = client.patch(f"/api/listings/{listing.slug}/", payload, format="json")

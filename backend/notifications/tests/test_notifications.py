@@ -83,6 +83,7 @@ def test_send_booking_request_email_includes_details(settings):
     )
     start = date.today() + timedelta(days=5)
     end = start + timedelta(days=3)
+    inclusive_end = end - timedelta(days=1)
     booking = Booking.objects.create(
         listing=listing,
         owner=owner,
@@ -110,7 +111,7 @@ def test_send_booking_request_email_includes_details(settings):
     assert full_name in body
     assert settings.FRONTEND_ORIGIN in body
     assert date_format(start, use_l10n=True) in body
-    assert date_format(end, use_l10n=True) in body
+    assert date_format(inclusive_end, use_l10n=True) in body
     assert tasks.CHECK_ID_MESSAGE in body
 
 

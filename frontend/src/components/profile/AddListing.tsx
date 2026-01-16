@@ -373,7 +373,7 @@ export function AddListing() {
           console.warn("Photo upload error", photoError);
           // If any photo fails, stop and roll back the listing to avoid publishing without images.
           try {
-            await listingsAPI.delete(listing.id);
+            await listingsAPI.delete(listing.slug);
           } catch (cleanupError) {
             console.warn("Failed to roll back listing after photo error", cleanupError);
           }
@@ -383,7 +383,7 @@ export function AddListing() {
 
       if (successfulUploads === 0) {
         try {
-          await listingsAPI.delete(listing.id);
+          await listingsAPI.delete(listing.slug);
         } catch (cleanupError) {
           console.warn("Failed to roll back listing after zero successful uploads", cleanupError);
         }

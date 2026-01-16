@@ -24,6 +24,8 @@ def test_pricing_summary_uses_current_settings(client):
     assert payload["owner_fee_rate"] == 4.0
     assert payload["instant_payout_fee_rate"] == 2.0
     assert payload["currency"] == "CAD"
+    assert payload["gst_enabled"] is False
+    assert payload["gst_rate"] == "0.05"
 
 
 def test_pricing_summary_prefers_operator_overrides(client, monkeypatch):
@@ -50,3 +52,5 @@ def test_pricing_summary_prefers_operator_overrides(client, monkeypatch):
     assert payload["renter_fee_rate"] == 8.5
     assert payload["owner_fee_rate"] == 2.25
     assert payload["instant_payout_fee_rate"] == 3.1
+    assert payload["gst_enabled"] is False
+    assert payload["gst_rate"] == "0.05"

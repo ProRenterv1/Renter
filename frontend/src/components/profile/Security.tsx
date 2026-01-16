@@ -61,6 +61,56 @@ const writeLocalStorage = (key: string, value: string) => {
   } catch {}
 };
 
+const getKycStartedStorageKey = (userId: number | null) =>
+  userId ? `${VERIFICATION_STORAGE_PREFIX}.kyc.started.${userId}` : null;
+
+const collectRequirementFields = (
+  requirements?: OwnerPayoutConnect["requirements_due"] | null,
+) => {
+  if (!requirements) return [];
+  const fields = new Set<string>();
+  for (const field of [
+    ...(requirements.currently_due ?? []),
+    ...(requirements.past_due ?? []),
+    ...(requirements.eventually_due ?? []),
+  ]) {
+    if (field) {
+      fields.add(field);
+    }
+  }
+  return Array.from(fields);
+};
+
+const isIdRequirement = (field: string | null | undefined) => {
+  if (!field) return false;
+  const prefixes = [
+    "individual.verification.",
+    "company.verification.",
+    "person.verification.",
+  ];
+  if (prefixes.some((prefix) => field.startsWith(prefix))) {
+    return true;
+  }
+  return (
+    field.includes(".verification.document") ||
+    field.includes(".verification.additional_document")
+  );
+};
+
+const isPersonalRequirement = (field: string | null | undefined) => {
+  if (!field || isIdRequirement(field)) {
+    return false;
+  }
+  const prefixes = [
+    "individual.",
+    "company.",
+    "business_profile.",
+    "external_account",
+    "tos_acceptance",
+  ];
+  return prefixes.some((prefix) => field.startsWith(prefix));
+};
+
 const shouldToastOnVerification = (
   key: string | null,
   nowVerified: boolean,
@@ -259,6 +309,27 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
     email: "Verify your email before enabling email 2FA.",
   };
   const userId = profile?.id ?? AuthStore.getCurrentUser()?.id ?? null;
+  const kycStartedKey = getKycStartedStorageKey(userId);
+  const [kycStarted, setKycStarted] = useState(false);
+
+  useEffect(() => {
+    if (!kycStartedKey) {
+      setKycStarted(false);
+      return;
+    }
+    setKycStarted(readLocalStorage(kycStartedKey) === "1");
+  }, [kycStartedKey]);
+
+  const markKycStarted = useCallback(() => {
+    if (!kycStartedKey) {
+      return;
+    }
+    writeLocalStorage(kycStartedKey, "1");
+    setKycStarted(true);
+  }, [kycStartedKey]);
+
+  const effectiveIdentityStatus =
+    identityStatus === "pending" && !kycStarted ? "none" : identityStatus;
 
   const debugLog = (...args: unknown[]) => {
     if (import.meta.env.DEV) {
@@ -443,6 +514,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
     const params = new URLSearchParams(window.location.search);
     if (params.get("onboarding") !== "return") return;
     setOnboardingResumeChecked(true);
+    markKycStarted();
 
     const resumeOnboardingIfNeeded = async () => {
       const repeatFlag = "connect_onboarding_repeat_done";
@@ -475,7 +547,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
     };
 
     void resumeOnboardingIfNeeded();
-  }, [onboardingResumeChecked, refreshIdentityStatus]);
+  }, [markKycStarted, onboardingResumeChecked, refreshIdentityStatus]);
 
   const persistTwoFactorSetting = async (
     channel: TwoFactorChannel,
@@ -643,7 +715,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
 
     const baseClass =
       "inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium";
-    switch (identityStatus) {
+    switch (effectiveIdentityStatus) {
       case "verified":
         return (
           <span
@@ -759,6 +831,7 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
         setKycPrereqOpen(true);
         return;
       }
+      markKycStarted();
 
       if (!publishableKey || typeof loadConnectAndInitialize !== "function") {
         await redirectToHosted("Embedded onboarding is unavailable. Redirecting to Stripe.");
@@ -1178,20 +1251,27 @@ export function Security({ onIdentityStatusChange }: SecurityProps) {
         : null;
 
     const hasAccount = connectSummary?.has_account ?? false;
-    const steps = connectSummary?.kyc_steps;
-    const personalComplete = steps?.personal_complete ?? false;
-    const idRequired = steps?.id_required ?? false;
-    const kycLocked = steps?.kyc_locked ?? false;
-    const idSubmittedPending = steps?.id_submitted_pending ?? false;
-    const personalVerified = personalComplete || hasAccount;
-    const idVerified =
-      (connectSummary?.is_fully_onboarded ?? false) || identityStatus === "verified";
     const requirements = connectSummary?.requirements_due;
+    const dueFields = hasAccount ? collectRequirementFields(requirements) : [];
+    const personalDue = dueFields.filter(isPersonalRequirement);
+    const idDue = dueFields.filter(isIdRequirement);
+    const personalComplete = hasAccount && personalDue.length === 0;
+    const idRequired = hasAccount && idDue.length > 0;
+    const idSubmittedPending =
+      hasAccount &&
+      personalComplete &&
+      !idRequired &&
+      !(connectSummary?.is_fully_onboarded ?? false);
+    const personalVerified = personalComplete;
+    const idVerified =
+      (connectSummary?.is_fully_onboarded ?? false) ||
+      effectiveIdentityStatus === "verified";
     const outstanding =
       (requirements?.currently_due?.length ?? 0) + (requirements?.past_due?.length ?? 0) > 0;
     const effectiveIdRequired = idRequired || outstanding;
-    const waitingDecision = idSubmittedPending || identityStatus === "pending";
-    const locked = kycLocked || identityStatus === "pending";
+    const pendingReview = idSubmittedPending;
+    const waitingDecision = pendingReview;
+    const locked = pendingReview;
 
     const personalBadgeText = personalVerified ? "Completed" : "Required";
     const idBadgeText = idVerified

@@ -6,6 +6,7 @@ from django.conf import settings
 from django.http import JsonResponse
 
 from core.settings_resolver import get_int
+from payments.tax import platform_gst_enabled, platform_gst_rate
 
 
 def _rate_to_bps(rate: Decimal) -> int:
@@ -34,6 +35,9 @@ def pricing_summary(_request):
     def as_percent(bps: int) -> float:
         return round(bps / 100, 2)
 
+    gst_enabled = platform_gst_enabled()
+    gst_rate = platform_gst_rate()
+
     return JsonResponse(
         {
             "currency": "CAD",
@@ -43,5 +47,7 @@ def pricing_summary(_request):
             "owner_fee_rate": as_percent(owner_bps),
             "instant_payout_fee_bps": instant_bps,
             "instant_payout_fee_rate": as_percent(instant_bps),
+            "gst_enabled": gst_enabled,
+            "gst_rate": str(gst_rate),
         }
     )

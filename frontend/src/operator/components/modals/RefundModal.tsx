@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,14 +12,21 @@ type RefundModalProps = {
   onClose: () => void;
   onSubmit: (payload: { amount?: string; reason: string; notify_user: boolean }) => Promise<void>;
   defaultAmount?: string;
+  amountLocked?: boolean;
 };
 
-export function RefundModal({ open, onClose, onSubmit, defaultAmount }: RefundModalProps) {
+export function RefundModal({ open, onClose, onSubmit, defaultAmount, amountLocked }: RefundModalProps) {
   const [amount, setAmount] = useState<string>(defaultAmount || "");
   const [reason, setReason] = useState<string>("");
   const [notify, setNotify] = useState<boolean>(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setAmount(defaultAmount || "");
+    }
+  }, [open, defaultAmount]);
 
   const handleSubmit = async () => {
     setSubmitting(true);
@@ -46,15 +53,20 @@ export function RefundModal({ open, onClose, onSubmit, defaultAmount }: RefundMo
         </DialogHeader>
         <div className="space-y-4">
           <div>
-            <Label htmlFor="refund-amount">Amount (optional)</Label>
+            <Label htmlFor="refund-amount">Amount {amountLocked ? "(owner payout)" : "(optional)"}</Label>
             <Input
               id="refund-amount"
               type="number"
               min="0"
               step="0.01"
-              placeholder="Full refund if left blank"
+              placeholder={amountLocked ? "Owner payout amount" : "Full refund if left blank"}
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              onChange={(e) => {
+                if (!amountLocked) {
+                  setAmount(e.target.value);
+                }
+              }}
+              readOnly={Boolean(amountLocked)}
             />
           </div>
           <div className="space-y-2">

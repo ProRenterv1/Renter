@@ -19,6 +19,7 @@ from storage.s3 import presign_get
 from .ledger import (
     compute_owner_available_balance,
     compute_owner_balances,
+    compute_owner_total_balance,
     get_owner_history_queryset,
     log_transaction,
 )
@@ -27,7 +28,7 @@ from .stripe_api import (
     create_connect_onboarding_session,
     create_instant_payout,
     ensure_connect_account,
-    get_connect_available_balance,
+    get_connect_balance_snapshot,
     transfer_earnings_to_platform,
     update_connect_bank_account,
 )
@@ -233,16 +234,26 @@ def owner_payouts_summary(request):
         else:
             raise
     balances = compute_owner_balances(user)
-    available = compute_owner_available_balance(user)
-    balances["available_earnings"] = _format_money(available)
+    total_balance = compute_owner_total_balance(user)
 
     connect_available = None
+    connect_total = None
     if payout_account is not None:
-        connect_available = get_connect_available_balance(payout_account)
+        snapshot = get_connect_balance_snapshot(payout_account)
+        connect_available = snapshot.get("available")
+        connect_total = snapshot.get("total")
+
+    available = compute_owner_available_balance(user)
     if connect_available is not None:
-        balances["connect_available_earnings"] = _format_money(connect_available)
-    else:
-        balances["connect_available_earnings"] = None
+        available = min(available, connect_available)
+    balances["available_earnings"] = _format_money(available)
+    balances["total_balance"] = _format_money(total_balance)
+    balances["connect_available_earnings"] = (
+        _format_money(connect_available) if connect_available is not None else None
+    )
+    balances["connect_total_balance"] = (
+        _format_money(connect_total) if connect_total is not None else None
+    )
     return Response(
         {
             "connect": _connect_payload(payout_account),
@@ -275,7 +286,7 @@ def owner_payouts_history(request):
 
     if scope == "all":
         qs = Transaction.objects.filter(user=user).exclude(
-            kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE,
+            kind=Transaction.Kind.DAMAGE_DEPOSIT_HOLD,
         )
     elif scope == "owner":
         qs = get_owner_history_queryset(user)
@@ -284,7 +295,7 @@ def owner_payouts_history(request):
     else:
         # For renters, show their charges/refunds but hide deposit holds.
         qs = Transaction.objects.filter(user=user).exclude(
-            kind=Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE,
+            kind=Transaction.Kind.DAMAGE_DEPOSIT_HOLD,
         )
     qs = qs.select_related("booking__listing")
     kind_param = request.query_params.get("kind")
@@ -328,6 +339,7 @@ def owner_payouts_history(request):
                 "amount": _format_money(amount),
                 "currency": (tx.currency or "").upper(),
                 "booking_id": getattr(booking, "id", None),
+                "booking_owner_id": getattr(booking, "owner_id", None),
                 "booking_status": getattr(booking, "status", None),
                 "listing_title": getattr(listing, "title", None),
                 "direction": direction,
@@ -552,7 +564,7 @@ def owner_payouts_instant_payout(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # 3) Compute available balance directly from the ledger
+    # 3) Compute available balance with ledger + Stripe availability guardrails
     try:
         available = compute_owner_available_balance(user)
     except (InvalidOperation, Exception):
@@ -560,6 +572,13 @@ def owner_payouts_instant_payout(request):
             {"detail": "Unable to compute available balance for instant payout."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+    try:
+        snapshot = get_connect_balance_snapshot(payout_account)
+        connect_available = snapshot.get("available")
+        if connect_available is not None:
+            available = min(available, connect_available)
+    except Exception:
+        connect_available = None
 
     if available <= Decimal("0.00"):
         return Response(

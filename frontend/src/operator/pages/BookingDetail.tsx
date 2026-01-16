@@ -296,7 +296,10 @@ export function BookingDetail() {
               </div>
 
               <div className="pt-4 border-t border-border space-y-3">
-                <MoneyRow label="Platform Fee" value={money.platformFee} negative />
+                <MoneyRow label="Owner Fee" value={money.ownerFee} negative />
+                <MoneyRow label="Stripe Fee" value={money.stripeFee} negative />
+                <MoneyRow label="Platform Profit (before taxes + commissions)" value={money.platformProfitBefore} bold />
+                <MoneyRow label="Platform Profit (after GST + Stripe fee)" value={money.platformProfitAfter} bold />
                 <MoneyRow label="Owner Payout" value={money.ownerPayout} bold />
               </div>
 
@@ -709,17 +712,78 @@ function breakdownFromTotals(totals?: Record<string, unknown> | null) {
     const num = Number(value);
     return Number.isFinite(num) ? num : 0;
   };
-  const subtotal = asMoney(totals?.rental_subtotal ?? totals?.subtotal);
-  const renterFee = asMoney(totals?.renter_fee);
-  const deposit = asMoney(totals?.damage_deposit);
-  const total = asMoney(totals?.total_charge ?? totals?.total);
-  const platformFee = asMoney(totals?.owner_fee ?? totals?.platform_fee ?? totals?.platform_fee_cents);
-  const ownerPayout = asMoney(totals?.owner_payout ?? totals?.owner_payout_amount);
+  const hasTotals = Boolean(totals && Object.keys(totals).length);
+  const subtotalValue = toNumber(totals?.rental_subtotal ?? totals?.subtotal);
+  const subtotal = asMoney(subtotalValue);
+  const renterFeeBaseValue = toNumber(
+    totals?.renter_fee_base ?? totals?.renter_fee ?? totals?.service_fee,
+  );
   const gstEnabled = Boolean(totals?.gst_enabled);
-  const gstPaid = gstEnabled
-    ? `$${(toNumber(totals?.renter_fee_gst) + toNumber(totals?.owner_fee_gst)).toFixed(2)}`
-    : "";
-  return { subtotal, renterFee, deposit, total, platformFee, ownerPayout, gstPaid };
+  const renterFeeGstValue = gstEnabled ? toNumber(totals?.renter_fee_gst) : 0;
+  const renterFeeTotalValue = (() => {
+    const rawTotal = totals?.renter_fee_total;
+    if (rawTotal !== undefined && rawTotal !== null && rawTotal !== "") {
+      return toNumber(rawTotal);
+    }
+    return renterFeeBaseValue + renterFeeGstValue;
+  })();
+  const renterFee = asMoney(renterFeeBaseValue);
+  const deposit = asMoney(totals?.damage_deposit);
+  const totalChargeValue = hasTotals ? subtotalValue + renterFeeTotalValue : null;
+  const total = totalChargeValue === null ? "—" : asMoney(totalChargeValue);
+  const ownerFeeBaseValue = toNumber(
+    totals?.owner_fee_base ?? totals?.owner_fee ?? totals?.platform_fee ?? totals?.platform_fee_cents
+  );
+  const ownerFee = asMoney(ownerFeeBaseValue);
+  const ownerPayoutRaw = totals?.owner_payout ?? totals?.owner_payout_amount;
+  const ownerPayoutValue =
+    ownerPayoutRaw === undefined || ownerPayoutRaw === null || ownerPayoutRaw === ""
+      ? null
+      : toNumber(ownerPayoutRaw);
+  const ownerPayout = ownerPayoutValue === null ? "—" : asMoney(ownerPayoutValue);
+  const gstPaidAmount = gstEnabled
+    ? toNumber(totals?.renter_fee_gst) + toNumber(totals?.owner_fee_gst)
+    : 0;
+  const gstPaid = gstEnabled ? `$${gstPaidAmount.toFixed(2)}` : "";
+  const stripeFeeOverride = totals?.stripe_fee ?? totals?.stripe_fee_total;
+  const stripeFeeCents = totals?.stripe_fee_cents;
+  const stripeFeeAmount = hasTotals
+    ? (() => {
+      if (stripeFeeOverride !== undefined && stripeFeeOverride !== null && stripeFeeOverride !== "") {
+        return toNumber(stripeFeeOverride);
+      }
+      if (stripeFeeCents !== undefined && stripeFeeCents !== null && stripeFeeCents !== "") {
+        return toNumber(stripeFeeCents) / 100;
+      }
+      return null;
+    })()
+    : null;
+  const stripeFee = stripeFeeAmount === null ? "—" : asMoney(stripeFeeAmount);
+  const platformProfitBeforeAmount =
+    totalChargeValue === null || ownerPayoutValue === null
+      ? null
+      : totalChargeValue - ownerPayoutValue;
+  const platformProfitBefore = platformProfitBeforeAmount === null
+    ? "—"
+    : asMoney(platformProfitBeforeAmount);
+  const platformProfitAfterAmount = (platformProfitBeforeAmount === null || stripeFeeAmount === null)
+    ? null
+    : platformProfitBeforeAmount - gstPaidAmount - stripeFeeAmount;
+  const platformProfitAfter = platformProfitAfterAmount === null
+    ? "—"
+    : asMoney(platformProfitAfterAmount);
+  return {
+    subtotal,
+    renterFee,
+    deposit,
+    total,
+    ownerFee,
+    ownerPayout,
+    gstPaid,
+    stripeFee,
+    platformProfitBefore,
+    platformProfitAfter,
+  };
 }
 
 function buildNotificationHistory(events: OperatorBookingEvent[]) {
@@ -869,7 +933,7 @@ function ForceCancelModal({
         <DialogHeader>
           <DialogTitle>Force Cancel</DialogTitle>
           <p className="text-sm text-muted-foreground">
-            Cancel regardless of participant. This will issue refunds based on policy.
+            Cancel regardless of participant. Refunds must be handled separately.
           </p>
         </DialogHeader>
         <div className="space-y-4">

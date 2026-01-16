@@ -10,6 +10,7 @@ class Transaction(models.Model):
         OWNER_PAYOUT = "OWNER_PAYOUT", "Owner payout"
         PLATFORM_FEE = "PLATFORM_FEE", "Platform fee"
         GST_COLLECTED = "GST_COLLECTED", "GST collected"
+        DAMAGE_DEPOSIT_HOLD = "DAMAGE_DEPOSIT_HOLD", "Damage deposit hold"
         DAMAGE_DEPOSIT_CAPTURE = "DAMAGE_DEPOSIT_CAPTURE", "Damage deposit capture"
         DAMAGE_DEPOSIT_RELEASE = "DAMAGE_DEPOSIT_RELEASE", "Damage deposit release"
         PROMOTION_CHARGE = "PROMOTION_CHARGE", "Promotion charge"
@@ -41,6 +42,11 @@ class Transaction(models.Model):
         blank=True,
         null=True,
         help_text="Related Stripe PaymentIntent / Charge / Refund id.",
+    )
+    stripe_available_on = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Stripe balance transaction available_on timestamp (UTC).",
     )
     created_at = models.DateTimeField(auto_now_add=True)
 

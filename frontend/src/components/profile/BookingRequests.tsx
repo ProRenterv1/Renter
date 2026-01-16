@@ -252,6 +252,12 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
   const ownerServiceFeeAmount = Math.abs(ownerServiceFeeRaw);
   const ownerServiceFeeText =
     ownerServiceFeeAmount === 0 ? formatCurrency(0, "CAD") : `-${formatCurrency(ownerServiceFeeAmount, "CAD")}`;
+  const ownerFeeGstAmount = Math.abs(
+    Number(selectedTotals ? selectedTotals.owner_fee_gst ?? 0 : 0),
+  );
+  const ownerFeeGstText =
+    ownerFeeGstAmount === 0 ? formatCurrency(0, "CAD") : `-${formatCurrency(ownerFeeGstAmount, "CAD")}`;
+  const showOwnerFeeGst = Boolean(selectedTotals?.gst_enabled) && ownerFeeGstAmount > 0;
 
   const loadChatConversations = useCallback(async () => {
     try {
@@ -833,7 +839,19 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
           <div className="flex-1 text-sm text-muted-foreground text-center sm:text-left">
             {statusMessage}
           </div>
-          <Button variant="outline" className="rounded-full">
+          <Button
+            variant="outline"
+            className="rounded-full"
+            onClick={() => {
+              setDisputeContext({
+                bookingId: booking.id,
+                toolName: booking.listing_title,
+                rentalPeriod: formatDateRange(booking.start_date, booking.end_date),
+              });
+              setDisputeWizardOpen(true);
+              setSelectedRequest(null);
+            }}
+          >
             Report an issue
           </Button>
         </DialogFooter>
@@ -1084,6 +1102,9 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
         role="owner"
         toolName={disputeContext?.toolName}
         rentalPeriodLabel={disputeContext?.rentalPeriod}
+        onCreated={() => {
+          void reloadRequests();
+        }}
       />
 
       <Dialog open={Boolean(selectedRequest)} onOpenChange={(open) => !open && setSelectedRequest(null)}>
@@ -1191,6 +1212,12 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                       <span className="text-muted-foreground">Owner service fee</span>
                       <span className="font-medium text-muted-foreground">{ownerServiceFeeText}</span>
                     </div>
+                    {showOwnerFeeGst ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">GST on owner service fee</span>
+                        <span className="font-medium text-muted-foreground">{ownerFeeGstText}</span>
+                      </div>
+                    ) : null}
                   </div>
                   <div className="h-px bg-border" />
                   <div className="flex items-center justify-between">

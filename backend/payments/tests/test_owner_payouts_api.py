@@ -230,7 +230,11 @@ def test_owner_payouts_summary_includes_kyc_steps(
         is_fully_onboarded=is_fully_onboarded,
     )
     monkeypatch.setattr(payments_api, "ensure_connect_account", lambda user: payout_account)
-    monkeypatch.setattr(payments_api, "get_connect_available_balance", lambda account: None)
+    monkeypatch.setattr(
+        payments_api,
+        "get_connect_balance_snapshot",
+        lambda account: {"available": None, "total": None},
+    )
 
     client = _auth_client(owner_user)
     resp = client.get("/api/owner/payouts/summary/")
@@ -542,7 +546,7 @@ def test_owner_payouts_update_bank_details(owner_user, monkeypatch):
     assert connect["bank_details"]["institution_number"] == "004"
 
 
-def test_history_for_renter_excludes_deposit_capture_and_signs_charge_negative(
+def test_history_for_renter_excludes_deposit_hold_and_signs_charge_negative(
     renter_user,
     booking_factory,
 ):
@@ -556,6 +560,12 @@ def test_history_for_renter_excludes_deposit_capture_and_signs_charge_negative(
         booking=booking,
         kind=Transaction.Kind.BOOKING_CHARGE,
         amount=Decimal("165.00"),
+    )
+    log_transaction(
+        user=renter_user,
+        booking=booking,
+        kind=Transaction.Kind.DAMAGE_DEPOSIT_HOLD,
+        amount=Decimal("250.00"),
     )
     log_transaction(
         user=renter_user,
@@ -575,8 +585,9 @@ def test_history_for_renter_excludes_deposit_capture_and_signs_charge_negative(
 
     assert resp.status_code == 200, resp.data
     kinds = [row["kind"] for row in resp.data["results"]]
-    assert Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE not in kinds
+    assert Transaction.Kind.DAMAGE_DEPOSIT_HOLD not in kinds
     assert Transaction.Kind.BOOKING_CHARGE in kinds
+    assert Transaction.Kind.DAMAGE_DEPOSIT_CAPTURE in kinds
 
     charge_row = next(
         row for row in resp.data["results"] if row["kind"] == Transaction.Kind.BOOKING_CHARGE

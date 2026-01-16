@@ -1,12 +1,13 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 
 from bookings.models import Booking
 from listings.models import Listing
-from payments.ledger import log_transaction
+from payments.ledger import compute_owner_available_balance, log_transaction
 from payments.models import Transaction
 
 pytestmark = pytest.mark.django_db
@@ -80,3 +81,53 @@ def test_log_transaction_allows_custom_currency_and_stripe_id(owner_user, bookin
 
     assert txn.currency == "usd"
     assert txn.stripe_id == "pi_123"
+
+
+def test_owner_available_balance_respects_booking_and_stripe_holds(
+    owner_user, listing, renter_user
+):
+    today = timezone.localdate()
+    held_booking = Booking.objects.create(
+        listing=listing,
+        owner=owner_user,
+        renter=renter_user,
+        start_date=today - timedelta(days=1),
+        end_date=today,
+    )
+    log_transaction(
+        user=owner_user,
+        booking=held_booking,
+        kind=Transaction.Kind.OWNER_EARNING,
+        amount=Decimal("100.00"),
+    )
+
+    available_booking = Booking.objects.create(
+        listing=listing,
+        owner=owner_user,
+        renter=renter_user,
+        start_date=today - timedelta(days=5),
+        end_date=today - timedelta(days=3),
+    )
+    log_transaction(
+        user=owner_user,
+        booking=available_booking,
+        kind=Transaction.Kind.OWNER_EARNING,
+        amount=Decimal("50.00"),
+    )
+
+    delayed_booking = Booking.objects.create(
+        listing=listing,
+        owner=owner_user,
+        renter=renter_user,
+        start_date=today - timedelta(days=5),
+        end_date=today - timedelta(days=3),
+    )
+    log_transaction(
+        user=owner_user,
+        booking=delayed_booking,
+        kind=Transaction.Kind.OWNER_EARNING,
+        amount=Decimal("25.00"),
+        stripe_available_on=timezone.now() + timedelta(hours=6),
+    )
+
+    assert compute_owner_available_balance(owner_user) == Decimal("50.00")

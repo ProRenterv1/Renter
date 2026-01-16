@@ -245,9 +245,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
     };
   }, [dateRange.from, dateRange.to, durationDays, listing.id, selectionHasBlockedDays]);
 
-  const preferredAvailableString =
-    payoutSummary?.balances?.connect_available_earnings ??
-    payoutSummary?.balances?.available_earnings;
+  const preferredAvailableString = payoutSummary?.balances?.available_earnings;
   const availableEarningsAmount =
     availableEarningsCents !== null
       ? availableEarningsCents / 100
@@ -364,10 +362,7 @@ export function ListingPromotionCheckout({ listing, onBack }: ListingPromotionCh
         const summary = await paymentsAPI.ownerPayoutsSummary();
         if (cancelled) return;
         setPayoutSummary(summary);
-        const raw =
-          summary.balances?.connect_available_earnings ??
-          summary.balances?.available_earnings ??
-          "0.00";
+        const raw = summary.balances?.available_earnings ?? "0.00";
         const amount = parseMoney(raw);
         setAvailableEarningsCents(Math.round(amount * 100));
         setEarningsError(null);

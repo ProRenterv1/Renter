@@ -87,6 +87,24 @@ def test_authenticated_without_can_list_cannot_create(renter_user):
     assert Listing.objects.count() == 0
 
 
+def test_kyc_required_for_listing_create():
+    user = User.objects.create_user(
+        username="owner-unverified",
+        password="testpass",
+        can_list=True,
+        can_rent=True,
+        email_verified=True,
+        phone_verified=True,
+    )
+    client = _auth_client(user)
+
+    resp = client.post("/api/listings/", listing_payload(), format="json")
+
+    assert resp.status_code == 400
+    assert resp.data["detail"] == "Please complete KYC verification before creating listings."
+    assert Listing.objects.count() == 0
+
+
 @pytest.mark.parametrize(
     ("email_verified", "phone_verified", "message"),
     [

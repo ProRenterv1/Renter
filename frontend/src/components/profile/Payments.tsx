@@ -520,7 +520,7 @@ export function Payments() {
   const transactions = useMemo(() => {
     return history
       .filter((txn) => {
-        if (txn.kind === "DAMAGE_DEPOSIT_CAPTURE") {
+        if (txn.kind === "DAMAGE_DEPOSIT_HOLD") {
           return false;
         }
         if (txn.kind === "PLATFORM_FEE" && !txn.booking_id) {
@@ -553,6 +553,8 @@ export function Payments() {
           description = "Owner earning";
         } else if (txn.kind === "REFUND") {
           description = "Refund";
+        } else if (txn.kind === "DAMAGE_DEPOSIT_HOLD") {
+          description = "Deposit held";
         } else if (txn.kind === "DAMAGE_DEPOSIT_CAPTURE") {
           description = "Deposit captured";
         } else if (txn.kind === "DAMAGE_DEPOSIT_RELEASE") {
