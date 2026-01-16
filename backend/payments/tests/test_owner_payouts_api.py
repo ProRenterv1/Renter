@@ -624,8 +624,8 @@ def test_owner_payouts_update_bank_details_requires_fields(owner_user, monkeypat
 def test_owner_payouts_instant_payout_preview(owner_user, booking_factory, monkeypatch):
     OwnerPayoutAccount.objects.filter(user=owner_user).delete()
     booking = booking_factory(
-        start_date=date.today(),
-        end_date=date.today() + timedelta(days=2),
+        start_date=date.today() - timedelta(days=4),
+        end_date=date.today() - timedelta(days=3),
         status=Booking.Status.PAID,
     )
     DbSetting.objects.create(
@@ -690,8 +690,8 @@ def test_owner_payouts_instant_payout_requires_bank_details(owner_user, monkeypa
 def test_owner_payouts_instant_payout_executes_and_logs(owner_user, booking_factory, monkeypatch):
     OwnerPayoutAccount.objects.filter(user=owner_user).delete()
     booking = booking_factory(
-        start_date=date.today(),
-        end_date=date.today() + timedelta(days=1),
+        start_date=date.today() - timedelta(days=4),
+        end_date=date.today() - timedelta(days=3),
         status=Booking.Status.PAID,
     )
     DbSetting.objects.create(
