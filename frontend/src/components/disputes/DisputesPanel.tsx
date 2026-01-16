@@ -387,7 +387,12 @@ export function DisputesPanel({ onCountChange }: DisputesPanelProps) {
             </p>
           </div>
 
-          {selectedDisputeId !== null && <DisputeThread disputeId={selectedDisputeId} />}
+          {selectedDisputeId !== null && (
+            <DisputeThread
+              disputeId={selectedDisputeId}
+              onDisputeUpdated={(nextId) => void refreshDisputes(nextId)}
+            />
+          )}
         </div>
       )}
     </div>

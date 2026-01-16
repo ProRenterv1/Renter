@@ -197,6 +197,72 @@ def test_damage_requires_booking_photos_for_minimum(booking_factory, renter_user
     assert events == []
 
 
+def test_incorrect_charges_moves_forward_without_booking_photos(
+    booking_factory, renter_user, owner_user, monkeypatch
+):
+    base_now = timezone.now()
+    monkeypatch.setattr("disputes.intake.timezone.now", lambda: base_now)
+    booking = booking_factory(
+        renter=renter_user,
+        owner=owner_user,
+        start_date=base_now.date(),
+        end_date=base_now.date() + timedelta(days=1),
+        status=Booking.Status.PAID,
+    )
+    dispute = _create_dispute(
+        booking=booking,
+        user=renter_user,
+        category=DisputeCase.Category.INCORRECT_CHARGES,
+        damage_flow_kind=DisputeCase.DamageFlowKind.GENERIC,
+        filed_at=base_now,
+    )
+    DisputeEvidence.objects.create(
+        dispute=dispute,
+        uploaded_by=renter_user,
+        kind=DisputeEvidence.Kind.PHOTO,
+        s3_key="evidence1",
+        av_status=DisputeEvidence.AVStatus.CLEAN,
+    )
+
+    email_calls: list[int] = []
+    monkeypatch.setattr(
+        "disputes.intake.notification_tasks.send_dispute_missing_evidence_email.delay",
+        lambda dispute_id: email_calls.append(dispute_id),
+    )
+    events: list[tuple[int, str, dict]] = []
+    monkeypatch.setattr(
+        "disputes.intake.push_event",
+        lambda user_id, event_type, payload: events.append((user_id, event_type, payload)),
+    )
+
+    updated = update_dispute_intake_status(dispute.id)
+    assert updated is not None
+    updated.refresh_from_db()
+    assert updated.status == DisputeCase.Status.AWAITING_REBUTTAL
+    assert updated.rebuttal_due_at == base_now + timedelta(hours=24)
+    assert email_calls == []
+    assert events == [
+        (
+            booking.owner_id,
+            "dispute:opened",
+            {
+                "dispute_id": dispute.id,
+                "booking_id": booking.id,
+                "status": DisputeCase.Status.AWAITING_REBUTTAL,
+            },
+        ),
+        (
+            booking.renter_id,
+            "dispute:opened",
+            {
+                "dispute_id": dispute.id,
+                "booking_id": booking.id,
+                "status": DisputeCase.Status.AWAITING_REBUTTAL,
+            },
+        ),
+    ]
+
+
 def test_damage_with_booking_photos_and_evidence_moves_to_awaiting(
     booking_factory, renter_user, owner_user, monkeypatch
 ):

@@ -368,12 +368,12 @@ class DisputeCaseViewSet(viewsets.ModelViewSet):
         booking = dispute.booking
         user = request.user
 
-        if user.is_staff:
-            role = DisputeMessage.Role.ADMIN
-        elif booking and booking.renter_id == user.id:
+        if booking and booking.renter_id == user.id:
             role = DisputeMessage.Role.RENTER
         elif booking and booking.owner_id == user.id:
             role = DisputeMessage.Role.OWNER
+        elif user.is_staff:
+            role = DisputeMessage.Role.ADMIN
         else:
             role = DisputeMessage.Role.SYSTEM
 
@@ -544,6 +544,7 @@ class DisputeCaseViewSet(viewsets.ModelViewSet):
             meta=meta,
         )
 
-        update_dispute_intake_status(dispute.id)
+        if dispute.status == DisputeCase.Status.INTAKE_MISSING_EVIDENCE:
+            update_dispute_intake_status(dispute.id)
 
         return Response({"status": "queued", "key": key}, status=status.HTTP_202_ACCEPTED)

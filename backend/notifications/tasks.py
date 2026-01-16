@@ -1203,17 +1203,24 @@ def send_dispute_missing_evidence_email(dispute_id: int):
     listing_title = getattr(getattr(dispute.booking, "listing", None), "title", "your booking")
     due_at = getattr(dispute, "intake_evidence_due_at", None)
     subject = "Action needed: upload dispute evidence"
-    body = (
-        f"We need additional evidence for your dispute on booking #{dispute.booking_id} "
-        f"({listing_title}). Please upload evidence within 24 hours."
-    )
-    if due_at:
-        body += f" Due by: {due_at}."
+    frontend_origin = (getattr(settings, "FRONTEND_ORIGIN", "") or "").rstrip("/")
+    context = {
+        "user": user,
+        "user_full_name": _display_name(user),
+        "dispute": dispute,
+        "dispute_id": dispute.id,
+        "booking": dispute.booking,
+        "booking_id": dispute.booking_id,
+        "listing_title": listing_title,
+        "due_at": due_at,
+        "cta_url": f"{frontend_origin}/profile?tab=disputes" if frontend_origin else "",
+    }
     _send_email_logged(
         "dispute_missing_evidence",
         to_email=to_email,
         subject=subject,
-        body=body,
+        template="dispute_missing_evidence.txt",
+        context=context,
         user_id=getattr(user, "id", None),
         booking_id=getattr(dispute.booking, "id", None),
     )

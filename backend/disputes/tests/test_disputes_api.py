@@ -188,3 +188,55 @@ def test_evidence_complete_triggers_intake_update(
 
     assert resp.status_code == 202
     assert calls["intake"] == [dispute_id]
+
+
+def test_evidence_complete_skips_intake_update_when_not_missing(
+    api_client, booking_factory, renter_user, monkeypatch
+):
+    today = timezone.localdate()
+    booking = booking_factory(
+        renter=renter_user,
+        start_date=today,
+        end_date=today + timedelta(days=1),
+        status=Booking.Status.PAID,
+        dispute_window_expires_at=timezone.now() + timedelta(hours=2),
+    )
+    dispute = DisputeCase.objects.create(
+        booking=booking,
+        opened_by=renter_user,
+        opened_by_role=DisputeCase.OpenedByRole.RENTER,
+        category=DisputeCase.Category.DAMAGE,
+        damage_flow_kind=DisputeCase.DamageFlowKind.GENERIC,
+        description="In review",
+        status=DisputeCase.Status.UNDER_REVIEW,
+        filed_at=timezone.now(),
+    )
+    api_client.force_authenticate(renter_user)
+
+    calls = {"intake": []}
+
+    def fake_update(dispute_pk: int):
+        calls["intake"].append(dispute_pk)
+        return None
+
+    def fake_delay(**kwargs):
+        return None
+
+    monkeypatch.setattr("disputes.api.update_dispute_intake_status", fake_update)
+    monkeypatch.setattr("disputes.api.scan_and_finalize_dispute_evidence.delay", fake_delay)
+
+    resp = api_client.post(
+        f"/api/disputes/{dispute.id}/evidence/complete/",
+        {
+            "key": "evidence/key",
+            "etag": '"etag123"',
+            "size": 123,
+            "filename": "proof.jpg",
+            "content_type": "image/jpeg",
+            "kind": DisputeEvidence.Kind.PHOTO,
+        },
+        format="json",
+    )
+
+    assert resp.status_code == 202
+    assert calls["intake"] == []

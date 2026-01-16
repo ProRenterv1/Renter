@@ -602,6 +602,19 @@ def _run_scan_and_finalize_dispute_evidence(
         verdict=verdict,
         meta=meta or {},
     )
+    try:
+        from disputes.intake import update_dispute_intake_status
+        from disputes.models import DisputeCase
+
+        status = DisputeCase.objects.filter(pk=dispute_id).values_list("status", flat=True).first()
+        if status == DisputeCase.Status.INTAKE_MISSING_EVIDENCE:
+            update_dispute_intake_status(dispute_id)
+    except Exception:
+        logger.info(
+            "dispute evidence: failed to refresh intake status",
+            extra={"dispute_id": dispute_id, "evidence_id": evidence.id},
+            exc_info=True,
+        )
     return {"status": verdict, "evidence_id": str(evidence.id)}
 
 
