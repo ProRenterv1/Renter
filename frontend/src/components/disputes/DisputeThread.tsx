@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { AuthStore } from "@/lib/auth";
 import {
   disputesAPI,
   type DisputeCase,
@@ -20,10 +21,22 @@ import {
   type PhotoPresignRequest,
 } from "@/lib/api";
 import { compressImageFile } from "@/lib/imageCompression";
+import { MAX_VIDEO_BYTES, MAX_VIDEO_MB_LABEL } from "@/lib/uploadLimits";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "../ui/alert-dialog";
 import {
   Dialog,
   DialogContent,
@@ -58,6 +71,13 @@ const detectKind = (file: File): DisputeEvidenceCompletePayload["kind"] => {
   return "other";
 };
 
+const DISPUTE_WRITE_LOCKED_STATUSES = new Set([
+  "resolved_renter",
+  "resolved_owner",
+  "resolved_partial",
+  "closed_auto",
+]);
+
 export function DisputeThread({ disputeId, onDisputeUpdated }: DisputeThreadProps) {
   const [dispute, setDispute] = useState<DisputeCase | null>(null);
   const [loading, setLoading] = useState(true);
@@ -69,7 +89,10 @@ export function DisputeThread({ disputeId, onDisputeUpdated }: DisputeThreadProp
   const [uploading, setUploading] = useState(false);
   const [compressing, setCompressing] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [closeOpen, setCloseOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const currentUserId = useMemo(() => AuthStore.getCurrentUser()?.id ?? null, []);
 
   useEffect(() => {
     if (uploadOpen) {
@@ -103,9 +126,18 @@ export function DisputeThread({ disputeId, onDisputeUpdated }: DisputeThreadProp
   }, [disputeId]);
 
   const messages = useMemo<DisputeMessage[]>(() => dispute?.messages ?? [], [dispute]);
+  const writesLocked = Boolean(dispute && DISPUTE_WRITE_LOCKED_STATUSES.has(dispute.status));
+  const isOpener = Boolean(
+    dispute && currentUserId && dispute.opened_by && currentUserId === dispute.opened_by,
+  );
+  const canClose = isOpener && !writesLocked;
 
   const handleSend = async () => {
     if (!messageText.trim()) {
+      return;
+    }
+    if (writesLocked) {
+      toast.error("This dispute is closed. Messaging is disabled.");
       return;
     }
     setSending(true);
@@ -146,6 +178,12 @@ export function DisputeThread({ disputeId, onDisputeUpdated }: DisputeThreadProp
             compressedSize: compressed.compressedSize,
           });
         } else {
+          if (kind === "video" && file.size > MAX_VIDEO_BYTES) {
+            toast.error(
+              `${file.name || "Video"} is too large. Max size is ${MAX_VIDEO_MB_LABEL} MB.`,
+            );
+            continue;
+          }
           additions.push({
             file,
             previewUrl: URL.createObjectURL(file),
@@ -159,6 +197,24 @@ export function DisputeThread({ disputeId, onDisputeUpdated }: DisputeThreadProp
       toast.error("Could not process one of the files. Please try again.");
     } finally {
       setCompressing(false);
+    }
+  };
+
+  const handleCloseDispute = async () => {
+    if (!dispute || closing) {
+      return;
+    }
+    setClosing(true);
+    try {
+      const updated = await disputesAPI.close(dispute.id);
+      setDispute(updated);
+      toast.success("Dispute closed.");
+      setCloseOpen(false);
+      onDisputeUpdated?.(dispute.id);
+    } catch (err) {
+      toast.error("Unable to close dispute.");
+    } finally {
+      setClosing(false);
     }
   };
 
@@ -179,6 +235,10 @@ export function DisputeThread({ disputeId, onDisputeUpdated }: DisputeThreadProp
     }
     if (compressing) {
       setUploadError("Please wait for images to finish compressing.");
+      return;
+    }
+    if (writesLocked) {
+      setUploadError("This dispute is closed. Evidence uploads are disabled.");
       return;
     }
     if (uploadFiles.length === 0) {
@@ -267,6 +327,41 @@ export function DisputeThread({ disputeId, onDisputeUpdated }: DisputeThreadProp
 
   return (
     <div className="space-y-6">
+      {canClose && (
+        <div className="flex flex-col gap-3 rounded-lg border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="font-medium text-sm">Close this dispute</p>
+            <p className="text-xs text-muted-foreground">
+              Closing ends the dispute and locks further updates.
+            </p>
+          </div>
+          <AlertDialog open={closeOpen} onOpenChange={setCloseOpen}>
+            <AlertDialogTrigger asChild>
+              <Button type="button" variant="destructive" disabled={!canClose}>
+                Close dispute
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Close this dispute?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will end the dispute immediately. You will not be able to reopen it.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={closing}>Keep open</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => void handleCloseDispute()}
+                  disabled={closing}
+                  className="bg-destructive text-white hover:bg-destructive/90"
+                >
+                  {closing ? "Closing..." : "Close dispute"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
+      )}
       <div className="bg-card border rounded-lg p-6">
         <div className="flex items-start justify-between gap-3 mb-4">
           <div>
@@ -280,11 +375,17 @@ export function DisputeThread({ disputeId, onDisputeUpdated }: DisputeThreadProp
             variant="outline"
             className="flex items-center gap-2"
             onClick={() => setUploadOpen(true)}
+            disabled={writesLocked}
           >
             <Upload className="h-4 w-4" />
-            Add evidence
+            {writesLocked ? "Evidence closed" : "Add evidence"}
           </Button>
         </div>
+        {writesLocked && (
+          <p className="mt-3 text-sm text-muted-foreground">
+            This dispute is closed or resolved. Evidence uploads are disabled.
+          </p>
+        )}
         <div className="space-y-4">
           {(dispute.evidence ?? []).map((ev) => {
             const isImage = ev.content_type?.startsWith("image/");
@@ -357,7 +458,8 @@ export function DisputeThread({ disputeId, onDisputeUpdated }: DisputeThreadProp
                 <div>
                   <p className="font-medium">Select files</p>
                   <p className="text-sm text-muted-foreground">
-                    Photos are compressed to reduce upload size. Videos upload as-is.
+                    Photos are compressed to reduce upload size. Videos are compressed after upload
+                    (max {MAX_VIDEO_MB_LABEL} MB each).
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -365,7 +467,7 @@ export function DisputeThread({ disputeId, onDisputeUpdated }: DisputeThreadProp
                     type="button"
                     variant="outline"
                     className="flex items-center gap-2"
-                    disabled={compressing || uploading}
+                    disabled={compressing || uploading || writesLocked}
                     onClick={() => fileInputRef.current?.click()}
                   >
                     <Upload className="h-4 w-4" />
@@ -377,7 +479,7 @@ export function DisputeThread({ disputeId, onDisputeUpdated }: DisputeThreadProp
                     className="hidden"
                     multiple
                     accept="image/*,video/*"
-                    disabled={compressing || uploading}
+                    disabled={compressing || uploading || writesLocked}
                     onChange={(event) => {
                       if (event.target.files) {
                         void handleEvidenceFilesAdded(event.target.files);
@@ -463,7 +565,7 @@ export function DisputeThread({ disputeId, onDisputeUpdated }: DisputeThreadProp
             <Button
               type="button"
               onClick={() => void handleEvidenceUpload()}
-              disabled={uploading || compressing || uploadFiles.length === 0}
+              disabled={uploading || compressing || uploadFiles.length === 0 || writesLocked}
               className="flex items-center gap-2"
             >
               {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -539,12 +641,13 @@ export function DisputeThread({ disputeId, onDisputeUpdated }: DisputeThreadProp
                   void handleSend();
                 }
               }}
-              placeholder="Type your message..."
+              placeholder={writesLocked ? "Messaging is closed for this dispute." : "Type your message..."}
               className="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)] bg-background"
+              disabled={writesLocked}
             />
             <Button
               onClick={() => void handleSend()}
-              disabled={sending || !messageText.trim()}
+              disabled={sending || !messageText.trim() || writesLocked}
               className="flex items-center gap-2"
             >
               <Send className="h-4 w-4" />

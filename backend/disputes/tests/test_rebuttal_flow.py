@@ -197,6 +197,82 @@ def test_auto_flag_skips_when_counterparty_uploaded_evidence(
     assert ended_calls == []
 
 
+def test_auto_resolve_pickup_no_show_refunds_and_cancels(
+    monkeypatch, booking_factory, renter_user, owner_user
+):
+    booking = _booking_with_dates(
+        booking_factory,
+        renter=renter_user,
+        owner=owner_user,
+        status=Booking.Status.PAID,
+    )
+    booking.deposit_hold_id = "pi_deposit_hold"
+    booking.charge_payment_intent_id = "pi_charge"
+    booking.totals = {
+        "rental_subtotal": "100.00",
+        "renter_fee_total": "10.00",
+        "damage_deposit": "50.00",
+        "total_charge": "160.00",
+    }
+    booking.save(
+        update_fields=[
+            "deposit_hold_id",
+            "charge_payment_intent_id",
+            "totals",
+            "updated_at",
+        ]
+    )
+
+    dispute = DisputeCase.objects.create(
+        booking=booking,
+        opened_by=renter_user,
+        opened_by_role=DisputeCase.OpenedByRole.RENTER,
+        category=DisputeCase.Category.PICKUP_NO_SHOW,
+        damage_flow_kind=DisputeCase.DamageFlowKind.GENERIC,
+        description="owner didn't show",
+        status=DisputeCase.Status.AWAITING_REBUTTAL,
+        rebuttal_due_at=timezone.now() - timedelta(minutes=10),
+        filed_at=timezone.now() - timedelta(hours=1),
+    )
+    DisputeEvidence.objects.create(
+        dispute=dispute,
+        uploaded_by=renter_user,
+        kind=DisputeEvidence.Kind.PHOTO,
+        s3_key="proof",
+        av_status=DisputeEvidence.AVStatus.CLEAN,
+    )
+
+    called = {"refund": None, "release": 0}
+
+    def fake_refund(booking_arg, amount_cents):
+        called["refund"] = amount_cents
+        return "re_test"
+
+    def fake_release(booking_arg):
+        called["release"] += 1
+        return True
+
+    monkeypatch.setattr("disputes.tasks.settlement.refund_booking_charge", fake_refund)
+    monkeypatch.setattr("disputes.tasks.settlement.release_deposit_hold_if_needed", fake_release)
+
+    updated = auto_flag_unanswered_rebuttals()
+    assert updated == 1
+
+    dispute.refresh_from_db()
+    booking.refresh_from_db()
+    assert dispute.status == DisputeCase.Status.RESOLVED_RENTER
+    assert dispute.refund_amount_cents == 11000
+    assert dispute.resolved_at is not None
+    assert dispute.auto_rebuttal_timeout is True
+    assert "Auto-resolved" in (dispute.decision_notes or "")
+    assert booking.status == Booking.Status.CANCELED
+    assert booking.canceled_by == Booking.CanceledBy.NO_SHOW
+    assert booking.canceled_reason == "owner_no_show"
+    assert booking.auto_canceled is True
+    assert called["refund"] == 11000
+    assert called["release"] == 1
+
+
 def test_post_message_endpoint_sets_role_and_author(
     api_client, booking_factory, renter_user, owner_user
 ):

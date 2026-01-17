@@ -77,6 +77,13 @@ const UPLOAD_RULE_ROWS: SettingRow[] = [
     formatValue: formatBytes,
   },
   {
+    key: "VIDEO_MAX_UPLOAD_BYTES",
+    label: "Video max upload size",
+    valueType: "int",
+    valueLabel: "Bytes",
+    formatValue: formatBytes,
+  },
+  {
     key: "IMAGE_MAX_DIMENSION",
     label: "Image max dimension",
     valueType: "int",
@@ -88,8 +95,16 @@ const UPLOAD_RULE_ROWS: SettingRow[] = [
     label: "Dispute video scan sample size",
     valueType: "int",
     valueLabel: "Bytes",
-    valueHelpText: "Only the first bytes of dispute videos are downloaded for AV scanning.",
+    valueHelpText: "Fallback byte sample size when frame extraction is unavailable.",
     formatValue: formatBytes,
+  },
+  {
+    key: "DISPUTE_VIDEO_SCAN_SAMPLE_FRAMES",
+    label: "Dispute video scan frame count",
+    valueType: "int",
+    valueLabel: "Frames",
+    valueHelpText: "How many initial frames are extracted for AV scanning.",
+    formatValue: (v) => formatIntWithUnit(v, "frame"),
   },
 ];
 

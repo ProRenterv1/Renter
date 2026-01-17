@@ -291,6 +291,11 @@ class OperatorSettingsCurrentView(APIView):
                 int(getattr(settings, "IMAGE_MAX_UPLOAD_BYTES", 0) or 0),
             ),
             (
+                "VIDEO_MAX_UPLOAD_BYTES",
+                DbSetting.ValueType.INT,
+                int(getattr(settings, "VIDEO_MAX_UPLOAD_BYTES", 0) or 0),
+            ),
+            (
                 "IMAGE_MAX_DIMENSION",
                 DbSetting.ValueType.INT,
                 int(getattr(settings, "IMAGE_MAX_DIMENSION", 0) or 0),
@@ -311,12 +316,18 @@ class OperatorSettingsCurrentView(APIView):
             ("ORG_GST_RATE", DbSetting.ValueType.DECIMAL, "0.05"),
             ("DISPUTE_FILING_WINDOW_HOURS", DbSetting.ValueType.INT, 24),
             ("DISPUTE_REBUTTAL_WINDOW_HOURS", DbSetting.ValueType.INT, 24),
+            ("DISPUTE_NO_SHOW_REBUTTAL_HOURS", DbSetting.ValueType.INT, 2),
             ("DISPUTE_APPEAL_WINDOW_DAYS", DbSetting.ValueType.INT, 5),
             ("DISPUTE_ALLOW_LATE_SAFETY_FRAUD", DbSetting.ValueType.BOOL, True),
             (
                 "DISPUTE_VIDEO_SCAN_SAMPLE_BYTES",
                 DbSetting.ValueType.INT,
                 int(getattr(settings, "DISPUTE_VIDEO_SCAN_SAMPLE_BYTES", 0) or 0),
+            ),
+            (
+                "DISPUTE_VIDEO_SCAN_SAMPLE_FRAMES",
+                DbSetting.ValueType.INT,
+                int(getattr(settings, "DISPUTE_VIDEO_SCAN_SAMPLE_FRAMES", 0) or 0),
             ),
         ]
 

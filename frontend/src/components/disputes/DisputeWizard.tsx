@@ -6,9 +6,12 @@ import {
   type DisputeCategory,
   type DisputeDamageFlowKind,
   type DisputeEvidenceCompletePayload,
-  type PhotoPresignRequest,
+  type DisputeEvidencePresignPayload,
+  type DisputeEvidenceValidatePayload,
+  type PhotoPresignResponse,
 } from "@/lib/api";
 import { compressImageFile } from "@/lib/imageCompression";
+import { MAX_VIDEO_BYTES, MAX_VIDEO_MB_LABEL } from "@/lib/uploadLimits";
 import {
   Dialog,
   DialogContent,
@@ -23,6 +26,7 @@ import { Label } from "../ui/label";
 import { Textarea } from "../ui/textarea";
 
 type WizardRole = "renter" | "owner";
+type WizardContext = "pre_pickup" | "post_pickup";
 
 interface IssueOption {
   key: string;
@@ -47,22 +51,58 @@ export interface DisputeWizardProps {
   onOpenChange: (open: boolean) => void;
   bookingId: number | null;
   role: WizardRole;
+  issueContext?: WizardContext;
   toolName?: string;
   rentalPeriodLabel?: string;
   onCreated?: (disputeId: number) => void;
 }
 
+const IMAGE_EXTENSIONS = new Set(["bmp", "gif", "heic", "heif", "jpg", "jpeg", "png", "webp"]);
+const VIDEO_EXTENSIONS = new Set(["avi", "m4v", "mov", "mp4", "mpeg", "mpg", "webm"]);
+
 const detectKind = (file: File): DisputeEvidenceCompletePayload["kind"] => {
-  if (file.type?.startsWith("video/")) {
+  const type = (file.type || "").toLowerCase();
+  if (type.startsWith("video/")) {
     return "video";
   }
-  if (file.type?.startsWith("image/")) {
+  if (type.startsWith("image/")) {
     return "photo";
+  }
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  if (IMAGE_EXTENSIONS.has(extension)) {
+    return "photo";
+  }
+  if (VIDEO_EXTENSIONS.has(extension)) {
+    return "video";
   }
   return "other";
 };
 
-const buildIssueOptions = (role: WizardRole): IssueOption[] => {
+const buildIssueOptions = (
+  role: WizardRole,
+  context: WizardContext = "post_pickup",
+): IssueOption[] => {
+  if (context === "pre_pickup") {
+    if (role === "renter") {
+      return [
+        {
+          key: "owner_no_show",
+          title: "Owner didn't show up (pickup no-show)",
+          description: "Report that the owner didn't arrive for pickup.",
+          category: "pickup_no_show",
+        },
+      ];
+    }
+    return [
+      {
+        key: "renter_no_show",
+        title: "Renter didn't show up (pickup no-show)",
+        description: "Report that the renter didn't arrive for pickup.",
+        category: "pickup_no_show",
+      },
+    ];
+  }
+
   if (role === "renter") {
     return [
       {
@@ -107,12 +147,88 @@ const buildIssueOptions = (role: WizardRole): IssueOption[] => {
 };
 
 const minDescriptionLength = 10;
+const maxEvidenceFiles = 15;
+
+const getFirstString = (value: unknown): string | null => {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === "string") {
+        return item;
+      }
+    }
+  }
+  return null;
+};
+
+const formatEvidenceErrors = (errors: unknown): string | null => {
+  if (!Array.isArray(errors) || errors.length === 0) {
+    return null;
+  }
+  const parts = errors
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return null;
+      }
+      const detail = getFirstString((entry as Record<string, unknown>).detail);
+      if (!detail) {
+        return null;
+      }
+      const filename = getFirstString((entry as Record<string, unknown>).filename);
+      return filename ? `${filename}: ${detail}` : detail;
+    })
+    .filter((entry): entry is string => Boolean(entry));
+  return parts.length ? parts.join("; ") : null;
+};
+
+const extractApiErrorMessage = (error: unknown): string | null => {
+  if (typeof error === "string") {
+    return error;
+  }
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+  if ("data" in error) {
+    const data = (error as { data?: unknown }).data;
+    if (typeof data === "string") {
+      return data;
+    }
+    if (data && typeof data === "object") {
+      const record = data as Record<string, unknown>;
+      const evidenceErrors = formatEvidenceErrors(record.errors);
+      if (evidenceErrors) {
+        return evidenceErrors;
+      }
+      const detail = getFirstString(record.detail);
+      if (detail) {
+        return detail;
+      }
+      const nonField = getFirstString(record.non_field_errors);
+      if (nonField) {
+        return nonField;
+      }
+      for (const value of Object.values(record)) {
+        const fieldMessage = getFirstString(value);
+        if (fieldMessage) {
+          return fieldMessage;
+        }
+      }
+    }
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return null;
+};
 
 export function DisputeWizard({
   open,
   onOpenChange,
   bookingId,
   role,
+  issueContext,
   toolName,
   rentalPeriodLabel,
   onCreated,
@@ -124,7 +240,10 @@ export function DisputeWizard({
   const [submitting, setSubmitting] = useState(false);
   const [compressing, setCompressing] = useState(false);
 
-  const options = useMemo(() => buildIssueOptions(role), [role]);
+  const options = useMemo(
+    () => buildIssueOptions(role, issueContext),
+    [role, issueContext],
+  );
 
   useEffect(() => {
     if (!open) {
@@ -140,6 +259,7 @@ export function DisputeWizard({
 
   const photoCount = files.filter((item) => item.kind === "photo").length;
   const videoCount = files.filter((item) => item.kind === "video").length;
+  const isPickupNoShow = selectedIssue?.category === "pickup_no_show";
 
   const meetsEvidenceRequirement = useMemo(() => {
     if (!selectedIssue) {
@@ -152,11 +272,33 @@ export function DisputeWizard({
   }, [selectedIssue, files.length, photoCount, videoCount]);
 
   const handleFilesAdded = async (fileList: FileList | File[]) => {
+    const remainingSlots = maxEvidenceFiles - files.length;
+    if (remainingSlots <= 0) {
+      toast.error(`You can upload up to ${maxEvidenceFiles} files.`);
+      return;
+    }
     setCompressing(true);
     try {
       const additions: EvidenceFile[] = [];
+      let limitReached = false;
       for (const file of Array.from(fileList)) {
+        if (additions.length >= remainingSlots) {
+          limitReached = true;
+          break;
+        }
         const kind = detectKind(file);
+        if (kind === "other") {
+          toast.error(
+            `${file.name || "File"} is not a supported file type. Please upload images or videos.`,
+          );
+          continue;
+        }
+        if (kind === "video" && file.size > MAX_VIDEO_BYTES) {
+          toast.error(
+            `${file.name || "Video"} is too large. Max size is ${MAX_VIDEO_MB_LABEL} MB.`,
+          );
+          continue;
+        }
         if (kind === "photo") {
           const compressed = await compressImageFile(file);
           additions.push({
@@ -176,7 +318,12 @@ export function DisputeWizard({
           });
         }
       }
-      setFiles((prev) => [...prev, ...additions]);
+      if (limitReached) {
+        toast.error(`You can upload up to ${maxEvidenceFiles} files.`);
+      }
+      if (additions.length) {
+        setFiles((prev) => [...prev, ...additions]);
+      }
     } catch (err) {
       console.error("evidence compression failed", err);
       toast.error("Could not process one of the files. Please try again.");
@@ -217,6 +364,41 @@ export function DisputeWizard({
 
     setSubmitting(true);
     try {
+      const validationPayload: DisputeEvidenceValidatePayload = {
+        booking: bookingId,
+        files: files.map((item) => ({
+          filename: item.file.name,
+          content_type: item.file.type || "application/octet-stream",
+          size: item.file.size,
+          width: item.width,
+          height: item.height,
+        })),
+      };
+      await disputesAPI.evidenceValidate(validationPayload);
+
+      const presignedUploads: Array<{ item: EvidenceFile; presign: PhotoPresignResponse }> = [];
+      for (const item of files) {
+        const fileName = item.file.name || "file";
+        try {
+          const presignPayload: DisputeEvidencePresignPayload = {
+            booking: bookingId,
+            filename: item.file.name,
+            content_type: item.file.type || "application/octet-stream",
+            size: item.file.size,
+          };
+          const presign = await disputesAPI.evidencePresignForBooking(presignPayload);
+          presignedUploads.push({ item, presign });
+        } catch (err) {
+          const detail = extractApiErrorMessage(err);
+          const message = detail
+            ? detail.startsWith(`${fileName}:`)
+              ? detail
+              : `${fileName}: ${detail}`
+            : `${fileName}: Upload failed. Please try again.`;
+          throw new Error(message);
+        }
+      }
+
       const dispute = await disputesAPI.create({
         booking: bookingId,
         category: selectedIssue.category,
@@ -224,42 +406,47 @@ export function DisputeWizard({
         description: description.trim(),
       });
 
-      for (const item of files) {
-        const presignPayload: PhotoPresignRequest = {
-          filename: item.file.name,
-          content_type: item.file.type || "application/octet-stream",
-          size: item.file.size,
-        };
-        const presign = await disputesAPI.evidencePresign(dispute.id, presignPayload);
-        const uploadHeaders: Record<string, string> = { ...presign.headers };
-        if (item.file.type) {
-          uploadHeaders["Content-Type"] = item.file.type;
-        }
-        const uploadResponse = await fetch(presign.upload_url, {
-          method: "PUT",
-          headers: uploadHeaders,
-          body: item.file,
-        });
-        if (!uploadResponse.ok) {
-          throw new Error("Upload failed. Please try again.");
-        }
-        const etagHeader =
-          uploadResponse.headers.get("ETag") ?? uploadResponse.headers.get("etag") ?? "";
-        const cleanEtag = etagHeader.replace(/"/g, "");
+      for (const { item, presign } of presignedUploads) {
+        const fileName = item.file.name || "file";
+        try {
+          const uploadHeaders: Record<string, string> = { ...presign.headers };
+          if (item.file.type) {
+            uploadHeaders["Content-Type"] = item.file.type;
+          }
+          const uploadResponse = await fetch(presign.upload_url, {
+            method: "PUT",
+            headers: uploadHeaders,
+            body: item.file,
+          });
+          if (!uploadResponse.ok) {
+            throw new Error("Upload failed. Please try again.");
+          }
+          const etagHeader =
+            uploadResponse.headers.get("ETag") ?? uploadResponse.headers.get("etag") ?? "";
+          const cleanEtag = etagHeader.replace(/"/g, "");
 
-        const completePayload: DisputeEvidenceCompletePayload = {
-          key: presign.key,
-          filename: item.file.name,
-          content_type: item.file.type || "application/octet-stream",
-          size: item.file.size,
-          etag: cleanEtag,
-          kind: item.kind,
-          width: item.width,
-          height: item.height,
-          original_size: item.originalSize,
-          compressed_size: item.compressedSize,
-        };
-        await disputesAPI.evidenceComplete(dispute.id, completePayload);
+          const completePayload: DisputeEvidenceCompletePayload = {
+            key: presign.key,
+            filename: item.file.name,
+            content_type: item.file.type || "application/octet-stream",
+            size: item.file.size,
+            etag: cleanEtag,
+            kind: item.kind,
+            width: item.width,
+            height: item.height,
+            original_size: item.originalSize,
+            compressed_size: item.compressedSize,
+          };
+          await disputesAPI.evidenceComplete(dispute.id, completePayload);
+        } catch (err) {
+          const detail = extractApiErrorMessage(err);
+          const message = detail
+            ? detail.startsWith(`${fileName}:`)
+              ? detail
+              : `${fileName}: ${detail}`
+            : `${fileName}: Upload failed. Please try again.`;
+          throw new Error(message);
+        }
       }
 
       toast.success("Issue reported. Our team will review the dispute.");
@@ -271,11 +458,7 @@ export function DisputeWizard({
       onOpenChange(false);
     } catch (err) {
       const message =
-        err && typeof err === "object" && "status" in (err as any)
-          ? "Could not file dispute. Please try again."
-          : err instanceof Error
-          ? err.message
-          : "Could not file dispute. Please try again.";
+        extractApiErrorMessage(err) || "Could not file dispute. Please try again.";
       toast.error(message);
       setSubmitting(false);
     }
@@ -294,7 +477,7 @@ export function DisputeWizard({
         }
       }}
     >
-      <DialogContent className="max-w-3xl space-y-4">
+      <DialogContent className="max-h-[calc(100vh-2rem)] max-w-3xl space-y-4 overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Report an issue</DialogTitle>
           <DialogDescription>
@@ -358,10 +541,17 @@ export function DisputeWizard({
                   : "Looks good."}
               </p>
             </div>
-            <div className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
-              <AlertTriangle className="h-4 w-4" />
-              Stop using the tool until the issue is resolved for safety reasons.
-            </div>
+            {isPickupNoShow ? (
+              <div className="flex items-center gap-2 rounded-md border border-muted bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                <AlertTriangle className="h-4 w-4" />
+                We'll notify the other party and request a response within 2 hours.
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+                <AlertTriangle className="h-4 w-4" />
+                Stop using the tool until the issue is resolved for safety reasons.
+              </div>
+            )}
           </div>
         )}
 
@@ -372,7 +562,9 @@ export function DisputeWizard({
                 <div>
                   <p className="font-medium">Upload evidence</p>
                   <p className="text-sm text-muted-foreground">
-                    Photos or video of the issue. Drag-and-drop or select files.
+                    {isPickupNoShow
+                      ? "Upload a screenshot of messages, arrival photo, or location proof."
+                      : "Photos or video of the issue. Drag-and-drop or select files."}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -386,7 +578,7 @@ export function DisputeWizard({
                         className="hidden"
                         multiple
                         accept="image/*,video/*"
-                        disabled={compressing}
+                        disabled={compressing || files.length >= maxEvidenceFiles}
                         onChange={(event) => {
                           if (event.target.files) {
                               void handleFilesAdded(event.target.files);
@@ -444,20 +636,26 @@ export function DisputeWizard({
               </div>
               {files.length === 0 && (
                 <p className="mt-3 text-sm text-muted-foreground">
-                  No files added yet. {selectedIssue?.damage_flow_kind === "broke_during_use"
+                  No files added yet.{" "}
+                  {isPickupNoShow
+                    ? "Add a screenshot or photo to show you were there."
+                    : selectedIssue?.damage_flow_kind === "broke_during_use"
                     ? "Add at least two photos or one video."
                     : "Add at least one photo or video."}
                 </p>
               )}
               <p className="text-xs text-muted-foreground">
-                Images are compressed to reduce upload size; videos are uploaded as-is.
+                Images are compressed to reduce upload size; videos are compressed after upload. Up to{" "}
+                {maxEvidenceFiles} files total, {MAX_VIDEO_MB_LABEL} MB max per video.
               </p>
               {compressing && (
                 <p className="text-sm text-muted-foreground">Compressing images...</p>
               )}
             </div>
             <div className="text-sm text-muted-foreground">
-              {selectedIssue?.damage_flow_kind === "broke_during_use" ? (
+              {isPickupNoShow ? (
+                <span>The other party has 2 hours to respond once you submit.</span>
+              ) : selectedIssue?.damage_flow_kind === "broke_during_use" ? (
                 <span>Need 2+ photos or 1 video showing what happened.</span>
               ) : (
                 <span>Attach at least one file to submit.</span>

@@ -70,6 +70,51 @@ def test_completed_booking_safety_allows_after_window(api_client, booking_factor
     }
 
 
+def test_pickup_no_show_sets_rebuttal_due_at(
+    api_client,
+    booking_factory,
+    renter_user,
+    owner_user,
+    monkeypatch,
+):
+    today = timezone.localdate()
+    booking = booking_factory(
+        renter=renter_user,
+        owner=owner_user,
+        start_date=today,
+        end_date=today + timedelta(days=1),
+        status=Booking.Status.PAID,
+        pickup_confirmed_at=None,
+    )
+    api_client.force_authenticate(renter_user)
+
+    calls: list[int] = []
+
+    def fake_update(dispute_id: int):
+        calls.append(dispute_id)
+        return None
+
+    monkeypatch.setattr("disputes.api.update_dispute_intake_status", fake_update)
+
+    resp = api_client.post(
+        "/api/disputes/",
+        {
+            "booking": booking.id,
+            "category": DisputeCase.Category.PICKUP_NO_SHOW,
+            "description": "Owner didn't show up for pickup.",
+        },
+        format="json",
+    )
+
+    assert resp.status_code == 201
+    dispute = DisputeCase.objects.get(id=resp.json()["id"])
+    assert dispute.status == DisputeCase.Status.AWAITING_REBUTTAL
+    assert dispute.rebuttal_due_at is not None
+    delta = dispute.rebuttal_due_at - dispute.filed_at
+    assert timedelta(hours=1, minutes=59) < delta < timedelta(hours=2, minutes=1)
+    assert calls == []
+
+
 def test_renter_broke_during_use_forces_damage_and_locks_deposit(
     api_client, booking_factory, renter_user
 ):
@@ -240,3 +285,139 @@ def test_evidence_complete_skips_intake_update_when_not_missing(
 
     assert resp.status_code == 202
     assert calls["intake"] == []
+
+
+def test_closed_dispute_blocks_messages(api_client, booking_factory, renter_user):
+    today = timezone.localdate()
+    booking = booking_factory(
+        renter=renter_user,
+        start_date=today,
+        end_date=today + timedelta(days=1),
+        status=Booking.Status.PAID,
+    )
+    dispute = DisputeCase.objects.create(
+        booking=booking,
+        opened_by=renter_user,
+        opened_by_role=DisputeCase.OpenedByRole.RENTER,
+        category=DisputeCase.Category.DAMAGE,
+        damage_flow_kind=DisputeCase.DamageFlowKind.GENERIC,
+        description="Resolved dispute",
+        status=DisputeCase.Status.RESOLVED_OWNER,
+        filed_at=timezone.now(),
+    )
+    api_client.force_authenticate(renter_user)
+
+    resp = api_client.post(
+        f"/api/disputes/{dispute.id}/messages/",
+        {"text": "Trying to message"},
+        format="json",
+    )
+
+    assert resp.status_code == 400
+    assert "closed" in (resp.json().get("detail") or "").lower()
+
+
+def test_closed_dispute_blocks_evidence_upload(api_client, booking_factory, renter_user):
+    today = timezone.localdate()
+    booking = booking_factory(
+        renter=renter_user,
+        start_date=today,
+        end_date=today + timedelta(days=1),
+        status=Booking.Status.PAID,
+    )
+    dispute = DisputeCase.objects.create(
+        booking=booking,
+        opened_by=renter_user,
+        opened_by_role=DisputeCase.OpenedByRole.RENTER,
+        category=DisputeCase.Category.DAMAGE,
+        damage_flow_kind=DisputeCase.DamageFlowKind.GENERIC,
+        description="Closed dispute",
+        status=DisputeCase.Status.CLOSED_AUTO,
+        filed_at=timezone.now(),
+    )
+    api_client.force_authenticate(renter_user)
+
+    presign_resp = api_client.post(
+        f"/api/disputes/{dispute.id}/evidence/presign/",
+        {"filename": "clip.mp4", "content_type": "video/mp4", "size": 1234},
+        format="json",
+    )
+    assert presign_resp.status_code == 400
+    assert "closed" in (presign_resp.json().get("detail") or "").lower()
+
+    complete_resp = api_client.post(
+        f"/api/disputes/{dispute.id}/evidence/complete/",
+        {
+            "key": "evidence/key",
+            "etag": '"etag123"',
+            "size": 123,
+            "filename": "proof.jpg",
+            "content_type": "image/jpeg",
+            "kind": DisputeEvidence.Kind.PHOTO,
+        },
+        format="json",
+    )
+    assert complete_resp.status_code == 400
+    assert "closed" in (complete_resp.json().get("detail") or "").lower()
+
+
+def test_opener_can_close_dispute(api_client, booking_factory, renter_user, owner_user):
+    today = timezone.localdate()
+    booking = booking_factory(
+        renter=renter_user,
+        owner=owner_user,
+        start_date=today,
+        end_date=today + timedelta(days=1),
+        status=Booking.Status.PAID,
+        is_disputed=True,
+        deposit_locked=True,
+    )
+    dispute = DisputeCase.objects.create(
+        booking=booking,
+        opened_by=renter_user,
+        opened_by_role=DisputeCase.OpenedByRole.RENTER,
+        category=DisputeCase.Category.DAMAGE,
+        damage_flow_kind=DisputeCase.DamageFlowKind.GENERIC,
+        description="Close this dispute",
+        status=DisputeCase.Status.OPEN,
+        filed_at=timezone.now(),
+    )
+    api_client.force_authenticate(renter_user)
+
+    resp = api_client.post(f"/api/disputes/{dispute.id}/close/", format="json")
+
+    assert resp.status_code == 200
+    dispute.refresh_from_db()
+    booking.refresh_from_db()
+    assert dispute.status == DisputeCase.Status.CLOSED_AUTO
+    assert dispute.resolved_at is not None
+    assert booking.is_disputed is False
+    assert booking.deposit_locked is False
+
+
+def test_non_opener_cannot_close_dispute(api_client, booking_factory, renter_user, owner_user):
+    today = timezone.localdate()
+    booking = booking_factory(
+        renter=renter_user,
+        owner=owner_user,
+        start_date=today,
+        end_date=today + timedelta(days=1),
+        status=Booking.Status.PAID,
+    )
+    dispute = DisputeCase.objects.create(
+        booking=booking,
+        opened_by=renter_user,
+        opened_by_role=DisputeCase.OpenedByRole.RENTER,
+        category=DisputeCase.Category.DAMAGE,
+        damage_flow_kind=DisputeCase.DamageFlowKind.GENERIC,
+        description="Not yours",
+        status=DisputeCase.Status.OPEN,
+        filed_at=timezone.now(),
+    )
+    api_client.force_authenticate(owner_user)
+
+    resp = api_client.post(f"/api/disputes/{dispute.id}/close/", format="json")
+
+    assert resp.status_code == 403
+    dispute.refresh_from_db()
+    assert dispute.status == DisputeCase.Status.OPEN

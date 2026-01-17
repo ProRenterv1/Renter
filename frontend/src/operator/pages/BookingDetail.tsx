@@ -594,6 +594,7 @@ function timelineColor(type: string) {
 
 function timelineDescription(event: OperatorBookingEvent) {
   const payload = event.payload || {};
+  const notificationLabel = notificationContextLabel(payload);
   if (event.type === "status_change" && "from" in payload && "to" in payload) {
     return `Status ${payload.from} → ${payload.to}`;
   }
@@ -621,23 +622,39 @@ function timelineDescription(event: OperatorBookingEvent) {
   if (event.type === "deposit_released") {
     return "Deposit released";
   }
-  if (event.type === "email_sent" && "template" in payload) {
-    return `Email sent: ${payload.template}`;
+  if (event.type === "email_sent") {
+    return notificationLabel ? `Email sent: ${notificationLabel}` : "Email sent";
   }
   if (event.type === "email_failed") {
-    return "Email failed";
+    return notificationLabel ? `Email failed: ${notificationLabel}` : "Email failed";
   }
   if (event.type === "sms_sent") {
-    return "SMS sent";
+    return notificationLabel ? `SMS sent: ${notificationLabel}` : "SMS sent";
   }
   if (event.type === "sms_failed") {
-    return "SMS failed";
+    return notificationLabel ? `SMS failed: ${notificationLabel}` : "SMS failed";
   }
   if (event.type === "dispute_opened") {
     const category = (payload as any).category || "dispute";
     return `Dispute opened (${category})`;
   }
   return event.type;
+}
+
+function notificationContextLabel(payload: Record<string, unknown> | null) {
+  if (!payload) return "";
+  const notificationType = (payload as { notification_type?: unknown }).notification_type;
+  if (typeof notificationType === "string" && notificationType.trim()) {
+    return friendlyNotificationLabel(notificationType.trim());
+  }
+  const template = (payload as { template?: unknown }).template;
+  if (typeof template === "string" && template.trim()) {
+    const raw = template.trim();
+    const base = raw.split("/").pop() || raw;
+    const withoutExt = base.replace(/\.[^.]+$/, "");
+    return withoutExt.replace(/[_-]+/g, " ").replace(/\b\w/g, (match) => match.toUpperCase());
+  }
+  return "";
 }
 
 function notificationFailureReason(event: OperatorBookingEvent) {
@@ -1130,14 +1147,30 @@ function friendlyNotificationLabel(key: string) {
   switch (key) {
     case "booking_request":
       return "Booking Request";
+    case "booking_status_update":
+      return "Status Update";
     case "status_update":
       return "Status Update";
+    case "booking_expired":
+      return "Booking Expired";
     case "receipt":
       return "Payment Receipt";
+    case "owner_earnings_statement":
+      return "Owner Earnings Statement";
     case "completed":
-      return "Completed";
+      return "Booking Completed";
     case "dispute_missing_evidence":
       return "Dispute Evidence Reminder";
+    case "dispute_rebuttal_started":
+      return "Dispute Rebuttal Started";
+    case "dispute_rebuttal_ended":
+      return "Dispute Rebuttal Ended";
+    case "dispute_rebuttal_reminder":
+      return "Dispute Rebuttal Reminder";
+    case "deposit_failed_renter":
+      return "Deposit Failed (Renter)";
+    case "deposit_failed_owner":
+      return "Deposit Failed (Owner)";
     default:
       return key;
   }

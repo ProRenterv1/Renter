@@ -746,6 +746,7 @@ export type DisputeCategory =
   | "not_as_described"
   | "late_return"
   | "incorrect_charges"
+  | "pickup_no_show"
   | "safety_or_fraud";
 
 export type DisputeDamageFlowKind = "generic" | "broke_during_use";
@@ -836,6 +837,27 @@ export interface DisputeEvidenceCompletePayload {
   height?: number;
   original_size?: number;
   compressed_size?: number;
+}
+
+export interface DisputeEvidenceValidationFile {
+  filename: string;
+  content_type: string;
+  size: number;
+  width?: number;
+  height?: number;
+}
+
+export interface DisputeEvidenceValidatePayload {
+  booking: number;
+  files: DisputeEvidenceValidationFile[];
+}
+
+export interface DisputeEvidenceValidateResponse {
+  status: string;
+}
+
+export interface DisputeEvidencePresignPayload extends PhotoPresignRequest {
+  booking: number;
 }
 
 export type DisputeEvidenceCompleteResponse = {
@@ -1308,6 +1330,11 @@ export const disputesAPI = {
       body: payload,
     });
   },
+  close(disputeId: number) {
+    return jsonFetch<DisputeCase>(`/disputes/${disputeId}/close/`, {
+      method: "POST",
+    });
+  },
   createMessage(disputeId: number, text: string) {
     return jsonFetch<DisputeMessage>(`/disputes/${disputeId}/messages/`, {
       method: "POST",
@@ -1316,6 +1343,18 @@ export const disputesAPI = {
   },
   evidencePresign(disputeId: number, payload: PhotoPresignRequest) {
     return jsonFetch<PhotoPresignResponse>(`/disputes/${disputeId}/evidence/presign/`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+  evidencePresignForBooking(payload: DisputeEvidencePresignPayload) {
+    return jsonFetch<PhotoPresignResponse>("/disputes/evidence/presign/", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  evidenceValidate(payload: DisputeEvidenceValidatePayload) {
+    return jsonFetch<DisputeEvidenceValidateResponse>("/disputes/evidence/validate/", {
       method: "POST",
       body: payload,
     });

@@ -24,6 +24,7 @@ class DisputeCase(models.Model):
         NOT_AS_DESCRIBED = "not_as_described", "not_as_described"
         LATE_RETURN = "late_return", "late_return"
         INCORRECT_CHARGES = "incorrect_charges", "incorrect_charges"
+        PICKUP_NO_SHOW = "pickup_no_show", "pickup_no_show"
         SAFETY_OR_FRAUD = "safety_or_fraud", "safety_or_fraud"
 
     class Status(models.TextChoices):
