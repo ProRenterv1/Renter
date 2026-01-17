@@ -348,6 +348,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
     bookingId: number;
     toolName: string;
     rentalPeriod: string;
+    issueContext: "pre_pickup" | "post_pickup";
   } | null>(null);
   const [disputesByBookingId, setDisputesByBookingId] = useState<Record<number, DisputeCase | null>>({});
   const currentUser = AuthStore.getCurrentUser();
@@ -1671,9 +1672,13 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                     Boolean(row.beforePhotosUploadedAt) &&
                     !row.pickupConfirmedAt;
                   const isInProgress = row.statusLabel === "In progress";
+                  const isAwaitingPickup = row.statusRaw === "paid" && !row.pickupConfirmedAt;
                   const canReturnRental = canRequestReturn(row);
                   const isRowActionLoading = actionLoadingId === row.bookingId;
                   const hasReturnRequest = Boolean(row.returnedByRenterAt);
+                  const canReportIssue =
+                    (isInProgress || isAwaitingPickup) &&
+                    !disputesByBookingId[row.bookingId];
 
                   return (
                     <TableRow
@@ -1793,7 +1798,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                                 {isRowActionLoading ? "Requesting..." : "Return rental"}
                               </Button>
                             )}
-                            {isInProgress && !disputesByBookingId[row.bookingId] && (
+                            {canReportIssue && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -1803,6 +1808,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
                                     bookingId: row.bookingId,
                                     toolName: row.toolName,
                                     rentalPeriod: row.rentalPeriod,
+                                    issueContext: isAwaitingPickup ? "pre_pickup" : "post_pickup",
                                   });
                                   setDisputeWizardOpen(true);
                                 }}
@@ -1859,6 +1865,7 @@ export function YourRentals({ onUnpaidRentalsChange }: YourRentalsProps = {}) {
         }}
         bookingId={disputeContext?.bookingId ?? null}
         role="renter"
+        issueContext={disputeContext?.issueContext}
         toolName={disputeContext?.toolName}
         rentalPeriodLabel={disputeContext?.rentalPeriod}
       />

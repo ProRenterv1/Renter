@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       gcc \
       curl \
       ca-certificates \
+      ffmpeg \
       libffi-dev \
       libssl-dev \
       libjpeg62-turbo-dev \

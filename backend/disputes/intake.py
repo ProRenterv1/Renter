@@ -66,17 +66,19 @@ def update_dispute_intake_status(dispute_id: int) -> Optional[DisputeCase]:
                 logger.warning("dispute intake: booking missing for dispute %s", dispute_id)
                 return dispute
 
-            if dispute.category == DisputeCase.Category.SAFETY_OR_FRAUD:
+            if dispute.category in {
+                DisputeCase.Category.SAFETY_OR_FRAUD,
+                DisputeCase.Category.PICKUP_NO_SHOW,
+            }:
                 return dispute
 
             before_clean, after_clean = _count_clean_booking_photos(booking_id=booking.id)
             photo_count, video_count, total_clean = _count_clean_evidence(dispute_id=dispute.id)
 
-            damage_like_categories = {
+            booking_photo_required_categories = {
                 DisputeCase.Category.DAMAGE,
                 DisputeCase.Category.MISSING_ITEM,
                 DisputeCase.Category.NOT_AS_DESCRIBED,
-                DisputeCase.Category.INCORRECT_CHARGES,
             }
 
             has_booking_photos = (before_clean + after_clean) > 0
@@ -86,7 +88,7 @@ def update_dispute_intake_status(dispute_id: int) -> Optional[DisputeCase]:
             else:
                 minimum_met = total_clean >= 1
 
-            if dispute.category in damage_like_categories and not has_booking_photos:
+            if dispute.category in booking_photo_required_categories and not has_booking_photos:
                 minimum_met = False
 
             new_status: Optional[str]

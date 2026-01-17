@@ -21,10 +21,12 @@ import {
   type OperatorListingListItem,
   type OperatorListingListParams,
 } from "../api";
+import { useIsOperatorAdmin } from "../session";
 import { toast } from "sonner";
 
 export function ListingsList() {
   const navigate = useNavigate();
+  const isAdmin = useIsOperatorAdmin();
   const [searchTitle, setSearchTitle] = useState("");
   const [searchOwner, setSearchOwner] = useState("");
   const [cityFilter, setCityFilter] = useState("all");
@@ -41,9 +43,13 @@ export function ListingsList() {
       setLoading(true);
       setError(null);
       const params: OperatorListingListParams = {};
+      if (isAdmin) params.include_deleted = true;
       if (cityFilter !== "all") params.city = cityFilter;
       if (categoryFilter !== "all") params.category = categoryFilter;
-      if (activeOnly) params.is_active = true;
+      if (activeOnly) {
+        params.is_active = true;
+        params.include_deleted = false;
+      }
       if (needsReviewOnly) params.needs_review = true;
 
       try {
@@ -63,7 +69,7 @@ export function ListingsList() {
     return () => {
       cancelled = true;
     };
-  }, [cityFilter, categoryFilter, activeOnly, needsReviewOnly]);
+  }, [cityFilter, categoryFilter, activeOnly, needsReviewOnly, isAdmin]);
 
   const cities = useMemo(() => {
     const uniqueCities = Array.from(new Set(listings.map((l) => l.city || ""))).filter(Boolean);
@@ -279,8 +285,20 @@ export function ListingsList() {
                       <td className="p-4">{listing.category?.name || listing.category?.slug || "—"}</td>
                       <td className="p-4">${listing.daily_price_cad}</td>
                       <td className="p-4">
-                        <Badge variant={listing.is_active ? "default" : "secondary"}>
-                          {listing.is_active ? "Active" : "Inactive"}
+                        <Badge
+                          variant={
+                            listing.is_deleted
+                              ? "destructive"
+                              : listing.is_active
+                                ? "default"
+                                : "secondary"
+                          }
+                        >
+                          {listing.is_deleted
+                            ? "Deleted"
+                            : listing.is_active
+                              ? "Active"
+                              : "Inactive"}
                         </Badge>
                       </td>
                       <td className="p-4">

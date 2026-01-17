@@ -178,9 +178,13 @@ export function ListingDetail() {
                 <div className="flex-1">
                   <div className="flex items-center gap-3 mb-2">
                     <h1 className="m-0">{listing.title}</h1>
-                    <Badge variant={listing.is_active ? "default" : "secondary"}>
-                      {listing.is_active ? "Active" : "Inactive"}
-                    </Badge>
+                    {listing.is_deleted ? (
+                      <Badge variant="destructive">Deleted</Badge>
+                    ) : (
+                      <Badge variant={listing.is_active ? "default" : "secondary"}>
+                        {listing.is_active ? "Active" : "Inactive"}
+                      </Badge>
+                    )}
                     {listing.needs_review && (
                       <Badge variant="outline" className="border-orange-500 text-orange-700">
                         <AlertCircle className="w-3 h-3 mr-1" />
@@ -261,6 +265,10 @@ export function ListingDetail() {
                   {listing.created_at ? format(new Date(listing.created_at), "PP") : "—"}
                 </DetailRow>
 
+                <DetailRow icon={<Calendar className="w-5 h-5 text-muted-foreground mt-0.5" />} label="Deleted At">
+                  {listing.deleted_at ? format(new Date(listing.deleted_at), "PPp") : "—"}
+                </DetailRow>
+
                 <DetailRow icon={<Calendar className="w-5 h-5 text-muted-foreground mt-0.5" />} label="Availability">
                   {listing.is_available ? "Available" : "Unavailable"}
                 </DetailRow>
@@ -280,40 +288,52 @@ export function ListingDetail() {
               <CardTitle className="text-base">Actions</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              {listing.is_active ? (
-                <Button
-                  variant="destructive"
-                  className="w-full justify-start"
-                  onClick={() => setDeactivateModalOpen(true)}
-                  disabled={actionLoading}
-                >
-                  <AlertCircle className="w-4 h-4 mr-2" />
-                  Deactivate Listing
-                </Button>
+              {listing.is_deleted ? (
+                <p className="text-sm text-muted-foreground">
+                  Listing deleted by owner{listing.deleted_at ? ` on ${format(new Date(listing.deleted_at), "PPp")}` : ""}.
+                </p>
               ) : (
-                <Button className="w-full justify-start" onClick={handleActivate} disabled={actionLoading}>
-                  <AlertCircle className="w-4 h-4 mr-2" />
-                  Activate Listing
-                </Button>
+                <>
+                  {listing.is_active ? (
+                    <Button
+                      variant="destructive"
+                      className="w-full justify-start"
+                      onClick={() => setDeactivateModalOpen(true)}
+                      disabled={actionLoading}
+                    >
+                      <AlertCircle className="w-4 h-4 mr-2" />
+                      Deactivate Listing
+                    </Button>
+                  ) : (
+                    <Button
+                      className="w-full justify-start"
+                      onClick={handleActivate}
+                      disabled={actionLoading}
+                    >
+                      <AlertCircle className="w-4 h-4 mr-2" />
+                      Activate Listing
+                    </Button>
+                  )}
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start"
+                    onClick={() => setNeedsReviewModalOpen(true)}
+                    disabled={actionLoading}
+                  >
+                    <AlertCircle className="w-4 h-4 mr-2" />
+                    Mark Needs Review
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="w-full justify-start"
+                    onClick={() => setEmergencyEditModalOpen(true)}
+                    disabled={actionLoading}
+                  >
+                    <Edit className="w-4 h-4 mr-2" />
+                    Emergency Edit
+                  </Button>
+                </>
               )}
-              <Button
-                variant="outline"
-                className="w-full justify-start"
-                onClick={() => setNeedsReviewModalOpen(true)}
-                disabled={actionLoading}
-              >
-                <AlertCircle className="w-4 h-4 mr-2" />
-                Mark Needs Review
-              </Button>
-              <Button
-                variant="ghost"
-                className="w-full justify-start"
-                onClick={() => setEmergencyEditModalOpen(true)}
-                disabled={actionLoading}
-              >
-                <Edit className="w-4 h-4 mr-2" />
-                Emergency Edit
-              </Button>
             </CardContent>
           </Card>
         </div>

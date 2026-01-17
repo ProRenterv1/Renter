@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import io
 import logging
+import os
+import shutil
 import subprocess
+import tempfile
 from datetime import datetime, time, timedelta
 from typing import Any, Dict, Optional, Tuple
 
@@ -23,7 +26,12 @@ from core.settings_resolver import get_int
 from notifications import tasks as notification_tasks
 
 from . import s3 as s3util
-from .validators import coerce_int, is_image_content_type, validate_image_limits
+from .validators import (
+    coerce_int,
+    is_image_content_type,
+    is_video_content_type,
+    validate_image_limits,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +47,27 @@ DUMMY_IMAGE_BYTES = (
 _VIDEO_SCAN_DEFAULT_BYTES = getattr(settings, "DISPUTE_VIDEO_SCAN_SAMPLE_BYTES", None)
 if not isinstance(_VIDEO_SCAN_DEFAULT_BYTES, int) or _VIDEO_SCAN_DEFAULT_BYTES <= 0:
     _VIDEO_SCAN_DEFAULT_BYTES = 2 * 1024 * 1024
+
+_VIDEO_SCAN_DEFAULT_FRAMES = getattr(settings, "DISPUTE_VIDEO_SCAN_SAMPLE_FRAMES", None)
+if not isinstance(_VIDEO_SCAN_DEFAULT_FRAMES, int) or _VIDEO_SCAN_DEFAULT_FRAMES <= 0:
+    _VIDEO_SCAN_DEFAULT_FRAMES = 2
+
+_VIDEO_COMPRESSION_DEFAULT_RATIO = getattr(settings, "DISPUTE_VIDEO_COMPRESSION_TARGET_RATIO", None)
+try:
+    _VIDEO_COMPRESSION_DEFAULT_RATIO = float(_VIDEO_COMPRESSION_DEFAULT_RATIO)
+except (TypeError, ValueError):
+    _VIDEO_COMPRESSION_DEFAULT_RATIO = 0.5
+if _VIDEO_COMPRESSION_DEFAULT_RATIO <= 0 or _VIDEO_COMPRESSION_DEFAULT_RATIO >= 1:
+    _VIDEO_COMPRESSION_DEFAULT_RATIO = 0.5
+
+_VIDEO_COMPRESSION_DEFAULT_MAX_PASSES = getattr(
+    settings, "DISPUTE_VIDEO_COMPRESSION_MAX_PASSES", None
+)
+if (
+    not isinstance(_VIDEO_COMPRESSION_DEFAULT_MAX_PASSES, int)
+    or _VIDEO_COMPRESSION_DEFAULT_MAX_PASSES <= 0
+):
+    _VIDEO_COMPRESSION_DEFAULT_MAX_PASSES = 4
 
 
 class AntivirusError(RuntimeError):
@@ -68,6 +97,31 @@ def _download_bytes(key: str, *, byte_limit: Optional[int] = None) -> bytes:
         raise RuntimeError(f"Unable to download object {key}: {exc}") from exc
 
 
+def _download_to_tempfile(key: str) -> Tuple[str, bool]:
+    tmp = tempfile.NamedTemporaryFile(delete=False)
+    used_dummy = False
+    try:
+        _s3_client().download_fileobj(settings.AWS_STORAGE_BUCKET_NAME, key, tmp)
+    except (BotoCoreError, ClientError, EndpointConnectionError, NoCredentialsError) as exc:
+        if isinstance(exc, (NoCredentialsError, EndpointConnectionError)):
+            tmp.write(DUMMY_IMAGE_BYTES)
+            used_dummy = True
+        else:
+            tmp.close()
+            os.unlink(tmp.name)
+            raise RuntimeError(f"Unable to download object {key}: {exc}") from exc
+    finally:
+        tmp.close()
+    return tmp.name, used_dummy
+
+
+def _read_file_bytes(path: str, *, byte_limit: Optional[int] = None) -> bytes:
+    with open(path, "rb") as handle:
+        if byte_limit and byte_limit > 0:
+            return handle.read(byte_limit)
+        return handle.read()
+
+
 def _dispute_video_scan_limit(meta: Optional[Dict]) -> Optional[int]:
     kind = ((meta or {}).get("kind") or "").lower()
     content_type = ((meta or {}).get("content_type") or "").lower()
@@ -81,6 +135,230 @@ def _dispute_video_scan_limit(meta: Optional[Dict]) -> Optional[int]:
         configured_default = _VIDEO_SCAN_DEFAULT_BYTES
     limit = get_int("DISPUTE_VIDEO_SCAN_SAMPLE_BYTES", configured_default)
     return limit if isinstance(limit, int) and limit > 0 else None
+
+
+def _is_video_meta(meta: Optional[Dict]) -> bool:
+    kind = ((meta or {}).get("kind") or "").lower()
+    content_type = ((meta or {}).get("content_type") or "").lower()
+    return kind == "video" or is_video_content_type(content_type)
+
+
+def _dispute_video_scan_frames(meta: Optional[Dict]) -> int:
+    if not _is_video_meta(meta):
+        return 0
+    configured_default = getattr(
+        settings, "DISPUTE_VIDEO_SCAN_SAMPLE_FRAMES", _VIDEO_SCAN_DEFAULT_FRAMES
+    )
+    if not isinstance(configured_default, int) or configured_default <= 0:
+        configured_default = _VIDEO_SCAN_DEFAULT_FRAMES
+    frames = get_int("DISPUTE_VIDEO_SCAN_SAMPLE_FRAMES", configured_default)
+    return frames if isinstance(frames, int) and frames > 0 else 0
+
+
+def _dispute_video_compression_target_ratio() -> float:
+    configured = getattr(
+        settings, "DISPUTE_VIDEO_COMPRESSION_TARGET_RATIO", _VIDEO_COMPRESSION_DEFAULT_RATIO
+    )
+    try:
+        ratio = float(configured)
+    except (TypeError, ValueError):
+        ratio = _VIDEO_COMPRESSION_DEFAULT_RATIO
+    if ratio <= 0 or ratio >= 1:
+        ratio = _VIDEO_COMPRESSION_DEFAULT_RATIO
+    return ratio
+
+
+def _dispute_video_compression_max_passes() -> int:
+    configured = getattr(
+        settings, "DISPUTE_VIDEO_COMPRESSION_MAX_PASSES", _VIDEO_COMPRESSION_DEFAULT_MAX_PASSES
+    )
+    if not isinstance(configured, int) or configured <= 0:
+        return _VIDEO_COMPRESSION_DEFAULT_MAX_PASSES
+    return configured
+
+
+def _ffmpeg_available() -> bool:
+    return shutil.which("ffmpeg") is not None
+
+
+def _video_scan_payload_from_frames(path: str, *, frame_count: int) -> Optional[bytes]:
+    if frame_count <= 0 or not _ffmpeg_available():
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                path,
+                "-frames:v",
+                str(frame_count),
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "png",
+                "pipe:1",
+            ],
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        logger.warning("ffmpeg frame extraction failed: %s", exc)
+        return None
+    if proc.returncode != 0:
+        stderr = (proc.stderr or b"").decode().strip()
+        logger.warning("ffmpeg frame extraction failed: %s", stderr)
+        return None
+    payload = proc.stdout or b""
+    if not payload:
+        return None
+    return payload
+
+
+def _video_scale_filter(max_width: Optional[int]) -> str:
+    if max_width:
+        return f"scale=if(gt(iw\\,{max_width})\\,{max_width}\\,trunc(iw/2)*2):-2"
+    return "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+
+
+def _video_compression_profiles(
+    content_type: str, filename: str | None
+) -> list[Tuple[str, list[str]]]:
+    ext = os.path.splitext(filename or "")[1].lower()
+    is_webm = content_type.lower() == "video/webm" or ext == ".webm"
+    if is_webm:
+        output_type = "video/webm"
+        profiles = [
+            {"crf": 33, "max_width": None, "audio_bitrate": "96k"},
+            {"crf": 38, "max_width": 1280, "audio_bitrate": "64k"},
+            {"crf": 42, "max_width": 854, "audio_bitrate": "64k"},
+            {"crf": 45, "max_width": 640, "audio_bitrate": "48k"},
+        ]
+    else:
+        output_type = "video/mp4"
+        profiles = [
+            {"crf": 28, "max_width": None, "audio_bitrate": "96k"},
+            {"crf": 32, "max_width": 1280, "audio_bitrate": "64k"},
+            {"crf": 36, "max_width": 854, "audio_bitrate": "64k"},
+            {"crf": 40, "max_width": 640, "audio_bitrate": "48k"},
+        ]
+
+    items: list[Tuple[str, list[str]]] = []
+    for profile in profiles:
+        vf = _video_scale_filter(profile["max_width"])
+        if output_type == "video/webm":
+            args = [
+                "-map_metadata",
+                "0",
+                "-vf",
+                vf,
+                "-c:v",
+                "libvpx-vp9",
+                "-b:v",
+                "0",
+                "-crf",
+                str(profile["crf"]),
+                "-deadline",
+                "good",
+                "-c:a",
+                "libopus",
+                "-b:a",
+                profile["audio_bitrate"],
+            ]
+        else:
+            args = [
+                "-map_metadata",
+                "0",
+                "-vf",
+                vf,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryslow",
+                "-crf",
+                str(profile["crf"]),
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                profile["audio_bitrate"],
+                "-movflags",
+                "+faststart",
+            ]
+        items.append((output_type, args))
+    return items
+
+
+def _encode_video(
+    path: str, *, output_type: str, args: list[str]
+) -> Optional[Tuple[str, str, int]]:
+    if not _ffmpeg_available():
+        return None
+    suffix = ".webm" if output_type == "video/webm" else ".mp4"
+    fd, output_path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-i", path, *args, output_path],
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        logger.warning("ffmpeg compression failed: %s", exc)
+        os.unlink(output_path)
+        return None
+    if proc.returncode != 0:
+        stderr = (proc.stderr or b"").decode().strip()
+        logger.warning("ffmpeg compression failed: %s", stderr)
+        os.unlink(output_path)
+        return None
+    return output_path, output_type, os.path.getsize(output_path)
+
+
+def _compress_video_file(
+    path: str,
+    *,
+    content_type: str,
+    filename: str | None,
+    target_size: int,
+    max_passes: int,
+) -> Optional[Tuple[str, str, int]]:
+    if not _ffmpeg_available():
+        return None
+    profiles = _video_compression_profiles(content_type, filename)
+    if max_passes > 0:
+        profiles = profiles[:max_passes]
+    best: Optional[Tuple[str, str, int]] = None
+    for output_type, args in profiles:
+        result = _encode_video(path, output_type=output_type, args=args)
+        if not result:
+            continue
+        output_path, output_type, output_size = result
+        if best is None or output_size < best[2]:
+            if best:
+                os.unlink(best[0])
+            best = (output_path, output_type, output_size)
+        else:
+            os.unlink(output_path)
+        if target_size and output_size <= target_size:
+            break
+    return best
+
+
+def _upload_compressed_video(key: str, *, path: str, content_type: str) -> Optional[str]:
+    if not getattr(settings, "USE_S3", False):
+        return None
+    with open(path, "rb") as handle:
+        resp = _s3_client().put_object(
+            Bucket=settings.AWS_STORAGE_BUCKET_NAME,
+            Key=key,
+            Body=handle,
+            ContentType=content_type,
+        )
+    etag = resp.get("ETag") if isinstance(resp, dict) else None
+    return str(etag) if etag else None
 
 
 def _scan_with_clamd(data: bytes) -> Optional[str]:
@@ -555,23 +833,127 @@ def _run_scan_and_finalize_dispute_evidence(
     uploaded_by_id: int,
     meta: Dict | None,
 ):
-    byte_limit = _dispute_video_scan_limit(meta)
-    data = _download_bytes(key, byte_limit=byte_limit)
-    if byte_limit:
-        logger.info(
-            "video_scan_sampled",
-            extra={
-                "key": key,
-                "byte_limit": byte_limit,
-                "downloaded_bytes": len(data),
-                "content_type": (meta or {}).get("content_type"),
-            },
-        )
-    dimensions = _extract_dimensions(data)
-    verdict = _scan_bytes(data)
+    meta = dict(meta or {})
+    scan_payload: bytes
+    if _is_video_meta(meta):
+        tmp_path, used_dummy = _download_to_tempfile(key)
+        try:
+            scan_payload = b""
+            frame_count = _dispute_video_scan_frames(meta)
+            if not used_dummy:
+                scan_payload = (
+                    _video_scan_payload_from_frames(tmp_path, frame_count=frame_count) or b""
+                )
+                if scan_payload:
+                    logger.info(
+                        "video_scan_frames_sampled",
+                        extra={
+                            "key": key,
+                            "frame_count": frame_count,
+                            "sample_bytes": len(scan_payload),
+                            "content_type": meta.get("content_type"),
+                        },
+                    )
+            if not scan_payload:
+                byte_limit = _dispute_video_scan_limit(meta)
+                scan_payload = _read_file_bytes(tmp_path, byte_limit=byte_limit)
+                if byte_limit:
+                    logger.info(
+                        "video_scan_sampled",
+                        extra={
+                            "key": key,
+                            "byte_limit": byte_limit,
+                            "downloaded_bytes": len(scan_payload),
+                            "content_type": meta.get("content_type"),
+                        },
+                    )
+            verdict = _scan_bytes(scan_payload)
+
+            original_size = os.path.getsize(tmp_path)
+            if verdict == "clean" and not used_dummy and getattr(settings, "USE_S3", False):
+                if not _ffmpeg_available():
+                    logger.warning(
+                        "video_compression_unavailable",
+                        extra={"key": key, "content_type": meta.get("content_type")},
+                    )
+                else:
+                    target_ratio = _dispute_video_compression_target_ratio()
+                    target_size = max(int(original_size * target_ratio), 1)
+                    max_passes = _dispute_video_compression_max_passes()
+                    compressed = _compress_video_file(
+                        tmp_path,
+                        content_type=meta.get("content_type") or "",
+                        filename=meta.get("filename"),
+                        target_size=target_size,
+                        max_passes=max_passes,
+                    )
+                    if compressed:
+                        output_path, output_type, output_size = compressed
+                        try:
+                            if output_size < original_size:
+                                etag = _upload_compressed_video(
+                                    key, path=output_path, content_type=output_type
+                                )
+                                if etag:
+                                    meta["content_type"] = output_type
+                                    meta["size"] = output_size
+                                    meta["etag"] = etag
+                                    logger.info(
+                                        "video_compressed",
+                                        extra={
+                                            "key": key,
+                                            "original_size": original_size,
+                                            "compressed_size": output_size,
+                                            "target_size": target_size,
+                                            "target_ratio": target_ratio,
+                                            "content_type": output_type,
+                                        },
+                                    )
+                                    if output_size > target_size:
+                                        logger.info(
+                                            "video_compression_target_missed",
+                                            extra={
+                                                "key": key,
+                                                "original_size": original_size,
+                                                "compressed_size": output_size,
+                                                "target_size": target_size,
+                                                "target_ratio": target_ratio,
+                                                "max_passes": max_passes,
+                                            },
+                                        )
+                            else:
+                                logger.info(
+                                    "video_compression_skipped",
+                                    extra={
+                                        "key": key,
+                                        "original_size": original_size,
+                                        "compressed_size": output_size,
+                                    },
+                                )
+                        finally:
+                            os.unlink(output_path)
+            if not meta.get("size"):
+                meta["size"] = original_size
+        finally:
+            os.unlink(tmp_path)
+    else:
+        byte_limit = _dispute_video_scan_limit(meta)
+        scan_payload = _download_bytes(key, byte_limit=byte_limit)
+        if byte_limit:
+            logger.info(
+                "video_scan_sampled",
+                extra={
+                    "key": key,
+                    "byte_limit": byte_limit,
+                    "downloaded_bytes": len(scan_payload),
+                    "content_type": meta.get("content_type"),
+                },
+            )
+        verdict = _scan_bytes(scan_payload)
+    dimensions = _extract_dimensions(scan_payload)
     constraint_error = validate_image_limits(
         content_type=meta.get("content_type") if meta else "",
-        size=len(data),
+        size=len(scan_payload),
         width=dimensions[0],
         height=dimensions[1],
     )
@@ -586,7 +968,7 @@ def _run_scan_and_finalize_dispute_evidence(
                 "key": key,
                 "width": dimensions[0],
                 "height": dimensions[1],
-                "bytes": len(data),
+                "bytes": len(scan_payload),
                 "original_size": coerce_int(meta.get("original_size") if meta else None),
                 "compressed_size": coerce_int(meta.get("compressed_size") if meta else None),
                 "dispute_id": dispute_id,
@@ -602,6 +984,19 @@ def _run_scan_and_finalize_dispute_evidence(
         verdict=verdict,
         meta=meta or {},
     )
+    try:
+        from disputes.intake import update_dispute_intake_status
+        from disputes.models import DisputeCase
+
+        status = DisputeCase.objects.filter(pk=dispute_id).values_list("status", flat=True).first()
+        if status == DisputeCase.Status.INTAKE_MISSING_EVIDENCE:
+            update_dispute_intake_status(dispute_id)
+    except Exception:
+        logger.info(
+            "dispute evidence: failed to refresh intake status",
+            extra={"dispute_id": dispute_id, "evidence_id": evidence.id},
+            exc_info=True,
+        )
     return {"status": verdict, "evidence_id": str(evidence.id)}
 
 

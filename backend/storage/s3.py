@@ -8,6 +8,8 @@ from botocore.config import Config
 from django.conf import settings
 from django.utils.text import slugify
 
+from .validators import max_bytes_for_content_type
+
 
 def _normalized_endpoint(url: Optional[str]) -> Optional[str]:
     if not url:
@@ -75,7 +77,9 @@ def presign_put(
             "headers": headers,
         }
 
-    max_size = getattr(settings, "S3_MAX_UPLOAD_BYTES", None)
+    max_size = max_bytes_for_content_type(content_type) or getattr(
+        settings, "S3_MAX_UPLOAD_BYTES", None
+    )
     if size_hint is not None and max_size is not None and size_hint > max_size:
         raise ValueError("Upload exceeds the maximum allowed size.")
 

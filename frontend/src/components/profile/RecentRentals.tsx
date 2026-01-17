@@ -447,6 +447,7 @@ export function RecentRentals() {
         }}
         bookingId={disputeContext?.bookingId ?? null}
         role="renter"
+        issueContext="post_pickup"
         toolName={disputeContext?.toolName}
         rentalPeriodLabel={disputeContext?.rentalPeriod}
       />

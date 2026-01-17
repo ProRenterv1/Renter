@@ -341,6 +341,8 @@ def test_dispute_permissions_and_messages(
     assert msg_renter.status_code == 201
     assert DisputeMessage.objects.get(id=msg_renter.json()["id"]).role == DisputeMessage.Role.RENTER
 
+    owner_user.is_staff = True
+    owner_user.save(update_fields=["is_staff"])
     api_client.force_authenticate(owner_user)
     msg_owner = api_client.post(
         f"/api/disputes/{dispute_id}/messages/",

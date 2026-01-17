@@ -1,0 +1,51 @@
+{% extends "email/base_email.html" %}
+{% block content %}
+  <h1 style="font-size:26px;line-height:1.2;color:{{ brand_heading_color }};margin:0 0 16px;font-family:'Manrope','Inter',sans-serif;">
+    Upload evidence for your dispute
+  </h1>
+  <p style="font-size:16px;color:{{ brand_text_color }};margin:0 0 20px;">
+    {% if user_full_name %}Hi {{ user_full_name }},{% else %}Hi,{% endif %} we need additional evidence for your dispute on booking #{{ booking_id }} ({{ listing_title }}).
+  </p>
+  <div style="border:1px solid {{ brand_border_color }};border-radius:20px;padding:20px 24px;margin-bottom:24px;background-color:{{ brand_surface_color }};">
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="font-size:15px;color:{{ brand_text_color }};">
+      <tr>
+        <td style="padding:6px 0;width:42%;color:{{ brand_muted_text_color }};">Dispute</td>
+        <td style="padding:6px 0;font-weight:600;">#{{ dispute_id }}</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Booking</td>
+        <td style="padding:6px 0;font-weight:600;">#{{ booking_id }}</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Listing</td>
+        <td style="padding:6px 0;font-weight:600;">{{ listing_title }}</td>
+      </tr>
+      {% if due_at %}
+      <tr>
+        <td style="padding:6px 0;color:{{ brand_muted_text_color }};">Due by</td>
+        <td style="padding:6px 0;font-weight:600;">{{ due_at|date:"M d, Y H:i T" }}</td>
+      </tr>
+      {% endif %}
+    </table>
+  </div>
+  <p style="font-size:15px;color:{{ brand_text_color }};margin:0 0 12px;">
+    Where to upload:
+  </p>
+  <ol style="margin:0 0 22px 18px;padding:0;color:{{ brand_text_color }};font-size:15px;line-height:1.6;">
+    <li>
+      {% if cta_url %}Open your profile using the button below.{% else %}Open your profile.{% endif %}
+    </li>
+    <li>Go to Disputes and select Dispute #{{ dispute_id }}.</li>
+    <li>Click "Add evidence" and upload photos or video.</li>
+  </ol>
+  <p style="font-size:15px;color:{{ brand_text_color }};margin:0 0 24px;">
+    Clear photos or video of the issue help us resolve your dispute faster.
+  </p>
+  {% if cta_url %}
+    <p style="text-align:center;margin:0;">
+      <a href="{{ cta_url }}" style="display:inline-block;background-color:{{ brand_primary_color }};color:{{ brand_primary_text_color }};padding:14px 32px;border-radius:999px;text-decoration:none;font-weight:600;box-shadow:0 10px 25px rgba(91,140,166,0.35);">
+        Upload evidence
+      </a>
+    </p>
+  {% endif %}
+{% endblock %}

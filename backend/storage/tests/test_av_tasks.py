@@ -388,4 +388,4 @@ def test_dispute_video_scan_uses_byte_limit(monkeypatch, booking, renter, settin
     assert result["status"] == "clean"
     assert evidence.av_status == DisputeEvidence.AVStatus.CLEAN
     assert scanned["len"] == settings.DISPUTE_VIDEO_SCAN_SAMPLE_BYTES
-    assert download_calls["range"] == {"Range": "bytes=0-1023"}
+    assert download_calls["range"] is None

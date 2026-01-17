@@ -76,6 +76,8 @@ export type OperatorListingListItem = {
   category: OperatorListingCategory | null;
   daily_price_cad: string | number;
   is_active: boolean;
+  is_deleted: boolean;
+  deleted_at?: string | null;
   needs_review?: boolean;
   thumbnail_url?: string | null;
   created_at: string;
@@ -382,6 +384,7 @@ export type OperatorListingListParams = Partial<{
   category: string;
   is_active: boolean;
   needs_review: boolean;
+  include_deleted: boolean;
   created_at_after: string;
   created_at_before: string;
 }>;

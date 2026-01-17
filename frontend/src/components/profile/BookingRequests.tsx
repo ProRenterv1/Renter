@@ -228,6 +228,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     bookingId: number;
     toolName: string;
     rentalPeriod: string;
+    issueContext: "pre_pickup" | "post_pickup";
   } | null>(null);
   const [disputesByBookingId, setDisputesByBookingId] = useState<Record<number, DisputeCase | null>>({});
   const isMountedRef = useRef(true);
@@ -767,6 +768,10 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
     const isPendingRequest = requestStatus === "requested";
     const canCancelAfterApproval = requestStatus === "confirmed" || requestStatus === "paid";
     const returnPending = isReturnPending(booking as BookingWithReturnFields);
+    const canReportPickupIssue =
+      booking.status === "paid" &&
+      !booking.pickup_confirmed_at &&
+      !disputesByBookingId[booking.id];
 
     if (isPendingRequest) {
       return (
@@ -839,21 +844,24 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
           <div className="flex-1 text-sm text-muted-foreground text-center sm:text-left">
             {statusMessage}
           </div>
-          <Button
-            variant="outline"
-            className="rounded-full"
-            onClick={() => {
-              setDisputeContext({
-                bookingId: booking.id,
-                toolName: booking.listing_title,
-                rentalPeriod: formatDateRange(booking.start_date, booking.end_date),
-              });
-              setDisputeWizardOpen(true);
-              setSelectedRequest(null);
-            }}
-          >
-            Report an issue
-          </Button>
+          {canReportPickupIssue && (
+            <Button
+              variant="outline"
+              className="rounded-full"
+              onClick={() => {
+                setDisputeContext({
+                  bookingId: booking.id,
+                  toolName: booking.listing_title,
+                  rentalPeriod: formatDateRange(booking.start_date, booking.end_date),
+                  issueContext: "pre_pickup",
+                });
+                setDisputeWizardOpen(true);
+                setSelectedRequest(null);
+              }}
+            >
+              Report an issue
+            </Button>
+          )}
         </DialogFooter>
       );
     }
@@ -976,9 +984,13 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                   const withinDisputeWindow = disputeWindowExpiresAt
                     ? now < disputeWindowExpiresAt
                     : false;
-                  const showDisputeButton =
+                  const prePickupEligible =
+                    row.booking.status === "paid" && !row.booking.pickup_confirmed_at;
+                  const postPickupEligible =
                     withinDisputeWindow &&
                     (row.booking.status === "completed" || row.booking.status === "canceled");
+                  const showDisputeButton = prePickupEligible || postPickupEligible;
+                  const disputeIssueContext = prePickupEligible ? "pre_pickup" : "post_pickup";
 
                   return (
                     <TableRow key={row.booking.id} className="hover:bg-muted/50">
@@ -1031,6 +1043,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
                                   bookingId: row.booking.id,
                                   toolName: row.booking.listing_title,
                                   rentalPeriod: dateRange,
+                                  issueContext: disputeIssueContext,
                                 });
                                 setDisputeWizardOpen(true);
                               }}
@@ -1100,6 +1113,7 @@ export function BookingRequests({ onPendingCountChange }: BookingRequestsProps =
         }}
         bookingId={disputeContext?.bookingId ?? null}
         role="owner"
+        issueContext={disputeContext?.issueContext}
         toolName={disputeContext?.toolName}
         rentalPeriodLabel={disputeContext?.rentalPeriod}
         onCreated={() => {

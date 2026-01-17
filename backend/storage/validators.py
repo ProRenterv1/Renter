@@ -9,6 +9,10 @@ def is_image_content_type(content_type: str) -> bool:
     return (content_type or "").lower().startswith("image/")
 
 
+def is_video_content_type(content_type: str) -> bool:
+    return (content_type or "").lower().startswith("video/")
+
+
 def coerce_int(value) -> Optional[int]:
     if value in (None, "", False):
         return None
@@ -25,6 +29,10 @@ def max_bytes_for_content_type(content_type: str) -> Optional[int]:
         if image_limit and global_limit:
             return min(image_limit, global_limit)
         return image_limit or global_limit
+    if is_video_content_type(content_type):
+        video_limit = getattr(settings, "VIDEO_MAX_UPLOAD_BYTES", None)
+        if video_limit:
+            return video_limit
     return global_limit
 
 

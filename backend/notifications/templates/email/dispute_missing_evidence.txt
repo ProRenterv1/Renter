@@ -1,0 +1,12 @@
+{% if user_full_name %}Hi {{ user_full_name }},{% else %}Hi,{% endif %}
+
+We need additional evidence for your dispute on booking #{{ booking_id }} ({{ listing_title }}).
+
+{% if due_at %}Due by: {{ due_at|date:"M d, Y H:i T" }}{% endif %}
+
+Where to upload:
+{% if cta_url %}1) Open your profile: {{ cta_url }}{% else %}1) Open your profile.{% endif %}
+2) Go to Disputes and select Dispute #{{ dispute_id }}.
+3) Click "Add evidence" and upload photos or video.
+
+If you need help, reply to this email or contact support.

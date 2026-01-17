@@ -42,7 +42,7 @@ class BookingSerializer(serializers.ModelSerializer):
     """Serialize Booking instances for API usage."""
 
     listing = serializers.PrimaryKeyRelatedField(
-        queryset=Listing.objects.filter(is_active=True, is_available=True)
+        queryset=Listing.objects.filter(is_active=True, is_available=True, is_deleted=False)
     )
     owner = serializers.PrimaryKeyRelatedField(read_only=True)
     renter = serializers.PrimaryKeyRelatedField(read_only=True)
