@@ -96,7 +96,7 @@ def test_operator_listings_requires_operator():
     assert resp.status_code in (401, 403)
 
 
-def test_operator_listings_filters(operator_user):
+def test_operator_listings_filters(operator_user, operator_admin_user):
     cat = Category.objects.create(name="Tools", slug="tools")
     owner_a = User.objects.create_user(
         username="a", email="a@example.com", password="pass", is_staff=True
@@ -156,7 +156,7 @@ def test_operator_listings_filters(operator_user):
     assert payload[0]["daily_price_cad"] == str(listing_in.daily_price_cad)
 
 
-def test_operator_listing_detail_includes_photos_and_owner(operator_user):
+def test_operator_listing_detail_includes_photos_and_owner(operator_user, operator_admin_user):
     owner = User.objects.create_user(
         username="ownerx",
         email="ownerx@example.com",
@@ -199,7 +199,7 @@ def test_operator_listing_detail_includes_photos_and_owner(operator_user):
     assert photos[0]["ordering"] == 0
 
 
-def test_operator_listing_activate_deactivate_audits(operator_user):
+def test_operator_listing_activate_deactivate_audits(operator_user, operator_admin_user):
     owner = User.objects.create_user(
         username="ownerz", email="ownerz@example.com", password="pass", is_staff=True
     )
@@ -239,7 +239,7 @@ def test_operator_listing_activate_deactivate_audits(operator_user):
     assert audit2 is not None
 
 
-def test_operator_listing_emergency_edit_audit(operator_user):
+def test_operator_listing_emergency_edit_audit(operator_user, operator_admin_user):
     owner = User.objects.create_user(
         username="ownerq", email="ownerq@example.com", password="pass", is_staff=True
     )
